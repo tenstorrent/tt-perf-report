@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
-
 # SPDX-License-Identifier: Apache-2.0
+
+# SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
 
 import sys
 import argparse
@@ -727,7 +727,46 @@ def filter_by_id_range(rows, id_range):
     return rows
 
 
-def main(csv_file, signpost, ignore_signposts, min_percentage, id_range, csv_output_file, no_advice):
+def main():
+    args, id_range = parse_args()
+    generate_perf_report(
+        args.csv_file, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice
+    )
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="User-friendly Performance Report Analysis Tool")
+    parser.add_argument("csv_file", type=str, help="Path to the performance report CSV file")
+    parser.add_argument("--signpost", type=str, help="Specify a signpost to use for analysis", default=None)
+    parser.add_argument(
+        "--ignore-signposts", action="store_true", help="Ignore all signposts and use the entire file for analysis"
+    )
+    parser.add_argument(
+        "--min-percentage", type=float, default=0.5, help="Minimum percentage for coloring (default: 0.5)"
+    )
+    parser.add_argument(
+        "--id-range", type=str, help="Show only rows with IDs in the specified range (e.g., '5-10', '31-', or '-12')"
+    )
+    parser.add_argument("--color", action="store_true", help="Force colored output even when output is redirected")
+    parser.add_argument("--no-color", action="store_true", help="Force output without color")
+    parser.add_argument("--csv", type=str, help="Output filename for CSV format", metavar="OUTPUT_FILE")
+    parser.add_argument("--no-advice", action="store_true", help="Only show the table section of the report")
+    args = parser.parse_args()
+
+    # Set the global color_output variable
+    set_color_output(args.color, args.no_color)
+
+    # Parse id_range
+    try:
+        id_range = parse_id_range(args.id_range)
+    except ValueError:
+        print(colored("Invalid --id-range format. Please use 'START-END', 'START-', or '-END'.", "red"))
+        exit(1)
+
+    return args, id_range
+
+
+def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage, id_range, csv_output_file, no_advice):
     df = pd.read_csv(csv_file, low_memory=False)
 
     # Add a column for original row numbers
@@ -816,32 +855,4 @@ def main(csv_file, signpost, ignore_signposts, min_percentage, id_range, csv_out
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="User-friendly Performance Report Analysis Tool")
-    parser.add_argument("csv_file", type=str, help="Path to the performance report CSV file")
-    parser.add_argument("--signpost", type=str, help="Specify a signpost to use for analysis", default=None)
-    parser.add_argument(
-        "--ignore-signposts", action="store_true", help="Ignore all signposts and use the entire file for analysis"
-    )
-    parser.add_argument(
-        "--min-percentage", type=float, default=0.5, help="Minimum percentage for coloring (default: 0.5)"
-    )
-    parser.add_argument(
-        "--id-range", type=str, help="Show only rows with IDs in the specified range (e.g., '5-10', '31-', or '-12')"
-    )
-    parser.add_argument("--color", action="store_true", help="Force colored output even when output is redirected")
-    parser.add_argument("--no-color", action="store_true", help="Force output without color")
-    parser.add_argument("--csv", type=str, help="Output filename for CSV format", metavar="OUTPUT_FILE")
-    parser.add_argument("--no-advice", action="store_true", help="Only show the table section of the report")
-    args = parser.parse_args()
-
-    # Set the global color_output variable
-    set_color_output(args.color, args.no_color)
-
-    # Parse id_range
-    try:
-        id_range = parse_id_range(args.id_range)
-    except ValueError:
-        print(colored("Invalid --id-range format. Please use 'START-END', 'START-', or '-END'.", "red"))
-        exit(1)
-
-    main(args.csv_file, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice)
+    main()

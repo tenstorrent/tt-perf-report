@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tt-perf-report"
+version = "1.0.0"
+description = "This tool analyzes performance traces from TT-Metal operations, providing insights into throughput, bottlenecks, and optimization opportunities."
+license = {file = "LICENSE"}
+readme = "README.md"
+keywords = ["tenstorrent", "tt-metal"]
+dependencies = ["pandas"]
+
+[project.scripts]
+tt-perf-report = "tt_perf_report.perf_report:main"
+
+[project.urls]
+Repository = "https://github.com/tenstorrent/tt-perf-report"
+
+[tool.setuptools]
+packages = ["tt_perf_report"]
+package-dir = {"" = "src"}
