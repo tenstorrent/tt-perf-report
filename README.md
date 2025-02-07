@@ -4,6 +4,16 @@
 
 This tool analyzes performance traces from Metal operations, providing insights into throughput, bottlenecks, and optimization opportunities.
 
+## Installation
+
+This tool can be installed from PyPI:
+
+```bash
+pipx install tt-perf-report
+```
+
+Installing with pipx will automatically create a virtual environment and make the `tt-perf-report` command available.
+
 ## Generating Performance Traces
 
 1. Build Metal with performance tracing enabled:
@@ -11,7 +21,7 @@ This tool analyzes performance traces from Metal operations, providing insights 
 ./build_metal -p
 ```
 
-2. Run your test with the tracy module to capture traces:
+2. Run your test in TT-Metal with the tracy module to capture traces:
 ```bash
 python -m tracy -r -p -v -m pytest path/to/test.py
 ```
@@ -46,13 +56,13 @@ The output of the performance report is a table of operations. Each operation is
 Use `--id-range` to analyze specific sections:
 ```bash
 # Analyze ops 5 through 10
-python perf_report.py trace.csv --id-range 5-10
+tt-perf-report trace.csv --id-range 5-10
 
 # Analyze from op 31 onwards
-python perf_report.py trace.csv --id-range 31-
+tt-perf-report trace.csv --id-range 31-
 
 # Analyze up to op 12
-python perf_report.py trace.csv --id-range -12
+tt-perf-report trace.csv --id-range -12
 ```
 
 This is particularly useful for:
@@ -109,23 +119,23 @@ The tool automatically highlights potential optimization opportunities:
 Typical use:
 
 ```bash
-python perf_report.py trace.csv
+tt-perf-report trace.csv
 ```
 
 Build a table of all ops with no advice:
 
 ```bash
-python perf_report.py trace.csv --no-advice
+tt-perf-report trace.csv --no-advice
 ```
 
 View ops 100-200 with advice:
 
 ```bash
-python perf_report.py trace.csv --id-range 100-200
+tt-perf-report trace.csv --id-range 100-200
 ```
 
 Export the table of ops and columns as a CSV file:
 
 ```bash
-python perf_report.py trace.csv --csv my_report.csv
+tt-perf-report trace.csv --csv my_report.csv
 ```
