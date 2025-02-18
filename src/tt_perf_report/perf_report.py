@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
-
+import csv
 import sys
 import argparse
 import re
@@ -582,88 +582,98 @@ def print_op_to_op_gap_advice(rows, headers, col_widths):
         )
 
 
+def is_matmul_op(op_data):
+    return "Matmul" in op_data["OP Code"].raw_value
+
+
 def print_matmul_advice(rows, headers, col_widths):
-    matmul_ops = [op_data for op_data in rows if "Matmul" in op_data["OP Code"].raw_value]
+    matmul_ops = [op_data for op_data in rows if is_matmul_op(op_data)]
 
     if matmul_ops:
         print("Matmul Optimization\n-------------------")
         for op_data in matmul_ops:
             print_row(op_data, col_widths, headers)
-            advice = []
+            advice = generate_matmul_advice(op_data)
             color = "grey" if op_data["OP Code"].color == "grey" else "white"
-
-            math_fidelity = (
-                op_data["Math Fidelity"].raw_value.split()[0] if op_data["Math Fidelity"].raw_value else None
-            )
-            output_datatype = op_data["Output Datatype"].raw_value
-            input_0_datatype = op_data["Input 0 Datatype"].raw_value
-            input_1_datatype = op_data["Input 1 Datatype"].raw_value
-            cores = op_data["Cores"].raw_value
-            fidelity_evaluation, fidelity_advice = evaluate_fidelity(
-                input_0_datatype, input_1_datatype, output_datatype, math_fidelity
-            )
-
-            if op_data["Bound"].raw_value in ["DRAM", "BOTH"]:
-                if not op_data["DRAM Sharded"].raw_value:
-                    advice.append(
-                        "- Try a DRAM-sharded program config (MatmulMultiCoreReuseMultiCastDRAMShardedProgramConfig) to improve throughput further"
-                    )
-                if fidelity_evaluation == "too_low" and op_data["FLOPs %"].raw_value < 40:
-                    advice.append(f"- {fidelity_advice}")
-                if fidelity_evaluation == "too_high":
-                    advice.append(f"- {fidelity_advice}")
-            elif op_data["Bound"].raw_value in ["FLOP", "BOTH"]:
-                if cores < 64:
-                    advice.append(f"- Increase grid size (currently using {cores})")
-                if fidelity_evaluation == "too_high":
-                    advice.append(f"- {fidelity_advice}")
-            elif op_data["Bound"].raw_value == "SLOW":
-                input_0_memory = op_data["Input 0 Memory"].raw_value
-                if input_0_memory and "L1" not in input_0_memory:
-                    advice.append(f"- If possible place input 0 in L1 (currently in {input_0_memory})")
-
-                inner_dim_block = op_data["Inner Dim Block Size"].raw_value
-                out_h = op_data["Output Subblock H"].raw_value
-                out_w = op_data["Output Subblock W"].raw_value
-
-                if inner_dim_block is None and out_h is None and out_w is None:
-                    advice.append(
-                        "- No program_config specified, try using one to override in0_block_w and out_subblock_h/w"
-                    )
-                else:
-                    all_good = True
-                    if inner_dim_block is not None:
-                        if inner_dim_block < 2:
-                            advice.append(f"- in0_block_w={inner_dim_block} is small, try in0_block_w=2 or above")
-                            all_good = False
-                    else:
-                        advice.append("- No inner dim block size found")
-                        all_good = False
-
-                    if out_h is not None and out_w is not None:
-                        out_area = out_h * out_w
-                        if out_area < 2:
-                            advice.append(
-                                f"- Output subblock {out_h}x{out_w} is small, try out_subblock_h * out_subblock_w >= 2 if possible"
-                            )
-                            all_good = False
-                    else:
-                        advice.append("- No output subblock size found")
-                        all_good = False
-
-                    if all_good:
-                        advice.append(
-                            f"- in0_block_w={inner_dim_block} and output subblock {out_h}x{out_w} look good 🤷"
-                        )
-                    if fidelity_advice:
-                        advice.append(f"- {fidelity_advice}")
 
             if advice:
                 for item in advice:
-                    print(colored(item, color))
+                    print(colored(f"- {item}", color))
             else:
                 print(colored("✅ Optimized", color))
             print()  # Add a blank line between matmuls
+
+
+def generate_matmul_advice(op_data):
+    advice = []
+
+    math_fidelity = (
+        op_data["Math Fidelity"].raw_value.split()[0] if op_data["Math Fidelity"].raw_value else None
+    )
+    output_datatype = op_data["Output Datatype"].raw_value
+    input_0_datatype = op_data["Input 0 Datatype"].raw_value
+    input_1_datatype = op_data["Input 1 Datatype"].raw_value
+    cores = op_data["Cores"].raw_value
+    fidelity_evaluation, fidelity_advice = evaluate_fidelity(
+        input_0_datatype, input_1_datatype, output_datatype, math_fidelity
+    )
+
+    if op_data["Bound"].raw_value in ["DRAM", "BOTH"]:
+        if not op_data["DRAM Sharded"].raw_value:
+            advice.append(
+                "Try a DRAM-sharded program config (MatmulMultiCoreReuseMultiCastDRAMShardedProgramConfig) to improve throughput further"
+            )
+        if fidelity_evaluation == "too_low" and op_data["FLOPs %"].raw_value < 40:
+            advice.append(fidelity_advice)
+        if fidelity_evaluation == "too_high":
+            advice.append(fidelity_advice)
+    elif op_data["Bound"].raw_value in ["FLOP", "BOTH"]:
+        if cores < 64:
+            advice.append(f"Increase grid size (currently using {cores})")
+        if fidelity_evaluation == "too_high":
+            advice.append(fidelity_advice)
+    elif op_data["Bound"].raw_value == "SLOW":
+        input_0_memory = op_data["Input 0 Memory"].raw_value
+        if input_0_memory and "L1" not in input_0_memory:
+            advice.append(f"If possible place input 0 in L1 (currently in {input_0_memory})")
+
+        inner_dim_block = op_data["Inner Dim Block Size"].raw_value
+        out_h = op_data["Output Subblock H"].raw_value
+        out_w = op_data["Output Subblock W"].raw_value
+
+        if inner_dim_block is None and out_h is None and out_w is None:
+            advice.append(
+                "No program_config specified, try using one to override in0_block_w and out_subblock_h/w"
+            )
+        else:
+            all_good = True
+            if inner_dim_block is not None:
+                if inner_dim_block < 2:
+                    advice.append(f"in0_block_w={inner_dim_block} is small, try in0_block_w=2 or above")
+                    all_good = False
+            else:
+                advice.append("No inner dim block size found")
+                all_good = False
+
+            if out_h is not None and out_w is not None:
+                out_area = out_h * out_w
+                if out_area < 2:
+                    advice.append(
+                        f"Output subblock {out_h}x{out_w} is small, try out_subblock_h * out_subblock_w >= 2 if possible"
+                    )
+                    all_good = False
+            else:
+                advice.append("No output subblock size found")
+                all_good = False
+
+            if all_good:
+                advice.append(
+                    f"in0_block_w={inner_dim_block} and output subblock {out_h}x{out_w} look good 🤷"
+                )
+            if fidelity_advice:
+                advice.append(fidelity_advice)
+
+    return advice
 
 
 def merge_device_rows(df):
@@ -844,11 +854,18 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage, i
             "Output Subblock H",
             "Output Subblock W",
         ]
+        if not no_advice:
+            all_headers.append("Advice")
         print(colored(f"Writing CSV output to {csv_output_file}", "cyan"))
         with open(csv_output_file, "w") as f:
-            f.write(",".join(all_headers) + "\n")
+            csv_writer = csv.DictWriter(f, fieldnames=all_headers)
+            csv_writer.writeheader()
             for op_data in rows:
-                f.write(",".join(str(op_data[header].raw_value) for header in all_headers) + "\n")
+                row = {header: op_data[header].raw_value for header in all_headers if header in op_data}
+                if not no_advice:
+                    advice = generate_matmul_advice(op_data) if is_matmul_op(op_data) else ""
+                    row["Advice"] = " • ".join(advice)
+                csv_writer.writerow(row)
     else:
         col_widths = [
             max(max(visible_length(str(row[header])) for row in rows), visible_length(header))
