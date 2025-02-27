@@ -38,6 +38,7 @@ def colored(text, color):
             "yellow": "\033[38;5;11m",
             "blue": "\033[38;5;12m",
             "magenta": "\033[38;5;13m",
+            "orange": "\033[38;5;208m",
             "cyan": "\033[38;5;14m",
             "white": "\033[38;5;15m",
             "end": "\033[0m",
@@ -70,7 +71,7 @@ class Cell:
         if self.raw_value is None or pd.isna(self.raw_value):
             return ""
 
-        if isinstance(self.raw_value, str) and "Matmul" in self.raw_value:
+        if isinstance(self.raw_value, str) and ("Matmul" in self.raw_value or "OptimizedConvNew" in self.raw_value):
             parts = self.raw_value.split(maxsplit=1)
             op_name = parts[0]
             size = parts[1] if len(parts) > 1 else ""
@@ -275,6 +276,38 @@ def analyze_matmul(row):
         core_count,  # Return the potentially adjusted core count
     )
 
+def analyze_conv(row):
+    duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
+
+    core_count = row["CORE COUNT"]
+    math_fidelity = row["MATH FIDELITY"]
+
+    # Check for DRAM-sharded program config
+    attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
+    is_dram_sharded = "MatmulMultiCoreReuseMultiCastDRAMShardedProgramConfig" in attributes
+
+    peak_flops_value = tflops_per_core(math_fidelity) * 1e12 * core_count
+
+    NHW = int(row["OUTPUT_0_Y"])
+    CH_IN = int(row["INPUT_0_X"])
+    W = [int(x) for x in (attributes.split("window_hw")[1].split("; ")[0][2:-1].split(";"))]
+    CH_OUT = int(row["INPUT_1_X"])
+
+    M, K, N = NHW, CH_IN * W[0] * W[1], CH_OUT
+    flops = (M * K * N * 2) / duration_s
+
+    size = f"{M} x {K} x {N}"
+    memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} @ {row['INPUT_1_DATATYPE']} {row['INPUT_1_MEMORY'].replace('DEV_0_', '')} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')})"
+
+    flops_percentage = (flops / peak_flops_value) * 100
+
+    return (
+        flops,
+        flops_percentage,
+        size,
+        memory_info,
+        math_fidelity
+    )
 
 def analyze_op(row, prev_row):
     op_code = Cell(row["OP CODE"])
@@ -305,6 +338,19 @@ def analyze_op(row, prev_row):
     input_1_datatype_cell = Cell(input_1_datatype)
     short_name = lambda n: {"BFLOAT16": "BF16", "BFLOAT8_B": "BFP8", "BFLOAT4_B": "BFP4"}.get(n, n)
 
+    dram_speed = Cell(None, unit="GB/s", decimals=0)
+    dram_percentage = Cell(None, unit="%", decimals=1)
+    flops = Cell(None, unit="TFLOPs", decimals=1)
+    flops_percentage = Cell(None, unit="%", decimals=1)
+
+    math_fidelity = ""
+    math_fidelity += f"{short_name(input_0_datatype)}" if pd.notna(input_0_datatype) else ""
+    math_fidelity += f", {short_name(input_1_datatype)}" if pd.notna(input_1_datatype) else ""
+    math_fidelity += f" => {short_name(output_datatype)}" if pd.notna(output_datatype) else ""
+    math_fidelity_cell = Cell(math_fidelity.strip())
+
+    is_dram_sharded = False
+
     if "Matmul" in op_code.raw_value:
         (
             dram_speed,
@@ -329,19 +375,24 @@ def analyze_op(row, prev_row):
             if math_fidelity
             else None
         )
-    else:
+    elif "OptimizedConvNew" in op_code.raw_value:
+        (
+            flops,
+            flops_percentage,
+            size,
+            memory_info,
+            math_fidelity,
+        ) = analyze_conv(row)
+        op_code = Cell(f"{op_code.raw_value} {size}")
         dram_speed = Cell(None, unit="GB/s", decimals=0)
         dram_percentage = Cell(None, unit="%", decimals=1)
-        flops = Cell(None, unit="TFLOPs", decimals=1)
-        flops_percentage = Cell(None, unit="%", decimals=1)
-
-        math_fidelity = ""
-        math_fidelity += f"{short_name(input_0_datatype)}" if pd.notna(input_0_datatype) else ""
-        math_fidelity += f", {short_name(input_1_datatype)}" if pd.notna(input_1_datatype) else ""
-        math_fidelity += f" => {short_name(output_datatype)}" if pd.notna(output_datatype) else ""
-        math_fidelity_cell = Cell(math_fidelity.strip())
-
-        is_dram_sharded = False
+        flops = Cell(flops / 1e12 if pd.notna(flops) else None, unit="TFLOPs", decimals=1)
+        flops_percentage = Cell(flops_percentage, unit="%", decimals=1)
+        math_fidelity_cell = Cell(
+            f"{math_fidelity} {short_name(input_0_datatype)} x {short_name(input_1_datatype)} => {short_name(output_datatype)}".strip()
+            if math_fidelity
+            else None
+        )
 
     output = {
         "ID": None,
@@ -434,6 +485,7 @@ def color_row(op_data, percentage, min_percentage):
         op_colors = {
             "(torch)": "red",
             "Matmul": "magenta",
+            "OptimizedConvNew" : "orange",
             "LayerNorm": "cyan",
             "AllGather": "cyan",
             "AllReduce": "cyan",
@@ -484,7 +536,8 @@ def color_row(op_data, percentage, min_percentage):
         if op_data["Op-to-Op Gap"].raw_value is not None and op_data["Op-to-Op Gap"].raw_value > 6.5:
             op_data["Op-to-Op Gap"].color = "red"
 
-        if "Matmul" in op_data["OP Code"].raw_value and op_data["Math Fidelity"].raw_value:
+        if ("Matmul" in op_data["OP Code"].raw_value 
+            or "OptimizedConvNew" in op_data["OP Code"].raw_value) and op_data["Math Fidelity"].raw_value:
             math_fidelity = op_data["Math Fidelity"].raw_value.split()[0]
             input_0_datatype = op_data["Input 0 Datatype"].raw_value
             input_1_datatype = op_data["Input 1 Datatype"].raw_value
