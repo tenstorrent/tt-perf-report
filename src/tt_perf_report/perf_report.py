@@ -279,12 +279,11 @@ def analyze_matmul(row):
 def analyze_conv(row):
     duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
 
-    core_count = row["CORE COUNT"]
+    core_count = 64 # we decided to normalize to the max core count
     math_fidelity = row["MATH FIDELITY"]
 
     # Check for DRAM-sharded program config
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
-    is_dram_sharded = "MatmulMultiCoreReuseMultiCastDRAMShardedProgramConfig" in attributes
 
     peak_flops_value = tflops_per_core(math_fidelity) * 1e12 * core_count
 
