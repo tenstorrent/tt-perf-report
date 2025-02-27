@@ -743,7 +743,7 @@ def filter_by_id_range(rows, id_range):
 def main():
     args, id_range = parse_args()
     generate_perf_report(
-        args.csv_file, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice, args.tracing_mode
+        args.csv_file, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice, args.tracing_mode, args.raw_op_codes,
     )
 
 
@@ -765,6 +765,7 @@ def parse_args():
     parser.add_argument("--csv", type=str, help="Output filename for CSV format", metavar="OUTPUT_FILE")
     parser.add_argument("--no-advice", action="store_true", help="Only show the table section of the report")
     parser.add_argument("--tracing-mode", action="store_true", help="Do not sort when in tracing mode")
+    parser.add_argument("--raw-op-codes", action="store_true", help="Include raw op codes in output")
     args = parser.parse_args()
 
     # Set the global color_output variable
@@ -780,7 +781,7 @@ def parse_args():
     return args, id_range
 
 
-def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage, id_range, csv_output_file, no_advice, tracing_mode):
+def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage, id_range, csv_output_file, no_advice, tracing_mode, raw_op_codes):
     df = pd.read_csv(csv_file, low_memory=False)
 
     # Add a column for original row numbers
@@ -808,6 +809,8 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage, i
     for _, row in df.iterrows():
         op_data, current_gap = analyze_op(row, prev_row)
         op_data["ID"] = Cell(row["ORIGINAL_ROW"])  # Use the original row number
+        if raw_op_codes:
+            op_data["Raw OP Code"] = Cell(row["OP CODE"])
         rows.append(op_data)
         prev_row = row
 
@@ -856,6 +859,8 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage, i
         ]
         if not no_advice:
             all_headers.append("Advice")
+        if raw_op_codes:
+            all_headers.append("Raw OP Code")
         print(colored(f"Writing CSV output to {csv_output_file}", "cyan"))
         with open(csv_output_file, "w") as f:
             csv_writer = csv.DictWriter(f, fieldnames=all_headers)
