@@ -742,8 +742,28 @@ def merge_device_rows(df):
     device_ids = sorted(block_by_device.keys())
     merged_blocks = []
 
-    for blocks in zip(*[block_by_device[device_id] for device_id in device_ids]):
-        op_name = blocks[0][0]
+    global_index = 0
+    while max(len(block_by_device[device_id]) for device_id in device_ids) > 0:
+        blocks = []
+        op_name = None
+        missing_devices = []
+        for device_id in device_ids:
+            if not len(block_by_device[device_id]):
+                print(colored(f"Warning: Device {device_id} is missing operation {op_name} at index {global_index}", "yellow"))
+                continue
+            if op_name is None:
+                op_name = block_by_device[device_id][0][0]
+            elif op_name != block_by_device[device_id][0][0]:
+                missing_devices.append(device_id)
+                continue
+
+            blocks.append(block_by_device[device_id].pop(0))
+
+        if missing_devices:
+            print(colored(f"Warning: {op_name} at index {global_index} not present in CSV for {len(missing_devices)} devices {missing_devices} - do not trust data for this op or directly subsequent ops with the same name", "yellow"))
+
+        if not blocks:
+            break
 
         if "AllGather" in op_name or "ReduceScatter" in op_name:
             # For collective ops, take the row with minimum duration
@@ -753,6 +773,8 @@ def merge_device_rows(df):
             # For non-collective ops, take the row with maximum duration
             max_duration_block = max(blocks, key=lambda x: x[1]["DEVICE KERNEL DURATION [ns]"])
             merged_blocks.append(max_duration_block[1])
+
+        global_index += 1
 
     return pd.DataFrame(merged_blocks)
 
