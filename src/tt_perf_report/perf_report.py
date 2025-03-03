@@ -814,11 +814,15 @@ def filter_by_id_range(rows, id_range):
     return rows
 
 
+def filter_host_ops(rows):
+    return [row for row in rows if not is_host_op(row)]
+
+
 def main():
     args, id_range = parse_args()
     generate_perf_report(
-        args.csv_file, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice, args.tracing_mode, args.raw_op_codes,
-    )
+        args.csv_file, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
+        args.tracing_mode, args.raw_op_codes, args.no_host_ops)
 
 
 def parse_args():
@@ -840,6 +844,8 @@ def parse_args():
     parser.add_argument("--no-advice", action="store_true", help="Only show the table section of the report")
     parser.add_argument("--tracing-mode", action="store_true", help="Do not sort when in tracing mode")
     parser.add_argument("--raw-op-codes", action="store_true", help="Include raw op codes in output")
+    parser.add_argument("--no-host-ops", action="store_true", help="Do not include host ops in output")
+
     args = parser.parse_args()
 
     # Set the global color_output variable
@@ -855,7 +861,9 @@ def parse_args():
     return args, id_range
 
 
-def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage, id_range, csv_output_file, no_advice, tracing_mode, raw_op_codes):
+def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
+                         id_range, csv_output_file, no_advice, tracing_mode,
+                         raw_op_codes, no_host_ops):
     df = pd.read_csv(csv_file, low_memory=False)
 
     # Add a column for original row numbers
@@ -889,7 +897,7 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage, i
         prev_row = row
 
         # Count device and host ops
-        if "(torch)" in op_data["OP Code"].raw_value:
+        if is_host_op(op_data):
             host_ops += 1
         else:
             device_ops += 1
@@ -899,6 +907,9 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage, i
 
     # Filter rows based on id_range
     rows = filter_by_id_range(rows, id_range)
+
+    if no_host_ops:
+        rows = filter_host_ops(rows)
 
     # Recalculate derived columns after filtering
     add_derived_columns(rows)
@@ -953,6 +964,10 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage, i
         print_performance_table(rows, visible_headers, col_widths, device_ops, host_ops)
         if not no_advice:
             print_advice_section(rows, visible_headers, col_widths)
+
+
+def is_host_op(op_data):
+    return "(torch)" in op_data["OP Code"].raw_value
 
 
 if __name__ == "__main__":
