@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tt-perf-report"
-version = "1.0.5"
+version = "1.0.6"
 description = "This tool analyzes performance traces from TT-Metal operations, providing insights into throughput, bottlenecks, and optimization opportunities."
 license = {file = "LICENSE"}
 readme = "README.md"
