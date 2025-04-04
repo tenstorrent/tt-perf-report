@@ -295,9 +295,10 @@ def analyze_my_op(row):
         return parsed_dict
     H = attributes_dict["input_height"]
     W = attributes_dict["input_width"]
+    CH_IN = int(row["INPUT_0_X"])
     stride_hw = attributes_dict["stride_hw"]
 
-    config = f"{H}x{W} s={stride_hw}"
+    config = f"{H}x{W}x{CH_IN} s={stride_hw}"
 
     return config
 
@@ -547,6 +548,12 @@ def add_derived_columns(rows):
                     op_data["Bound"] = Cell("SLOW")
         elif "(torch)" in op_data["OP Code"].raw_value:
             op_data["Bound"] = Cell("HOST")
+        elif "DeinterleaveOperation" in op_data["OP Code"].raw_value:
+            ncrisc = op_data["NCRISC"].raw_value
+            brisc = op_data["BRISC"].raw_value
+
+            if (abs(ncrisc - brisc)/brisc > 0.10):
+                op_data["Bound"] = Cell("NCRISC") if ncrisc > brisc else Cell("BRISC")
 
 
 def print_row(row, col_widths, headers):
