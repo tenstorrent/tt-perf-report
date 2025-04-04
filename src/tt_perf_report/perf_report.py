@@ -346,6 +346,16 @@ def analyze_op(row, prev_row):
         unit="us",
         decimals=0,
     )
+    device_time_brisc = Cell(
+        row["DEVICE BRISC KERNEL DURATION [ns]"] / 1000 if pd.notna(row["DEVICE BRISC KERNEL DURATION [ns]"]) else None,
+        unit="us",
+        decimals=0,
+    )
+    device_time_ncrisc = Cell(
+        row["DEVICE NCRISC KERNEL DURATION [ns]"] / 1000 if pd.notna(row["DEVICE NCRISC KERNEL DURATION [ns]"]) else None,
+        unit="us",
+        decimals=0,
+    )
 
     if prev_row is not None and pd.notna(prev_row["OP TO OP LATENCY [ns]"]):
         op_to_op_gap = Cell(
@@ -432,11 +442,14 @@ def analyze_op(row, prev_row):
         flops_percentage = Cell(None, unit="%", decimals=1)
         math_fidelity_cell = Cell(None)
 
+
     output = {
         "ID": None,
         "Bound": Cell(""),
         "OP Code": op_code,
         "Device Time": device_time,
+        "NCRISC" : device_time_ncrisc,
+        "BRISC" : device_time_brisc,
         "Op-to-Op Gap": op_to_op_gap,
         "Cores": cores,
         "DRAM": dram_speed,
@@ -861,7 +874,7 @@ def main():
     args, id_range = parse_args()
     generate_perf_report(
         args.csv_file, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
-        args.tracing_mode, args.raw_op_codes, args.no_host_ops)
+        args.tracing_mode, args.raw_op_codes, args.no_host_ops, args.dm_details)
 
 
 def parse_args():
@@ -884,6 +897,7 @@ def parse_args():
     parser.add_argument("--tracing-mode", action="store_true", help="Do not sort when in tracing mode")
     parser.add_argument("--raw-op-codes", action="store_true", help="Include raw op codes in output")
     parser.add_argument("--no-host-ops", action="store_true", help="Do not include host ops in output")
+    parser.add_argument("--dm-details", action="store_true", help="Data Movement details. Show NCRISC/BRISC kernel time separately")
 
     args = parser.parse_args()
 
@@ -902,7 +916,7 @@ def parse_args():
 
 def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
                          id_range, csv_output_file, no_advice, tracing_mode,
-                         raw_op_codes, no_host_ops):
+                         raw_op_codes, no_host_ops, dm_details):
     df = pd.read_csv(csv_file, low_memory=False)
 
     # Add a column for original row numbers
@@ -969,6 +983,10 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
         "FLOPs %",
         "Math Fidelity",
     ]
+
+    if (dm_details):
+        visible_headers.append("NCRISC")
+        visible_headers.append("BRISC")
 
     if csv_output_file:
         all_headers = visible_headers + [
