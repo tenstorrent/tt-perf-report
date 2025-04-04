@@ -276,6 +276,31 @@ def analyze_matmul(row):
         core_count,  # Return the potentially adjusted core count
     )
 
+
+def analyze_my_op(row):
+    attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
+
+    attributes_dict = {}
+    for kv in attributes[1:-1].split("'; '"):
+        kv_split = kv.split("': '")
+        attributes_dict[kv_split[0].strip("'")] = kv_split[1].strip("'")
+          
+    def parse_attributes(attributes: str) -> dict:
+        attributes = attributes.strip("{}").replace("'", "").split("; ")
+        parsed_dict = {}
+        for attr in attributes:
+            if "=" in attr:
+                key, value = attr.split("=", 1)
+                parsed_dict[key.strip()] = value.strip()
+        return parsed_dict
+    H = attributes_dict["input_height"]
+    W = attributes_dict["input_width"]
+    stride_hw = attributes_dict["stride_hw"]
+
+    config = f"{H}x{W} s={stride_hw}"
+
+    return config
+
 def analyze_halo(row):
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
 
@@ -440,8 +465,13 @@ def analyze_op(row, prev_row):
         dram_percentage = Cell(None, unit="%", decimals=1)
         flops = Cell(None, unit="TFLOPs", decimals=1)
         flops_percentage = Cell(None, unit="%", decimals=1)
-        math_fidelity_cell = Cell(None)
-
+    elif "DeinterleaveOperation" in op_code.raw_value:
+        config = analyze_my_op(row)
+        op_code = Cell(f"{op_code.raw_value} {config}")
+        dram_speed = Cell(None, unit="GB/s", decimals=0)
+        dram_percentage = Cell(None, unit="%", decimals=1)
+        flops = Cell(None, unit="TFLOPs", decimals=1)
+        flops_percentage = Cell(None, unit="%", decimals=1)
 
     output = {
         "ID": None,
@@ -985,8 +1015,9 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
     ]
 
     if (dm_details):
-        visible_headers.append("NCRISC")
-        visible_headers.append("BRISC")
+        device_time_index = visible_headers.index("Device Time")
+        visible_headers.insert(device_time_index + 1, "BRISC")
+        visible_headers.insert(device_time_index + 2,"NCRISC")
 
     if csv_output_file:
         all_headers = visible_headers + [
