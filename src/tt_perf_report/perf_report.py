@@ -765,10 +765,17 @@ def merge_device_rows(df):
         if not blocks:
             break
 
-        if "AllGather" in op_name or "ReduceScatter" in op_name:
-            # For collective ops, take the row with minimum duration
-            min_duration_block = min(blocks, key=lambda x: x[1]["DEVICE KERNEL DURATION [ns]"])
-            merged_blocks.append(min_duration_block[1])
+        if "AllGather" in op_name or "ReduceScatter" in op_name or "AllReduce" in op_name:
+            # For collective ops, take the average duration over all rows within a block
+            device_kernel_durations = [d["DEVICE KERNEL DURATION [ns]"] 
+                             for _, d in blocks 
+                             if pd.notna(d["DEVICE KERNEL DURATION [ns]"])]
+            # Use the first block's data but update its duration with the average
+            base_block = blocks[0][1].copy()
+            base_block["DEVICE KERNEL DURATION [ns]"] = (
+                sum(device_kernel_durations) / len(device_kernel_durations) if device_kernel_durations else float("nan")
+            )
+            merged_blocks.append(base_block)
         else:
             # For non-collective ops, take the row with maximum duration
             max_duration_block = max(blocks, key=lambda x: x[1]["DEVICE KERNEL DURATION [ns]"])
