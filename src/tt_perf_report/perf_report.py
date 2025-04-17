@@ -71,7 +71,7 @@ class Cell:
         if self.raw_value is None or pd.isna(self.raw_value):
             return ""
 
-        if isinstance(self.raw_value, str) and ("Matmul" in self.raw_value or "OptimizedConvNew" in self.raw_value):
+        if isinstance(self.raw_value, str) and ("Matmul" in self.raw_value or "OptimizedConvNew" in self.raw_value or "HaloDeviceOperation" in self.raw_value):
             parts = self.raw_value.split(maxsplit=1)
             op_name = parts[0]
             size = parts[1] if len(parts) > 1 else ""
@@ -276,6 +276,42 @@ def analyze_matmul(row):
         core_count,  # Return the potentially adjusted core count
     )
 
+def analyze_halo(row):
+    attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
+
+    try:
+        window_hw = attributes.split("window_hw=")[1].split(";")[0:2]
+        window_hw = ",".join(window_hw[0:2])
+    except (IndexError, AttributeError):
+        window_hw = "x"
+
+    try:
+        stride_hw = attributes.split("stride_hw=")[1].split(";")[0:2]
+        stride_hw = ",".join(stride_hw[0:2])
+    except (IndexError, AttributeError):
+        stride_hw = "x"
+
+    try:
+        pad_hw = attributes.split("padding=")[1].split(";")[0:4]
+        pad_hw = ",".join(pad_hw[0:4])
+    except (IndexError, AttributeError):
+        pad_hw = "x"
+
+    try:
+        dilation_hw = attributes.split("dilation_hw=")[1].split(";")[0:2]
+        dilation_hw = ",".join(dilation_hw[0:2])
+    except (IndexError, AttributeError):
+        dilation_hw = "x"
+
+    try:
+        memory_layout = attributes.split("memory_layout=")[1].split(";")[0].split("::")[1]
+    except (IndexError, AttributeError):
+        memory_layout = "x"
+
+    config = f"w={window_hw} s={stride_hw} p={pad_hw} d={dilation_hw} | {memory_layout}"
+
+    return config
+
 def analyze_conv(row):
     duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
 
@@ -300,12 +336,40 @@ def analyze_conv(row):
 
     flops_percentage = (flops / peak_flops_value) * 100
 
+    try:
+        act_block_h_ntiles = int(attributes.split("act_block_h_ntiles")[1][1:].split(";")[0])
+    except (IndexError, ValueError):
+        act_block_h_ntiles = "x"
+
+    try:
+        enable_act_double_buffer = "true" == attributes.split("enable_act_double_buffer': '")[1].split("'")[0]
+    except (IndexError, ValueError):
+        enable_act_double_buffer = "x"
+
+    try:
+        enable_split_reader = "true" == attributes.split("enable_split_reader': '")[1].split("'")[0]
+    except (IndexError, ValueError):
+        enable_split_reader = "x"
+
+    try:
+        per_core_out_matrix_height_ntile = int(attributes.split("per_core_out_matrix_height_ntile")[1][1:].split(";")[0])
+    except (IndexError, ValueError):
+        per_core_out_matrix_height_ntile = "x"
+
+    config = f"[ABH={per_core_out_matrix_height_ntile}|{act_block_h_ntiles}"
+    if (enable_act_double_buffer):
+        config += " ADB"
+    if (enable_split_reader):
+        config += " SR"
+    config += "]"
+
     return (
         flops,
         flops_percentage,
         size,
         memory_info,
-        math_fidelity
+        math_fidelity,
+        config,
     )
 
 def analyze_op(row, prev_row):
@@ -381,8 +445,9 @@ def analyze_op(row, prev_row):
             size,
             memory_info,
             math_fidelity,
+            config,
         ) = analyze_conv(row)
-        op_code = Cell(f"{op_code.raw_value} {size}")
+        op_code = Cell(f"{op_code.raw_value} {size} {config}")
         dram_speed = Cell(None, unit="GB/s", decimals=0)
         dram_percentage = Cell(None, unit="%", decimals=1)
         flops = Cell(flops / 1e12 if pd.notna(flops) else None, unit="TFLOPs", decimals=1)
@@ -392,6 +457,13 @@ def analyze_op(row, prev_row):
             if math_fidelity
             else None
         )
+    elif "HaloDeviceOperation" in op_code.raw_value:
+        config = analyze_halo(row)
+        op_code = Cell(f"{op_code.raw_value} {config}")
+        dram_speed = Cell(None, unit="GB/s", decimals=0)
+        dram_percentage = Cell(None, unit="%", decimals=1)
+        flops = Cell(None, unit="TFLOPs", decimals=1)
+        flops_percentage = Cell(None, unit="%", decimals=1)
 
     output = {
         "ID": None,
