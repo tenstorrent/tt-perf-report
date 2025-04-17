@@ -297,8 +297,17 @@ def analyze_my_op(row):
     W = attributes_dict["input_width"]
     CH_IN = int(row["INPUT_0_X"])
     stride_hw = attributes_dict["stride_hw"]
+    barrier_threshold = attributes_dict["barrier_threshold"]
 
-    config = f"{H}x{W}x{CH_IN} s={stride_hw}"
+
+    # dtype = attributes_dict["INPUT_0_DATATYPE"]
+    # if dtype == "BFLOAT16":
+    #     bpp = 2
+    # else:
+    #     assert False, f"Unsupported datatype: {dtype}"
+
+    # input_size = int(H) * int(W) * int(CH_IN) * bpp
+    config = f"{H}x{W}x{CH_IN} s={stride_hw} bt={barrier_threshold}"
 
     return config
 
@@ -309,7 +318,7 @@ def analyze_halo(row):
     window_hw = ",".join(window_hw[0:2])
     stride_hw = attributes.split("stride_hw=")[1].split(";")[0:2]
     stride_hw = ",".join(stride_hw[0:2])
-    pad_hw = attributes.split("pad_hw=")[1].split(";")[0:2]
+    pad_hw = attributes.split("padding=")[1].split(";")[0:2]
     pad_hw = ",".join(pad_hw[0:2])
     dilation_hw = attributes.split("dilation_hw=")[1].split(";")[0:2]
     dilation_hw = ",".join(dilation_hw[0:2])
@@ -466,7 +475,7 @@ def analyze_op(row, prev_row):
         dram_percentage = Cell(None, unit="%", decimals=1)
         flops = Cell(None, unit="TFLOPs", decimals=1)
         flops_percentage = Cell(None, unit="%", decimals=1)
-    elif "DeinterleaveOperation" in op_code.raw_value:
+    elif "Deinterleave" in op_code.raw_value:
         config = analyze_my_op(row)
         op_code = Cell(f"{op_code.raw_value} {config}")
         dram_speed = Cell(None, unit="GB/s", decimals=0)
