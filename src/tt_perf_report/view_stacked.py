@@ -20,6 +20,7 @@ def main():
         "--output_csv", type=str, default=None, help="Output CSV file (optional)"
     )
     parser.add_argument("-t", "--threshold", type=float, default=0.02, help="Threshold for significant data overlay", required=False)
+    parser.add_argument("-s", "--stack_by_input_type", type=bool, default=False, help="Stack op by input0 type", required=False)
     args = parser.parse_args()
 
     input_csv = args.input_csv
@@ -32,10 +33,18 @@ def main():
         df = pd.read_csv(input_csv)
 
         # Perform stacking operation: aggregate data by "OP Code", summing "Device Time" and counting operations
-        df["OP Code Joined"] = df["OP Code"].str.split().str[0]
+        if args.stack_by_input_type:
+            df["OP Code Joined"] = df["OP Code"].str.split().str[0] + "_in0_" + df["Input 0 Memory"].str.split('_').str[-2] + "_" + df["Input 0 Memory"].str.split('_').str[-1]
+        else:
+            df["OP Code Joined"] = df["OP Code"].str.split().str[0]
+
         stacked_df = df.groupby("OP Code Joined").agg(
             Device_Time_Sum_us=("Device Time", "sum"),
-            Ops_Count=("Device Time", "count")
+            Ops_Count=("Device Time", "count"),
+            Flops_min=("FLOPs %", "min"),
+            Flops_max=("FLOPs %", "max"),
+            Flops_mean=("FLOPs %", "mean"),
+            Flops_std=("FLOPs %", "std"),
         ).reset_index()
 
         # Sort the stacked dataframe by "Device_Time_Sum_us" in descending order
@@ -53,6 +62,10 @@ def main():
         device_time_sum = stacked_df["Device_Time_Sum_us"]
         total_sum = device_time_sum.sum()
         ops_count = stacked_df["Ops_Count"]
+        flops_min = stacked_df["Flops_min"]
+        flops_max = stacked_df["Flops_max"]
+        flops_mean = stacked_df["Flops_mean"]
+        flops_std = stacked_df["Flops_std"]
 
         # Create a stacked bar plot
         plt.figure(figsize=(6, 8), dpi=300)
@@ -60,16 +73,20 @@ def main():
         bottom = 0
         colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
 
-        for i, (label, duration, count) in enumerate(zip(op_codes, device_time_sum, ops_count)):
+        for i, (label, duration, count, flop_min, flop_max, flop_mean, flop_std) in enumerate(zip(op_codes, device_time_sum, ops_count, flops_min, flops_max, flops_mean, flops_std)):
             color = colors[i % len(colors)]
             bar = plt.bar(1, duration, width, label=label, bottom=bottom, color=color)
+
+            text = f"{label} total={duration:.1f}us; {count} ops"
+            if not pd.isna(flop_mean):
+                text += f"\n Util [{flop_min:.1f} - {flop_max:.1f}] {flop_mean:.1f} ± {flop_std:.1f} %"
 
             # Add overlay text if the data is significant
             if duration >= total_sum * args.threshold:
                 plt.text(
                     bar[0].get_x() + bar[0].get_width() / 2,
                     bottom + duration / 2,
-                    f"{label} total={duration:.1f}us; {count} ops",
+                    text,
                     ha="center",
                     va="center",
                     fontsize=6,
