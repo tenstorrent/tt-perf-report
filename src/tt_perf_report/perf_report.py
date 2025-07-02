@@ -970,6 +970,7 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
     for _, row in df.iterrows():
         op_data, current_gap = analyze_op(row, prev_row)
         op_data["ID"] = Cell(row["ORIGINAL_ROW"])  # Use the original row number
+        op_data["Global Call Count"] = Cell(row["GLOBAL CALL COUNT"])
         if raw_op_codes:
             op_data["Raw OP Code"] = Cell(row["OP CODE"])
         rows.append(op_data)
@@ -1020,6 +1021,7 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
             "Inner Dim Block Size",
             "Output Subblock H",
             "Output Subblock W",
+            "Global Call Count",
         ]
         if not no_advice:
             all_headers.append("Advice")
