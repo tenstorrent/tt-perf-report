@@ -372,6 +372,69 @@ def analyze_conv(row):
         config,
     )
 
+def analyze_upsample(row):
+    attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
+
+    try:
+        scale_factor_h = attributes.split("'scale_factor_h_': '")[1].split("'")[0]
+        scale_factor_h = ",".join(scale_factor_h[0:2])
+    except (IndexError, AttributeError):
+        scale_factor_h = "x"
+
+    try:
+        scale_factor_w = attributes.split("'scale_factor_w_': '")[1].split("'")[0]
+        scale_factor_w = ",".join(scale_factor_w[0:2])
+    except (IndexError, AttributeError):
+        scale_factor_w = "x"
+
+    try:
+        mode = attributes.split("'mode_': '")[1].split("'")[0]
+    except (IndexError, AttributeError):
+        mode = "x"
+
+    try:
+        memory_layout = attributes.split("memory_layout=")[1].split(";")[0].split("::")[1]
+    except (IndexError, AttributeError):
+        memory_layout = "x"
+
+    try:
+        buffer_type = attributes.split("buffer_type=")[1].split(";")[0].split("::")[1]
+    except (IndexError, AttributeError):
+        buffer_type = "x"
+
+    I_W = int(row["INPUT_0_W"])
+    I_Z = int(row["INPUT_0_Z"])
+    I_Y = int(row["INPUT_0_Y"])
+    I_X = int(row["INPUT_0_X"])
+
+    O_W = int(row["OUTPUT_0_W"])
+    O_Z = int(row["OUTPUT_0_Z"])
+    O_Y = int(row["OUTPUT_0_Y"])
+    O_X = int(row["OUTPUT_0_X"])
+
+    config = f"scale={scale_factor_h},{scale_factor_w} | {mode} | {buffer_type} {memory_layout} | {I_W}x{I_Z}x{I_Y}x{I_X} | {O_W}x{O_Z}x{O_Y}x{O_X}"
+
+    read_data_size_bytes = (
+            int(row["INPUT_0_W"])
+            * int(row["INPUT_0_Y"])
+            * int(row["INPUT_0_Z"])
+            * int(row["INPUT_0_X"])
+            * get_datatype_size(row["INPUT_0_DATATYPE"])
+        )
+    write_data_size_bytes = (
+            int(row["OUTPUT_0_W"])
+            * int(row["OUTPUT_0_Y"])
+            * int(row["OUTPUT_0_Z"])
+            * int(row["OUTPUT_0_X"])
+            * get_datatype_size(row["INPUT_0_DATATYPE"])
+        )
+    duration_s = int(row["DEVICE KERNEL DURATION [ns]"]) * 1e-9
+    read_speed_gb_s = (read_data_size_bytes / duration_s) / 1e9 if read_data_size_bytes > 0 else None
+    write_speed_gb_s = (write_data_size_bytes / duration_s) / 1e9 if write_data_size_bytes > 0 else None
+    total_speed_gb_s = (read_data_size_bytes + write_data_size_bytes) / duration_s / 1e9 if (read_data_size_bytes + write_data_size_bytes) > 0 else None
+    config += f" | {read_speed_gb_s:.2f} + {write_speed_gb_s:.2f} = {total_speed_gb_s:.2f} GB/s"
+    return config
+
 def analyze_op(row, prev_row):
     op_code = Cell(row["OP CODE"])
     cores = Cell(int(row["CORE COUNT"]) if pd.notna(row["CORE COUNT"]) else None)
@@ -464,6 +527,14 @@ def analyze_op(row, prev_row):
         dram_percentage = Cell(None, unit="%", decimals=1)
         flops = Cell(None, unit="TFLOPs", decimals=1)
         flops_percentage = Cell(None, unit="%", decimals=1)
+    elif "UpSample" in op_code.raw_value:
+        config = analyze_upsample(row)
+        op_code = Cell(f"{op_code.raw_value} {config}")
+        dram_speed = Cell(None, unit="GB/s", decimals=0)
+        dram_percentage = Cell(None, unit="%", decimals=1)
+        flops = Cell(None, unit="TFLOPs", decimals=1)
+        flops_percentage = Cell(None, unit="%", decimals=1)
+
 
     output = {
         "ID": None,
