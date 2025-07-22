@@ -372,6 +372,27 @@ def analyze_conv(row):
         config,
     )
 
+
+def analyze_i2s(row):
+    total_data_size_bytes = (
+        row["INPUT_0_W"]
+        * row["INPUT_0_Y"]
+        * row["INPUT_0_Z"]
+        * row["INPUT_0_X"]
+        * get_datatype_size(row["INPUT_0_DATATYPE"])
+    )
+
+    duration_s = row["DEVICE BRISC KERNEL DURATION [ns]"] * 1e-9
+    dram_speed_gb_s = (total_data_size_bytes / duration_s) / 1e9 if total_data_size_bytes > 0 else None
+
+    attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
+
+    shard_spec_grid = attributes.split("grid=")[1].split(";shape=")[0]
+    shard_shape = attributes.split("shape=")[1].split(";orientation")[0]
+    config = f"({row['INPUT_0_W']}x{row['INPUT_0_Z']}x{row['INPUT_0_Y']}x{row['INPUT_0_X']}) shard_grid={shard_spec_grid} shape={shard_shape}"
+
+    return config, duration_s, dram_speed_gb_s
+
 def analyze_op(row, prev_row):
     op_code = Cell(row["OP CODE"])
     cores = Cell(int(row["CORE COUNT"]) if pd.notna(row["CORE COUNT"]) else None)
@@ -461,6 +482,13 @@ def analyze_op(row, prev_row):
         config = analyze_halo(row)
         op_code = Cell(f"{op_code.raw_value} {config}")
         dram_speed = Cell(None, unit="GB/s", decimals=0)
+        dram_percentage = Cell(None, unit="%", decimals=1)
+        flops = Cell(None, unit="TFLOPs", decimals=1)
+        flops_percentage = Cell(None, unit="%", decimals=1)
+    elif "InterleavedToShardedDeviceOperation" in op_code.raw_value:
+        config, duration_s, dram_speed_gb_s = analyze_i2s(row)
+        op_code = Cell(f"{op_code.raw_value} {config}")
+        dram_speed = Cell(dram_speed_gb_s, unit="GB/s", decimals=0)
         dram_percentage = Cell(None, unit="%", decimals=1)
         flops = Cell(None, unit="TFLOPs", decimals=1)
         flops_percentage = Cell(None, unit="%", decimals=1)
