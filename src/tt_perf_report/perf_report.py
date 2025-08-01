@@ -2,12 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
-import csv
-import sys
 import argparse
-import re
-from typing import Any, Optional, Union
+import csv
 from collections import defaultdict
+import os
+import re
+import sys
+from typing import Any, Optional, Union
+
+import matplotlib.pyplot as plt
 import pandas as pd
 
 # Global variable to store color preference
@@ -800,6 +803,93 @@ def generate_matmul_advice(op_data):
     return advice
 
 
+def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool = False):
+    if stack_by_input0_layout:
+        visible_headers.append("Input 0 Memory")
+
+    # Create a pandas DataFrame from rows and headers
+    data = {header: [row[header].raw_value for row in rows] for header in visible_headers}
+    df = pd.DataFrame(data)
+
+    if (stack_by_input0_layout):
+        df["OP Code Joined"] = df["OP Code"].str.split().str[0] \
+            + " (in0:" + df["Input 0 Memory"].str.split('_').str[-2].str.lower() + "_" + df["Input 0 Memory"].str.split('_').str[-1].str.lower() + ")"
+    else:
+        df["OP Code Joined"] = df["OP Code"].str.split().str[0]
+
+    # Group by the joined OP Code and aggregate the data
+    stacked_df = df.groupby("OP Code Joined").agg(
+        Device_Time_Sum_us=("Device Time", "sum"),
+        Ops_Count=("Device Time", "count"),
+        Flops_min=("FLOPs %", "min"),
+        Flops_max=("FLOPs %", "max"),
+        Flops_mean=("FLOPs %", "mean"),
+        Flops_std=("FLOPs %", "std"),
+    ).reset_index()
+
+    # Calculate the percentage of device time
+    total_device_time = stacked_df["Device_Time_Sum_us"].sum()
+    stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / total_device_time) * 100
+    # Reorder columns to move Device_Time_Percentage to be the 3rd column
+    cols = stacked_df.columns.tolist()
+    cols.insert(0, cols.pop(cols.index("%")))
+    stacked_df = stacked_df[cols]
+    # Sort the stacked dataframe by "Device_Time_Sum_us" in descending order
+    stacked_df = stacked_df.sort_values(by="Device_Time_Sum_us", ascending=False)
+
+    return stacked_df
+
+
+def print_stacked_report(stacked_df: pd.DataFrame):
+    print("\n📊 Stacked report 📊\n============\n")
+    print(stacked_df.to_string(index=False, float_format="%.2f"))
+
+
+def dump_stacked_report(stacked_df: pd.DataFrame, output_file: str):
+    stacked_df.to_csv(output_file, index=False, float_format="%.1f")
+
+
+def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: float = 0.02):
+    # Prepare data for the stacked bar plot
+    device_time_sum = stacked_df["Device_Time_Sum_us"]
+    total_sum = device_time_sum.sum()
+
+    # Create a stacked bar plot
+    plt.figure(figsize=(6, 8), dpi=300)
+    width = 0.5
+    bottom = 0
+    colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
+
+    for i, row in stacked_df.iterrows():
+        color = colors[i % len(colors)]
+        bar = plt.bar(1, row["Device_Time_Sum_us"], width, label=row["OP Code Joined"], bottom=bottom, color=color)
+
+        text = f"({row['%']:.1f}%) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f}us; {row['Ops_Count']} ops"
+        if not pd.isna(row["Flops_mean"]):
+            text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
+
+        # Add overlay text if the data is significant
+        if row["Device_Time_Sum_us"] >= total_sum * threshold:
+            plt.text(
+            bar[0].get_x() + bar[0].get_width() / 2,
+            bottom + row["Device_Time_Sum_us"] / 2,
+            text,
+            ha="center",
+            va="center",
+            fontsize=6,
+            color="white"
+            )
+        bottom += row["Device_Time_Sum_us"]
+
+    # Set plot labels and title
+    plt.xlim(1 - width / 2 - 0.05, 1 + width / 2 + 0.05)
+    plt.ylabel("Device Time [us]")
+    plt.title(f"Stacked Device Time (Total: {total_sum:.1f} us)")
+    plt.tight_layout()
+
+    # Save the plot to a file
+    plt.savefig(output_file)
+
 def merge_device_rows(df):
     block_by_device = defaultdict(list)
 
@@ -901,7 +991,7 @@ def main():
     args, id_range = parse_args()
     generate_perf_report(
         args.csv_file, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
-        args.tracing_mode, args.raw_op_codes, args.no_host_ops)
+        args.tracing_mode, args.raw_op_codes, args.no_host_ops, args.no_stacked_report, args.no_stack_by_in0, args.stacked_csv)
 
 
 def parse_args():
@@ -924,6 +1014,12 @@ def parse_args():
     parser.add_argument("--tracing-mode", action="store_true", help="Do not sort when in tracing mode")
     parser.add_argument("--raw-op-codes", action="store_true", help="Include raw op codes in output")
     parser.add_argument("--no-host-ops", action="store_true", help="Do not include host ops in output")
+    parser.add_argument("--no-stacked-report", action="store_true", help="Do not generate a stacked report")
+    parser.add_argument("--no-stack-by-in0", action="store_true",
+        help="Do not group the stacked report by the layout of Input 0 (extracted from the Input 0 Memory column)"
+        )
+    parser.add_argument("--stacked-csv", type=str, 
+                help="Output filename for the stacked report CSV; Defaults to OUTPUT_FILE_stacked.csv", metavar="STACKED_FILE")
 
     args = parser.parse_args()
 
@@ -942,7 +1038,7 @@ def parse_args():
 
 def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
                          id_range, csv_output_file, no_advice, tracing_mode,
-                         raw_op_codes, no_host_ops):
+                         raw_op_codes, no_host_ops, no_stacked_report, no_stack_by_in0, stacked_report_file):
     df = pd.read_csv(csv_file, low_memory=False)
 
     # Add a column for original row numbers
@@ -1045,6 +1141,22 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
         print_performance_table(rows, visible_headers, col_widths, device_ops, host_ops)
         if not no_advice:
             print_advice_section(rows, visible_headers, col_widths)
+
+    # handle stacked report generation
+    if not(no_stacked_report):
+        stacked_report = generate_stacked_report(rows, visible_headers, not(no_stack_by_in0))
+
+        if not(csv_output_file):
+            print_stacked_report(stacked_report)
+        if stacked_report_file or csv_output_file:
+            if not stacked_report_file:
+                base_stacked_report_file = f"{os.path.splitext(csv_output_file)[0]}_stacked"
+            else:
+                base_stacked_report_file = os.path.splitext(stacked_report_file)[0]
+            print(colored(f"Writing CSV stacked report to {base_stacked_report_file}.csv", "cyan"))
+            dump_stacked_report(stacked_report, f"{base_stacked_report_file}.csv")
+            print(colored(f"Plotting PNG stacked report to {base_stacked_report_file}.png", "cyan"))
+            plot_stacked_report(stacked_report, f"{base_stacked_report_file}.png")
 
 
 def is_host_op(op_data):
