@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tt-perf-report"
-version = "1.0.7"
+version = "1.1.0"
 description = "This tool analyzes performance traces from TT-Metal operations, providing insights into throughput, bottlenecks, and optimization opportunities."
 license = {file = "LICENSE"}
 readme = "README.md"
 keywords = ["tenstorrent", "tt-metal"]
-dependencies = ["pandas"]
+dependencies = ["pandas", "matplotlib"]
 
 [project.scripts]
 tt-perf-report = "tt_perf_report.perf_report:main"
