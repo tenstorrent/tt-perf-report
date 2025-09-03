@@ -16,8 +16,14 @@ import pandas as pd
 # Global variable to store color preference
 color_output = None  # None means auto-detect, True forces color, False forces no color
 
-def get_value_physical_logical(input : str, is_physical : bool = True):
-    if "[" in input and "]" in input:
+
+def get_value_physical_logical(input, is_physical : bool = True):
+    # Handle numeric inputs (old format)
+    if isinstance(input, (int, float)):
+        return int(input)
+
+    # Handle string inputs (new format)
+    if isinstance(input, str) and "[" in input and "]" in input:
         physical_part = input.split("[")[0]
         logical_part = input.split("[")[1].split("]")[0]
         
@@ -26,8 +32,23 @@ def get_value_physical_logical(input : str, is_physical : bool = True):
         else:
             return int(logical_part)
     else:
-        # back compatible
+        # backwards compatibility - convert string to int
         return int(input)
+
+
+def detect_csv_format(df):
+    """Detect if CSV uses v1 (old) or v2 (new) format by checking for _PAD[LOGICAL] columns"""
+    v2_columns = [col for col in df.columns if "_PAD[LOGICAL]" in col]
+    return "v2" if v2_columns else "v1"
+
+
+def get_column_name(base_name, csv_format):
+    """Get the appropriate column name based on CSV format version"""
+    if csv_format == "v2":
+        return f"{base_name}_PAD[LOGICAL]"
+    else:
+        return base_name
+
 
 def set_color_output(force_color, force_no_color):
     global color_output
@@ -220,35 +241,35 @@ def evaluate_fidelity(input_0_datatype, input_1_datatype, output_datatype, math_
         )
 
 
-def analyze_matmul(row):
+def analyze_matmul(row, csv_format="v2"):
     input_0_from_dram = "DRAM" in row["INPUT_0_MEMORY"]
     input_1_from_dram = "DRAM" in row["INPUT_1_MEMORY"]
 
     total_data_size_bytes = 0
     if input_0_from_dram:
         total_data_size_bytes += (
-            get_value_physical_logical(row["INPUT_0_W_PAD[LOGICAL]"])
-            * get_value_physical_logical(row["INPUT_0_Y_PAD[LOGICAL]"])
-            * get_value_physical_logical(row["INPUT_0_Z_PAD[LOGICAL]"])
-            * get_value_physical_logical(row["INPUT_0_X_PAD[LOGICAL]"])
+            get_value_physical_logical(row[get_column_name("INPUT_0_W", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
             * get_datatype_size(row["INPUT_0_DATATYPE"])
         )
     if input_1_from_dram:
         total_data_size_bytes += (
-            get_value_physical_logical(row["INPUT_1_W_PAD[LOGICAL]"])
-            * get_value_physical_logical(row["INPUT_1_Y_PAD[LOGICAL]"])
-            * get_value_physical_logical(row["INPUT_1_Z_PAD[LOGICAL]"])
-            * get_value_physical_logical(row["INPUT_1_X_PAD[LOGICAL]"])
+            get_value_physical_logical(row[get_column_name("INPUT_1_W", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_1_Y", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_1_Z", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
             * get_datatype_size(row["INPUT_1_DATATYPE"])
         )
 
     # Always include output if it's written to DRAM
     if "DRAM" in row["OUTPUT_0_MEMORY"]:
         total_data_size_bytes += (
-            get_value_physical_logical(row["OUTPUT_0_W_PAD[LOGICAL]"])
-            * get_value_physical_logical(row["OUTPUT_0_Y_PAD[LOGICAL]"])
-            * get_value_physical_logical(row["OUTPUT_0_Z_PAD[LOGICAL]"])
-            * get_value_physical_logical(row["OUTPUT_0_X_PAD[LOGICAL]"])
+            get_value_physical_logical(row[get_column_name("OUTPUT_0_W", csv_format)])
+            * get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
+            * get_value_physical_logical(row[get_column_name("OUTPUT_0_Z", csv_format)])
+            * get_value_physical_logical(row[get_column_name("OUTPUT_0_X", csv_format)])
             * get_datatype_size(row["OUTPUT_0_DATATYPE"])
         )
 
@@ -268,8 +289,8 @@ def analyze_matmul(row):
 
     peak_flops_value = tflops_per_core(math_fidelity) * 1e12 * core_count
 
-    M, K, N = get_value_physical_logical(row["INPUT_0_Y_PAD[LOGICAL]"]), get_value_physical_logical(row["INPUT_0_X_PAD[LOGICAL]"]), get_value_physical_logical(row["INPUT_1_X_PAD[LOGICAL]"])
-    W, Z = get_value_physical_logical(row["INPUT_0_W_PAD[LOGICAL]"]), get_value_physical_logical(row["INPUT_0_Z_PAD[LOGICAL]"])
+    M, K, N = get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
+    W, Z = get_value_physical_logical(row[get_column_name("INPUT_0_W", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
 
     flops = (M * K * N * W * Z * 2) / duration_s
 
@@ -327,7 +348,7 @@ def analyze_halo(row):
 
     return config
 
-def analyze_conv(row):
+def analyze_conv(row, csv_format="v2"):
     duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
 
     core_count = 64 # we decided to normalize to the max core count
@@ -338,10 +359,10 @@ def analyze_conv(row):
 
     peak_flops_value = tflops_per_core(math_fidelity) * 1e12 * core_count
 
-    NHW = get_value_physical_logical(row["OUTPUT_0_Y_PAD[LOGICAL]"])
-    CH_IN = get_value_physical_logical(row["INPUT_0_X_PAD[LOGICAL]"])
+    NHW = get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
+    CH_IN = get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
     W = [int(x) for x in (attributes.split("window_hw")[1].split("; ")[0][2:-1].split(";"))]
-    CH_OUT = get_value_physical_logical(row["INPUT_1_X_PAD[LOGICAL]"])
+    CH_OUT = get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
 
     M, K, N = NHW, CH_IN * W[0] * W[1], CH_OUT
     flops = (M * K * N * 2) / duration_s
@@ -387,7 +408,7 @@ def analyze_conv(row):
         config,
     )
 
-def analyze_op(row, prev_row):
+def analyze_op(row, prev_row, csv_format="v2"):
     op_code = Cell(row["OP CODE"])
     cores = Cell(int(row["CORE COUNT"]) if pd.notna(row["CORE COUNT"]) else None)
     device_time = Cell(
@@ -440,7 +461,7 @@ def analyze_op(row, prev_row):
             math_fidelity,
             is_dram_sharded,
             adjusted_core_count,  # Get the potentially adjusted core count
-        ) = analyze_matmul(row)
+        ) = analyze_matmul(row, csv_format)
         op_code = Cell(f"{op_code.raw_value} {size}")
         dram_speed = Cell(dram_speed, unit="GB/s", decimals=0)
         dram_percentage = Cell(dram_percentage, unit="%", decimals=1)
@@ -461,7 +482,7 @@ def analyze_op(row, prev_row):
             memory_info,
             math_fidelity,
             config,
-        ) = analyze_conv(row)
+        ) = analyze_conv(row, csv_format)
         op_code = Cell(f"{op_code.raw_value} {size} {config}")
         dram_speed = Cell(None, unit="GB/s", decimals=0)
         dram_percentage = Cell(None, unit="%", decimals=1)
@@ -1053,6 +1074,12 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
                          raw_op_codes, no_host_ops, no_stacked_report, no_stack_by_in0, stacked_report_file):
     df = pd.read_csv(csv_file, low_memory=False)
 
+    # Detect CSV format version
+    csv_format = detect_csv_format(df)
+
+    if csv_format != "v2":
+        print(colored(f"Detected CSV format: v1 (legacy format)", "cyan"))
+
     # Add a column for original row numbers
     df["ORIGINAL_ROW"] = df.index + 2  # +2 to match Excel row numbers (1-based + header)
 
@@ -1076,7 +1103,7 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
     device_ops = 0
     host_ops = 0
     for _, row in df.iterrows():
-        op_data, current_gap = analyze_op(row, prev_row)
+        op_data, current_gap = analyze_op(row, prev_row, csv_format)
         op_data["ID"] = Cell(row["ORIGINAL_ROW"])  # Use the original row number
         op_data["Global Call Count"] = Cell(row["GLOBAL CALL COUNT"])
         if raw_op_codes:
