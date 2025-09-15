@@ -84,16 +84,36 @@ def colored(text, color):
         return text
 
 
-def tflops_per_core(math_fidelity):
-    """Source: https://tenstorrent.com/assets/one-pagers/08.01.24_Wormhole.pdf"""
-    if math_fidelity == "HiFi4":
-        return 74 / 72
-    elif math_fidelity == "HiFi2":
-        return 148 / 72
-    elif math_fidelity == "LoFi":
-        return 262 / 72
+def tflops_per_core(math_fidelity, arch="wormhole"):
+    if arch == "wormhole":
+        if math_fidelity == "HiFi4":
+            return 74 / 72
+        elif math_fidelity == "HiFi2":
+            return 148 / 72
+        elif math_fidelity == "LoFi":
+            return 262 / 72
+        else:
+            assert False, f"Unknown math fidelity: {math_fidelity}"
+    elif arch == "blackhole":
+        if math_fidelity == "HiFi4":
+            return 4096 * 1.35 / 4 * 10e-3
+        elif math_fidelity == "HiFi2":
+            return 4096 * 1.35 / 2 * 10e-3
+        elif math_fidelity == "LoFi":
+            return 4096 * 1.35 * 10e-3
+        else:
+            assert False, f"Unknown math fidelity: {math_fidelity}"
+    elif arch == "N1":
+        if math_fidelity == "HiFi4":
+            return 4096 * 0.65 * 10e-3 / 4
+        elif math_fidelity == "HiFi2":
+            return 4096 * 0.65 * 10e-3 / 2
+        elif math_fidelity == "LoFi":
+            return 4096 * 0.65 * 10e-3
+        else:
+            assert False, f"Unknown math fidelity: {math_fidelity}"
     else:
-        assert False, f"Unknown math fidelity: {math_fidelity}"
+        assert False, f"Unknown architecture: {arch}"
 
 
 class Cell:
@@ -241,7 +261,7 @@ def evaluate_fidelity(input_0_datatype, input_1_datatype, output_datatype, math_
         )
 
 
-def analyze_matmul(row, csv_format="v2"):
+def analyze_matmul(row, csv_format="v2", arch="wormhole"):
     input_0_from_dram = "DRAM" in row["INPUT_0_MEMORY"]
     input_1_from_dram = "DRAM" in row["INPUT_1_MEMORY"]
 
@@ -287,7 +307,7 @@ def analyze_matmul(row, csv_format="v2"):
     if is_dram_sharded:
         core_count = 12
 
-    peak_flops_value = tflops_per_core(math_fidelity) * 1e12 * core_count
+    peak_flops_value = tflops_per_core(math_fidelity, arch) * 1e12 * core_count
 
     M, K, N = get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
     W, Z = get_value_physical_logical(row[get_column_name("INPUT_0_W", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
@@ -348,7 +368,7 @@ def analyze_halo(row):
 
     return config
 
-def analyze_conv(row, csv_format="v2"):
+def analyze_conv(row, csv_format="v2", arch="wormhole"):
     duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
 
     core_count = 64 # we decided to normalize to the max core count
@@ -357,7 +377,7 @@ def analyze_conv(row, csv_format="v2"):
     # Check for DRAM-sharded program config
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
 
-    peak_flops_value = tflops_per_core(math_fidelity) * 1e12 * core_count
+    peak_flops_value = tflops_per_core(math_fidelity, arch) * 1e12 * core_count
 
     NHW = get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
     CH_IN = get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
@@ -408,7 +428,7 @@ def analyze_conv(row, csv_format="v2"):
         config,
     )
 
-def analyze_op(row, prev_row, csv_format="v2"):
+def analyze_op(row, prev_row, csv_format="v2", arch="wormhole"):
     op_code = Cell(row["OP CODE"])
     cores = Cell(int(row["CORE COUNT"]) if pd.notna(row["CORE COUNT"]) else None)
     device_time = Cell(
@@ -461,7 +481,7 @@ def analyze_op(row, prev_row, csv_format="v2"):
             math_fidelity,
             is_dram_sharded,
             adjusted_core_count,  # Get the potentially adjusted core count
-        ) = analyze_matmul(row, csv_format)
+        ) = analyze_matmul(row, csv_format, arch)
         op_code = Cell(f"{op_code.raw_value} {size}")
         dram_speed = Cell(dram_speed, unit="GB/s", decimals=0)
         dram_percentage = Cell(dram_percentage, unit="%", decimals=1)
@@ -482,7 +502,7 @@ def analyze_op(row, prev_row, csv_format="v2"):
             memory_info,
             math_fidelity,
             config,
-        ) = analyze_conv(row, csv_format)
+        ) = analyze_conv(row, csv_format, arch)
         op_code = Cell(f"{op_code.raw_value} {size} {config}")
         dram_speed = Cell(None, unit="GB/s", decimals=0)
         dram_percentage = Cell(None, unit="%", decimals=1)
@@ -1023,7 +1043,7 @@ def filter_host_ops(rows):
 def main():
     args, id_range = parse_args()
     generate_perf_report(
-        args.csv_file, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
+        args.csv_file, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.arch, args.csv, args.no_advice,
         args.tracing_mode, args.raw_op_codes, args.no_host_ops, args.no_stacked_report, args.no_stack_by_in0, args.stacked_csv)
 
 
@@ -1040,6 +1060,7 @@ def parse_args():
     parser.add_argument(
         "--id-range", type=str, help="Show only rows with IDs in the specified range (e.g., '5-10', '31-', or '-12')"
     )
+    parser.add_argument("--arch", type=str, help="Specify architecture (wormhole, blackhole, N1)", default="wormhole")
     parser.add_argument("--color", action="store_true", help="Force colored output even when output is redirected")
     parser.add_argument("--no-color", action="store_true", help="Force output without color")
     parser.add_argument("--csv", type=str, help="Output filename for CSV format", metavar="OUTPUT_FILE")
@@ -1070,7 +1091,7 @@ def parse_args():
 
 
 def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
-                         id_range, csv_output_file, no_advice, tracing_mode,
+                         id_range, arch, csv_output_file, no_advice, tracing_mode,
                          raw_op_codes, no_host_ops, no_stacked_report, no_stack_by_in0, stacked_report_file):
     df = pd.read_csv(csv_file, low_memory=False)
 
@@ -1103,7 +1124,7 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
     device_ops = 0
     host_ops = 0
     for _, row in df.iterrows():
-        op_data, current_gap = analyze_op(row, prev_row, csv_format)
+        op_data, current_gap = analyze_op(row, prev_row, csv_format, arch)
         op_data["ID"] = Cell(row["ORIGINAL_ROW"])  # Use the original row number
         op_data["Global Call Count"] = Cell(row["GLOBAL CALL COUNT"])
         if raw_op_codes:
@@ -1116,7 +1137,7 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
             host_ops += 1
         else:
             device_ops += 1
-
+    
     # Calculate total duration and add derived columns
     add_derived_columns(rows)
 
