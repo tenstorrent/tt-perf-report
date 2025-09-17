@@ -168,11 +168,32 @@ def pad_string(string, length, align="left"):
     return padding + string if align == "right" else string + padding
 
 
-def evaluate_fidelity(input_0_datatype, input_1_datatype, output_datatype, math_fidelity):
-    mantissa_bits = {"BFLOAT16": 8, "BFLOAT8_B": 7, "BFLOAT4_B": 3}
-    in0_bits = mantissa_bits[input_0_datatype]  # activations -> srcB (7 bits)
-    in1_bits = mantissa_bits[input_1_datatype]  # weights -> srcA (5 bits)
-    out_bits = mantissa_bits[output_datatype]
+def evaluate_fidelity(
+    input_0_datatype, input_1_datatype, output_datatype, math_fidelity
+):
+    integer_types = {"UINT8", "UINT16", "INT32", "UINT32"}
+
+    if (
+        input_0_datatype in integer_types
+        or input_1_datatype in integer_types
+        or output_datatype in integer_types
+    ):
+        return (
+            "not_applicable",
+            "Fidelity evaluation is not applicable for integer datatypes (UINT8, UINT16, INT32, UINT32).",
+        )
+
+    mantissa_bits = {"FLOAT32": 23, "BFLOAT16": 8, "BFLOAT8_B": 7, "BFLOAT4_B": 3}
+    try:
+        in0_bits = mantissa_bits[input_0_datatype]  # activations -> srcB (7 bits)
+        in1_bits = mantissa_bits[input_1_datatype]  # weights -> srcA (5 bits)
+        out_bits = mantissa_bits[output_datatype]
+    except KeyError as e:
+        return (
+            "unknown",
+            f"Datatype {e.args[0]} is not supported for fidelity evaluation.",
+        )
+
     if in0_bits == 8 and out_bits >= 7:
         if math_fidelity == "HiFi4":
             return (
@@ -435,7 +456,12 @@ def analyze_op(row, prev_row, csv_format="v2"):
     output_datatype_cell = Cell(output_datatype)
     input_0_datatype_cell = Cell(input_0_datatype)
     input_1_datatype_cell = Cell(input_1_datatype)
-    short_name = lambda n: {"BFLOAT16": "BF16", "BFLOAT8_B": "BFP8", "BFLOAT4_B": "BFP4"}.get(n, n)
+    short_name = lambda n: {
+        "FLOAT32": "FP32",
+        "BFLOAT16": "BF16",
+        "BFLOAT8_B": "BFP8",
+        "BFLOAT4_B": "BFP4",
+    }.get(n, n)
 
     dram_speed = Cell(None, unit="GB/s", decimals=0)
     dram_percentage = Cell(None, unit="%", decimals=1)
