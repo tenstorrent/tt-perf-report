@@ -107,20 +107,20 @@ def tflops_per_core(math_fidelity, arch="wormhole"):
             assert False, f"Unknown math fidelity: {math_fidelity}"
     elif arch == "blackhole" or arch == "bh20":
         if math_fidelity == "HiFi4":
-            return 4096 * 1.35 / 4 * 10e-3
+            return 4096 * 1.35 / 1000 / 4
         elif math_fidelity == "HiFi2":
-            return 4096 * 1.35 / 2 * 10e-3
+            return 4096 * 1.35 / 1000 / 4
         elif math_fidelity == "LoFi":
-            return 4096 * 1.35 * 10e-3
+            return 4096 * 1.35 / 1000
         else:
             assert False, f"Unknown math fidelity: {math_fidelity}"
     elif arch == "N1":
         if math_fidelity == "HiFi4":
-            return 4096 * 0.65 * 10e-3 / 4
+            return 4096 * 0.65 / 1000 / 4
         elif math_fidelity == "HiFi2":
-            return 4096 * 0.65 * 10e-3 / 2
+            return 4096 * 0.65 / 1000 / 2
         elif math_fidelity == "LoFi":
-            return 4096 * 0.65 * 10e-3
+            return 4096 * 0.65 / 1000
         else:
             assert False, f"Unknown math fidelity: {math_fidelity}"
     else:
