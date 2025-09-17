@@ -83,6 +83,17 @@ def colored(text, color):
     else:
         return text
 
+def total_worker_cores_core(arch="wormhole"):
+    if arch == "wormhole":
+        return 64 # N150 and N300 with ETH dispatch
+    elif arch == "blackhole":
+        return 130 # P150
+    elif arch == "bh20":
+        return 20
+    elif arch == "N1":
+        return 20
+    else:
+        assert False, f"Unknown architecture: {arch}"
 
 def tflops_per_core(math_fidelity, arch="wormhole"):
     if arch == "wormhole":
@@ -94,7 +105,7 @@ def tflops_per_core(math_fidelity, arch="wormhole"):
             return 262 / 72
         else:
             assert False, f"Unknown math fidelity: {math_fidelity}"
-    elif arch == "blackhole":
+    elif arch == "blackhole" or arch == "bh20":
         if math_fidelity == "HiFi4":
             return 4096 * 1.35 / 4 * 10e-3
         elif math_fidelity == "HiFi2":
@@ -392,7 +403,7 @@ def analyze_halo(row):
 def analyze_conv(row, csv_format="v2", arch="wormhole"):
     duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
 
-    core_count = 64 # we decided to normalize to the max core count
+    core_count = total_worker_cores_core(arch)
     math_fidelity = row["MATH FIDELITY"]
 
     # Check for DRAM-sharded program config
@@ -1100,7 +1111,7 @@ def parse_args():
     parser.add_argument(
         "--id-range", type=str, help="Show only rows with IDs in the specified range (e.g., '5-10', '31-', or '-12')"
     )
-    parser.add_argument("--arch", type=str, help="Specify architecture (wormhole, blackhole, N1)", default="wormhole")
+    parser.add_argument("--arch", type=str, help="Specify architecture (wormhole, blackhole, bh20, N1)", default="wormhole")
     parser.add_argument("--color", action="store_true", help="Force colored output even when output is redirected")
     parser.add_argument("--no-color", action="store_true", help="Force output without color")
     parser.add_argument("--csv", type=str, help="Output filename for CSV format", metavar="OUTPUT_FILE")
