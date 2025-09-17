@@ -126,6 +126,17 @@ def tflops_per_core(math_fidelity, arch="wormhole"):
     else:
         assert False, f"Unknown architecture: {arch}"
 
+def total_dram_bandwidth_gb_s(arch="wormhole"):
+    if arch == "wormhole":
+        return 288
+    elif arch == "blackhole":
+        return 512 # P150
+    elif arch == "bh20":
+        return 512
+    elif arch == "N1":
+        return 120 # input + output
+    else:
+        assert False, f"Unknown architecture: {arch}"
 
 class Cell:
     def __init__(self, value: Any, unit: Optional[str] = None, decimals=0, color=None):
@@ -349,7 +360,7 @@ def analyze_matmul(row, csv_format="v2", arch="wormhole"):
     size = f"{M} x {K} x {N}"
     memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} @ {row['INPUT_1_DATATYPE']} {row['INPUT_1_MEMORY'].replace('DEV_0_', '')} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')})"
 
-    dram_percentage = (dram_speed_gb_s / 288) * 100 if dram_speed_gb_s is not None else None
+    dram_percentage = (dram_speed_gb_s / total_dram_bandwidth_gb_s(arch)) * 100 if dram_speed_gb_s is not None else None
     flops_percentage = (flops / peak_flops_value) * 100
 
     return (
