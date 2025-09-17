@@ -109,7 +109,7 @@ def tflops_per_core(math_fidelity, arch="wormhole"):
         if math_fidelity == "HiFi4":
             return 4096 * 1.35 / 1000 / 4
         elif math_fidelity == "HiFi2":
-            return 4096 * 1.35 / 1000 / 4
+            return 4096 * 1.35 / 1000 / 2
         elif math_fidelity == "LoFi":
             return 4096 * 1.35 / 1000
         else:
