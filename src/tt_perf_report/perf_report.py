@@ -4,10 +4,10 @@
 # SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
 import argparse
 import csv
-from collections import defaultdict
 import os
 import re
 import sys
+from collections import defaultdict
 from typing import Any, Optional, Union
 
 import matplotlib.pyplot as plt
@@ -26,7 +26,7 @@ def get_value_physical_logical(input, is_physical : bool = True):
     if isinstance(input, str) and "[" in input and "]" in input:
         physical_part = input.split("[")[0]
         logical_part = input.split("[")[1].split("]")[0]
-        
+
         if is_physical:
             return int(physical_part)
         else:
@@ -669,7 +669,7 @@ def color_row(op_data, percentage, min_percentage):
         if op_data["Op-to-Op Gap"].raw_value is not None and op_data["Op-to-Op Gap"].raw_value > 6.5:
             op_data["Op-to-Op Gap"].color = "red"
 
-        if ("Matmul" in op_data["OP Code"].raw_value 
+        if ("Matmul" in op_data["OP Code"].raw_value
             or "OptimizedConvNew" in op_data["OP Code"].raw_value) and op_data["Math Fidelity"].raw_value:
             math_fidelity = op_data["Math Fidelity"].raw_value.split()[0]
             input_0_datatype = op_data["Input 0 Datatype"].raw_value
@@ -870,6 +870,11 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
     data = {header: [row[header].raw_value for row in rows] for header in visible_headers}
     df = pd.DataFrame(data)
 
+    # Bail early if there are no rows but return a valid DataFrame
+    if not rows:
+        df["Device_Time_Sum_us"] = []
+        return df
+
     if (stack_by_input0_layout):
         df["OP Code Joined"] = df["OP Code"].str.split().str[0] \
             + " (in0:" + df["Input 0 Memory"].str.split('_').str[-2].str.lower() + "_" + df["Input 0 Memory"].str.split('_').str[-1].str.lower() + ")"
@@ -988,8 +993,8 @@ def merge_device_rows(df):
 
         if "AllGather" in op_name or "ReduceScatter" in op_name or "AllReduce" in op_name:
             # For collective ops, take the average duration over all rows within a block
-            device_kernel_durations = [d["DEVICE KERNEL DURATION [ns]"] 
-                             for _, d in blocks 
+            device_kernel_durations = [d["DEVICE KERNEL DURATION [ns]"]
+                             for _, d in blocks
                              if pd.notna(d["DEVICE KERNEL DURATION [ns]"])]
             # Use the first block's data but update its duration with the average
             base_block = blocks[0][1].copy()
@@ -1077,7 +1082,7 @@ def parse_args():
     parser.add_argument("--no-stack-by-in0", action="store_true",
         help="Do not group the stacked report by the layout of Input 0 (extracted from the Input 0 Memory column)"
         )
-    parser.add_argument("--stacked-csv", type=str, 
+    parser.add_argument("--stacked-csv", type=str,
                 help="Output filename for the stacked report CSV; Defaults to OUTPUT_FILE_stacked.csv", metavar="STACKED_FILE")
 
     args = parser.parse_args()
@@ -1199,6 +1204,10 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
                     row["Advice"] = " • ".join(advice)
                 csv_writer.writerow(row)
     else:
+        if not rows:
+            print(colored("No operations to display after applying filters.", "yellow"))
+            return
+
         col_widths = [
             max(max(visible_length(str(row[header])) for row in rows), visible_length(header))
             for header in visible_headers
