@@ -4,10 +4,10 @@
 # SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
 import argparse
 import csv
-from collections import defaultdict
 import os
 import re
 import sys
+from collections import defaultdict
 from typing import Any, Optional, Union
 
 import matplotlib.pyplot as plt
@@ -1199,6 +1199,10 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
                     row["Advice"] = " • ".join(advice)
                 csv_writer.writerow(row)
     else:
+        if not rows:
+            print(colored("No operations to display after applying filters.", "yellow"))
+            return
+
         col_widths = [
             max(max(visible_length(str(row[header])) for row in rows), visible_length(header))
             for header in visible_headers
@@ -1208,7 +1212,7 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
             print_advice_section(rows, visible_headers, col_widths)
 
     # handle stacked report generation
-    if not(no_stacked_report):
+    if not(no_stacked_report) and rows:
         stacked_report = generate_stacked_report(rows, visible_headers, not(no_stack_by_in0))
 
         if not(csv_output_file):
