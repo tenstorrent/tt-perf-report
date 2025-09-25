@@ -581,7 +581,10 @@ def add_derived_columns(rows):
     for op_data in rows:
         device_time = op_data["Device Time"].raw_value if op_data["Device Time"].raw_value is not None else 0
         op_to_op_gap = op_data["Op-to-Op Gap"].raw_value if op_data["Op-to-Op Gap"].raw_value is not None else 0
-        op_data["Total %"] = Cell(((device_time + op_to_op_gap) / total_duration) * 100, unit="%", decimals=1)
+        if total_duration != 0:
+            op_data["Total %"] = Cell(((device_time + op_to_op_gap) / total_duration) * 100, unit="%", decimals=1)
+        else:
+            op_data["Total %"] = Cell(None, unit="%", decimals=1)
         if op_data["Device Time"].raw_value is None and op_data["Op-to-Op Gap"].raw_value is None:
             op_data["Total %"].raw_value = None
 
