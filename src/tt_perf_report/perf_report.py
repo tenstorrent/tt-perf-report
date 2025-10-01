@@ -891,6 +891,12 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
 
     # Calculate the percentage of device time
     total_device_time = stacked_df["Device_Time_Sum_us"].sum()
+
+    if total_device_time != 0:
+        stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / total_device_time) * 100
+    else:
+        stacked_df["%"] = 0
+        
     stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / total_device_time) * 100
     # Reorder columns to move Device_Time_Percentage to be the 3rd column
     cols = stacked_df.columns.tolist()
