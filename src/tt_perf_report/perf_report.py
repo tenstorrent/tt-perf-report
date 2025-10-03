@@ -866,11 +866,14 @@ def generate_matmul_advice(op_data):
 
 
 def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool = False):
+    # Filter out signpost rows before processing
+    filtered_rows = [row for row in rows if row["OP TYPE"].raw_value != "signpost"]
+    
     if stack_by_input0_layout:
         visible_headers.append("Input 0 Memory")
 
     # Create a pandas DataFrame from rows and headers
-    data = {header: [row[header].raw_value for row in rows] for header in visible_headers}
+    data = {header: [row[header].raw_value for row in filtered_rows] for header in visible_headers}
     df = pd.DataFrame(data)
 
     if (stack_by_input0_layout):
