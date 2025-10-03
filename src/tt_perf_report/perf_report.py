@@ -16,6 +16,10 @@ import pandas as pd
 # Global variable to store color preference
 color_output = None  # None means auto-detect, True forces color, False forces no color
 
+# DRAM_BANDWIDTH_GBPS = 288  # WH
+DRAM_BANDWIDTH_GBPS = 448  # P100
+# DRAM_BANDWIDTH_GBPS = 512  # P150
+# DRAM_BANDWIDTH_GBPS = 120  # N1
 
 def get_value_physical_logical(input, is_physical : bool = True):
     # Handle numeric inputs (old format)
@@ -318,7 +322,7 @@ def analyze_matmul(row, csv_format="v2"):
     size = f"{M} x {K} x {N}"
     memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} @ {row['INPUT_1_DATATYPE']} {row['INPUT_1_MEMORY'].replace('DEV_0_', '')} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')})"
 
-    dram_percentage = (dram_speed_gb_s / 288) * 100 if dram_speed_gb_s is not None else None
+    dram_percentage = (dram_speed_gb_s / DRAM_BANDWIDTH_GBPS) * 100 if dram_speed_gb_s is not None else None
     flops_percentage = (flops / peak_flops_value) * 100
 
     return (
@@ -400,10 +404,10 @@ def analyze_tm(row, csv_format="v2"):
     out_shape = f"{get_value_physical_logical(row[get_column_name('OUTPUT_0_W', csv_format)])}x{get_value_physical_logical(row[get_column_name('OUTPUT_0_Z', csv_format)])}x{get_value_physical_logical(row[get_column_name('OUTPUT_0_Y', csv_format)])}x{get_value_physical_logical(row[get_column_name('OUTPUT_0_X', csv_format)])}"
     
     # Get memory info
-    memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} {in_shape} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')}) {out_shape}"
+    memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_LAYOUT']} {row['INPUT_0_MEMORY']} {in_shape} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_LAYOUT']} {row['OUTPUT_0_MEMORY']} {out_shape})"
     
     # Calculate DRAM percentage (out of maximum bandwidth - 288GB/s)
-    dram_percentage = (dram_speed_gb_s / 288) * 100 if dram_speed_gb_s is not None else None
+    dram_percentage = (dram_speed_gb_s / DRAM_BANDWIDTH_GBPS) * 100 if dram_speed_gb_s is not None else None
     
     return (
         dram_speed_gb_s,
@@ -576,14 +580,14 @@ def analyze_op(row, prev_row, csv_format="v2"):
     elif any(op_type in op_code.raw_value for op_type in [
         "PermuteDeviceOperation", 
         "ReshapeDeviceOperation", 
-        "SliceWriteDeviceOperation", 
+        # "SliceWriteDeviceOperation", needs specific handling due input/output specifics
         "ShardedToInterleavedDeviceOperation", 
         "InterleavedToShardedDeviceOperation",
         "MoveDeviceOperation",
-        "TilizeWithValPadding",
-        "UntilizeWithUnpadding",
-        "Untilize",
         "Tilize",
+        "TilizeWithValPadding",
+        "Untilize",
+        "UntilizeWithUnpadding",
         # "PaddedSliceDeviceOperation", # needs specific handling due input/output specifics
     ]):
         (
