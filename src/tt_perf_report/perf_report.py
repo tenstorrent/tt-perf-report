@@ -873,7 +873,7 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
         visible_headers.append("Input 0 Memory")
 
     # Create a pandas DataFrame from rows and headers
-    data = {header: [row[header].raw_value for row in rows] for header in visible_headers}
+    data = {header: [row[header].raw_value for row in filtered_rows] for header in visible_headers}
     df = pd.DataFrame(data)
 
     if (stack_by_input0_layout):
