@@ -882,7 +882,7 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
     # Group by the joined OP Code and aggregate the data
     stacked_df = df.groupby("OP Code Joined").agg(
         Device_Time_Sum_us=("Device Time", "sum"),
-        Ops_Count=("Device Time", "count"),
+        Ops_Count=("Device Time", "size"),
         Flops_min=("FLOPs %", "min"),
         Flops_max=("FLOPs %", "max"),
         Flops_mean=("FLOPs %", "mean"),
@@ -897,7 +897,6 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
     else:
         stacked_df["%"] = 0
         
-    stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / total_device_time) * 100
     # Reorder columns to move Device_Time_Percentage to be the 3rd column
     cols = stacked_df.columns.tolist()
     cols.insert(0, cols.pop(cols.index("%")))
