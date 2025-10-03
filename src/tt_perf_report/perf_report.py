@@ -369,6 +369,51 @@ def analyze_halo(row):
 
     return config
 
+def analyze_tm(row, csv_format="v2"):
+    input_0_from_dram = "DRAM" in row["INPUT_0_MEMORY"]
+
+    total_data_size_bytes = 0
+    if input_0_from_dram:
+        total_data_size_bytes += (
+            get_value_physical_logical(row[get_column_name("INPUT_0_W", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
+            * get_datatype_size(row["INPUT_0_DATATYPE"])
+        )
+
+    # Always include output if it's written to DRAM
+    if "DRAM" in row["OUTPUT_0_MEMORY"]:
+        total_data_size_bytes += (
+            get_value_physical_logical(row[get_column_name("OUTPUT_0_W", csv_format)])
+            * get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
+            * get_value_physical_logical(row[get_column_name("OUTPUT_0_Z", csv_format)])
+            * get_value_physical_logical(row[get_column_name("OUTPUT_0_X", csv_format)])
+            * get_datatype_size(row["OUTPUT_0_DATATYPE"])
+        )
+
+    duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
+    dram_speed_gb_s = (total_data_size_bytes / duration_s) / 1e9 if total_data_size_bytes > 0 else None
+
+    # Get shapes for display
+    in_shape = f"{get_value_physical_logical(row[get_column_name('INPUT_0_W', csv_format)])}x{get_value_physical_logical(row[get_column_name('INPUT_0_Z', csv_format)])}x{get_value_physical_logical(row[get_column_name('INPUT_0_Y', csv_format)])}x{get_value_physical_logical(row[get_column_name('INPUT_0_X', csv_format)])}"
+    out_shape = f"{get_value_physical_logical(row[get_column_name('OUTPUT_0_W', csv_format)])}x{get_value_physical_logical(row[get_column_name('OUTPUT_0_Z', csv_format)])}x{get_value_physical_logical(row[get_column_name('OUTPUT_0_Y', csv_format)])}x{get_value_physical_logical(row[get_column_name('OUTPUT_0_X', csv_format)])}"
+    
+    # Get memory info
+    memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} {in_shape} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')}) {out_shape}"
+    
+    # Calculate DRAM percentage (out of maximum bandwidth - 288GB/s)
+    dram_percentage = (dram_speed_gb_s / 288) * 100 if dram_speed_gb_s is not None else None
+    
+    return (
+        dram_speed_gb_s,
+        dram_percentage,
+        in_shape,
+        out_shape,
+        memory_info,
+        total_data_size_bytes
+    )
+
 def analyze_conv(row, csv_format="v2"):
     duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
 
@@ -476,6 +521,8 @@ def analyze_op(row, prev_row, csv_format="v2"):
 
     is_dram_sharded = False
 
+    info = Cell("")
+
     if "Matmul" in op_code.raw_value:
         (
             dram_speed,
@@ -526,6 +573,37 @@ def analyze_op(row, prev_row, csv_format="v2"):
         dram_percentage = Cell(None, unit="%", decimals=1)
         flops = Cell(None, unit="TFLOPs", decimals=1)
         flops_percentage = Cell(None, unit="%", decimals=1)
+    elif any(op_type in op_code.raw_value for op_type in [
+        "PermuteDeviceOperation", 
+        "ReshapeDeviceOperation", 
+        "SliceWriteDeviceOperation", 
+        "ShardedToInterleavedDeviceOperation", 
+        "InterleavedToShardedDeviceOperation",
+        "MoveDeviceOperation",
+        "TilizeWithValPadding",
+        "UntilizeWithUnpadding",
+        "Untilize",
+        "Tilize",
+        # "PaddedSliceDeviceOperation", # needs specific handling due input/output specifics
+    ]):
+        (
+            dram_speed_value,
+            dram_percentage_value,
+            in_shape,
+            out_shape,
+            memory_info,
+            _
+        ) = analyze_tm(row, csv_format)
+        
+        # Format the operation display
+        shape_info = f"{in_shape} -> {out_shape}"
+        op_code = Cell(f"{op_code.raw_value} {shape_info}")
+        info = Cell(memory_info)
+        # Set cells for table display
+        dram_speed = Cell(dram_speed_value, unit="GB/s", decimals=0)
+        dram_percentage = Cell(dram_percentage_value, unit="%", decimals=1)
+        flops = Cell(None, unit="TFLOPs", decimals=1)
+        flops_percentage = Cell(None, unit="%", decimals=1)
 
     output = {
         "ID": None,
@@ -543,6 +621,7 @@ def analyze_op(row, prev_row, csv_format="v2"):
         "Input 0 Datatype": input_0_datatype_cell,
         "Input 1 Datatype": input_1_datatype_cell,
         "DRAM Sharded": Cell(is_dram_sharded),
+        "Info": info,
     }
 
     input_0_memory = Cell(row["INPUT_0_MEMORY"] if pd.notna(row["INPUT_0_MEMORY"]) else None)
@@ -1178,6 +1257,7 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
         "FLOPs",
         "FLOPs %",
         "Math Fidelity",
+        "Info",
     ]
 
     if csv_output_file:
