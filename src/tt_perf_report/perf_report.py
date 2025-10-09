@@ -695,7 +695,7 @@ def color_row(op_data, percentage, min_percentage):
     return op_data
 
 
-def print_performance_table(rows, headers, col_widths, device_ops, host_ops):
+def print_performance_table(rows, headers, col_widths, device_ops, host_ops, signpost_count):
     print("\n🚀 Performance Report 🚀\n========================\n")
 
     print("  ".join(pad_string(header, col_widths[i], align="left") for i, header in enumerate(headers)))
@@ -716,7 +716,7 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops):
         "ID": Cell(""),
         "Total %": Cell(100.0, unit="%", decimals=1),
         "Bound": Cell(""),
-        "OP Code": Cell(f"{device_ops} device ops, {host_ops} host ops"),
+        "OP Code": Cell(f"{device_ops} device ops, {host_ops} host ops, {signpost_count} signposts"),
         "Device Time": Cell(total_device_time, unit="us", decimals=0),
         "Op-to-Op Gap": Cell(total_visible_gap, unit="us", decimals=0),
     }
@@ -867,7 +867,7 @@ def generate_matmul_advice(op_data):
 
 def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool = False):
     # Ensure we filter out signpost rows before processing because they aren't useful in the stacked report
-    filtered_rows = [row for row in rows if row["OP TYPE"].raw_value != "signpost"]
+    filtered_rows = filter_signposts(rows)
     
     if stack_by_input0_layout:
         visible_headers.append("Input 0 Memory")
@@ -1056,6 +1056,8 @@ def filter_by_id_range(rows, id_range):
 def filter_host_ops(rows):
     return [row for row in rows if not is_host_op(row)]
 
+def filter_signposts(rows):
+    return [row for row in rows if not is_signpost_op(row)]
 
 def main():
     args, id_range = parse_args()
@@ -1139,18 +1141,26 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
     prev_row = None
     device_ops = 0
     host_ops = 0
+    signpost_count = 0
     for _, row in df.iterrows():
         op_data, current_gap = analyze_op(row, prev_row, csv_format)
         op_data["ID"] = Cell(row["ORIGINAL_ROW"])  # Use the original row number
         op_data["Global Call Count"] = Cell(row["GLOBAL CALL COUNT"])
         if raw_op_codes:
             op_data["Raw OP Code"] = Cell(row["OP CODE"])
+
+        # OP TYPE column is only present in raw format/df and is not part of the op_data/rows dictionary used later
+        # append " (signpost)" to the OP Code if this row is a signpost to distinguish it
+        if "signpost" in row["OP TYPE"]:
+            op_data["OP Code"].raw_value = f"{row['OP CODE']} (signpost)"
         rows.append(op_data)
         prev_row = row
 
-        # Count device and host ops
+        # Count device and host ops, ignore signposts
         if is_host_op(op_data):
             host_ops += 1
+        elif is_signpost_op(op_data):
+            signpost_count += 1
         else:
             device_ops += 1
 
@@ -1218,7 +1228,7 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
             max(max(visible_length(str(row[header])) for row in rows), visible_length(header))
             for header in visible_headers
         ]
-        print_performance_table(rows, visible_headers, col_widths, device_ops, host_ops)
+        print_performance_table(rows, visible_headers, col_widths, device_ops, host_ops, signpost_count)
         if not no_advice:
             print_advice_section(rows, visible_headers, col_widths)
 
@@ -1242,6 +1252,8 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
 def is_host_op(op_data):
     return "(torch)" in op_data["OP Code"].raw_value
 
+def is_signpost_op(op_data):
+    return  "signpost" in op_data["OP Code"].raw_value
 
 if __name__ == "__main__":
     main()
