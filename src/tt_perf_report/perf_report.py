@@ -500,7 +500,7 @@ def analyze_op(row, prev_row, csv_format="v2"):
             if math_fidelity
             else None
         )
-    elif "OptimizedConvNew" in op_code.raw_value:
+    elif any(x in op_code.raw_value for x in ["OptimizedConvNew", "Conv2d"]):
         (
             flops,
             flops_percentage,
@@ -622,6 +622,7 @@ def color_row(op_data, percentage, min_percentage):
             "(torch)": "red",
             "Matmul": "magenta",
             "OptimizedConvNew" : "orange",
+            "Conv2d" : "orange",
             "LayerNorm": "cyan",
             "AllGather": "cyan",
             "AllReduce": "cyan",
