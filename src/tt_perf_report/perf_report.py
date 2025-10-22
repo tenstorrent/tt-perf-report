@@ -411,6 +411,57 @@ def analyze_halo(row):
 
     return config
 
+def analyze_upsample(row, csv_format="v2", arch="wormhole"):
+    """Analyze UpSample operations to extract configuration details"""
+    attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
+    
+    # Extract input dimensions in NHWC format
+    input_n = get_value_physical_logical(row[get_column_name("INPUT_0_W", csv_format)])
+    input_h = get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)])
+    input_w = get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)]) 
+    input_c = get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
+    
+    # Extract scale factors
+    try:
+        scale_factor_h = attributes.split("'scale_factor_h_': '")[1].split("'")[0]
+    except (IndexError, AttributeError):
+        scale_factor_h = "x"
+    
+    try:
+        scale_factor_w = attributes.split("'scale_factor_w_': '")[1].split("'")[0]
+    except (IndexError, AttributeError):
+        scale_factor_w = "x"
+    
+    # Extract upsampling mode
+    try:
+        mode = attributes.split("'mode_': '")[1].split("'")[0]
+    except (IndexError, AttributeError):
+        mode = "unknown"
+    
+    # Extract memory configuration
+    input_memory = row["INPUT_0_MEMORY"] if pd.notna(row["INPUT_0_MEMORY"]) else ""
+    
+    # Determine memory layout type with clearer abbreviations
+    memory_type = "UNKNOWN"
+    if "HEIGHT_SHARDED" in input_memory:
+        memory_type = "Height Sharded"
+    elif "BLOCK_SHARDED" in input_memory:
+        memory_type = "Block Sharded"
+    elif "WIDTH_SHARDED" in input_memory:
+        memory_type = "Width Sharded"
+    elif "L1" in input_memory and "INTERLEAVED" in input_memory:
+        memory_type = "L1 Interleaved"
+    elif "DRAM" in input_memory and "INTERLEAVED" in input_memory:
+        memory_type = "DRAM Interleaved"
+    
+    # Build size information in NHWC format
+    size = f"{input_n}x{input_h}x{input_w}x{input_c}"
+    
+    # Build config string  
+    config = f"{size} | {mode} {scale_factor_h}x{scale_factor_w} | {memory_type}"
+    
+    return config
+
 def analyze_conv(row, csv_format="v2", arch="wormhole"):
     duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
 
@@ -563,6 +614,13 @@ def analyze_op(row, prev_row, csv_format="v2", arch="wormhole"):
         )
     elif "HaloDeviceOperation" in op_code.raw_value:
         config = analyze_halo(row)
+        op_code = Cell(f"{op_code.raw_value} {config}")
+        dram_speed = Cell(None, unit="GB/s", decimals=0)
+        dram_percentage = Cell(None, unit="%", decimals=1)
+        flops = Cell(None, unit="TFLOPs", decimals=1)
+        flops_percentage = Cell(None, unit="%", decimals=1)
+    elif "UpSample" in op_code.raw_value:
+        config = analyze_upsample(row, csv_format, arch)
         op_code = Cell(f"{op_code.raw_value} {config}")
         dram_speed = Cell(None, unit="GB/s", decimals=0)
         dram_percentage = Cell(None, unit="%", decimals=1)
