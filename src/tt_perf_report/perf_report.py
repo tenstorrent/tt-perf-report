@@ -130,7 +130,7 @@ class Cell:
         return self.format()
 
 
-def filter_by_signpost(df, signpost=None, ignore_signposts=False):
+def filter_by_signpost(df, signpost=None, end_signpost=None, ignore_signposts=False):
     signpost_rows = df[df["OP TYPE"] == "signpost"]
 
     if ignore_signposts:
@@ -140,6 +140,12 @@ def filter_by_signpost(df, signpost=None, ignore_signposts=False):
     if signpost:
         if signpost in signpost_rows["OP CODE"].values:
             print(colored(f"Using specified signpost: {signpost}", "cyan"))
+            if end_signpost:
+                if end_signpost in signpost_rows["OP CODE"].values:
+                    print(colored(f"Using specified end signpost: {end_signpost}", "cyan"))
+                    return df[
+                        df["OP CODE"].eq(signpost).cummax() & df["OP CODE"].ne(end_signpost).cummin().shift(1).fillna(True)
+                    ]
             return df[df["OP CODE"].eq(signpost).cummax()].iloc[1:]
         print(colored(f"Specified signpost '{signpost}' not found. Defaulting to the last signpost.", "yellow"))
 
@@ -1100,14 +1106,15 @@ def filter_signposts(rows):
 def main():
     args, id_range = parse_args()
     generate_perf_report(
-        args.csv_files, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
+        args.csv_files, args.signpost, args.end_signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
         args.tracing_mode, args.raw_op_codes, args.no_host_ops, args.no_stacked_report, args.no_stack_by_in0, args.stacked_csv)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="User-friendly Performance Report Analysis Tool")
     parser.add_argument("csv_files", type=str, nargs="+", help="Paths to one or more performance report CSV files")
-    parser.add_argument("--signpost", type=str, help="Specify a signpost to use for analysis", default=None)
+    parser.add_argument("--signpost", type=str, help="Specify a signpost to start the analysis", default=None)
+    parser.add_argument("--end-signpost", type=str, help="Specify a signpost to stop the analysis", default=None)
     parser.add_argument(
         "--ignore-signposts", action="store_true", help="Ignore all signposts and use the entire file for analysis"
     )
@@ -1146,7 +1153,7 @@ def parse_args():
     return args, id_range
 
 
-def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
+def generate_perf_report(csv_files, signpost, end_signpost, ignore_signposts, min_percentage,
                          id_range, csv_output_file, no_advice, tracing_mode,
                          raw_op_codes, no_host_ops, no_stacked_report, no_stack_by_in0, stacked_report_file):
     df = merge_perf_traces(csv_files)
@@ -1168,7 +1175,7 @@ def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
     else:
         print(colored("Warning: 'HOST START TS' column not found. CSV will not be sorted.", "yellow"))
 
-    df = filter_by_signpost(df, signpost, ignore_signposts)
+    df = filter_by_signpost(df, signpost, end_signpost, ignore_signposts)
 
     # Check if the file contains multiple devices
     if "DEVICE ID" in df.columns and df["DEVICE ID"].nunique() > 1:
