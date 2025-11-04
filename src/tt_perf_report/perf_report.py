@@ -96,6 +96,59 @@ def tflops_per_core(math_fidelity):
         assert False, f"Unknown math fidelity: {math_fidelity}"
 
 
+# Operation category classification - single source of truth
+OPERATION_CATEGORIES = {
+    "Compute": {
+        "OptimizedConvNew", "Conv2d", "Matmul", "BinaryNgDeviceOperation", "BinaryDeviceOperation",
+        "UnaryDeviceOperation", "Pool2D", "UpSample", "GroupNorm", "GridSample", "AccumulationDeviceOperation"
+    },
+    "Data Movement": {
+        "MoveDeviceOperation", "CopyDeviceOperation", "InterleavedToShardedDeviceOperation", 
+        "ShardedToInterleavedDeviceOperation", "InterleavedToShardedPartialDeviceOperation",
+        "ShardedToInterleavedPartialDeviceOperation", "HaloDeviceOperation", "WhereDeviceOperation", "CloneOperation", "ReshardOperation"
+    },
+    "Tensor Modification": {
+        "ReshapeDeviceOperation", "Transpose", "PermuteDeviceOperation", "SliceDeviceOperation",
+        "PaddedSliceDeviceOperation", "SliceWriteDeviceOperation", "ConcatDeviceOperation",
+        "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "TypecastDeviceOperation"
+    }
+}
+
+# Global set to track unclassified operations to avoid duplicate warnings
+_UNCLASSIFIED_OPS_WARNED = set()
+
+
+def classify_operation(op_code):
+    """Classify operations into categories based on their type"""
+    
+    # Extract the base operation name (before any spaces or configuration info)
+    base_op = op_code.split()[0] if isinstance(op_code, str) else str(op_code).split()[0]
+    
+    # Check each category for the operation
+    for category, operations in OPERATION_CATEGORIES.items():
+        if base_op in operations:
+            return category
+    
+    # If not found in any category, warn about unclassified operation (only once per operation type)
+    if base_op not in _UNCLASSIFIED_OPS_WARNED:
+        print(colored(f"Warning: Unclassified operation '{base_op}' found. Please add to OPERATION_CATEGORIES for proper classification.", "yellow"))
+        _UNCLASSIFIED_OPS_WARNED.add(base_op)
+    
+    return "Other"
+
+
+def generate_category_help_text():
+    """Generate help text for --stack-by-category from OPERATION_CATEGORIES"""
+    help_parts = ["Group the stacked report by operation category. Operations are classified as:\n"]
+    
+    for category, operations in OPERATION_CATEGORIES.items():
+        ops_list = ", ".join(sorted(operations))
+        help_parts.append(f"  {category.upper()}: {ops_list}\n")
+    
+    help_parts.append("  OTHER: any operations not in the above categories")
+    return "".join(help_parts)
+
+
 class Cell:
     def __init__(self, value: Any, unit: Optional[str] = None, decimals=0, color=None):
         self.raw_value = value
@@ -131,6 +184,11 @@ class Cell:
 
 
 def filter_by_signpost(df, signpost=None, ignore_signposts=False):
+    # Check if OP TYPE column exists (it's only in raw CSV files, not processed ones)
+    if "OP TYPE" not in df.columns:
+        print(colored("No OP TYPE column found. Using the entire file for analysis.", "yellow"))
+        return df
+        
     signpost_rows = df[df["OP TYPE"] == "signpost"]
 
     if ignore_signposts:
@@ -866,7 +924,7 @@ def generate_matmul_advice(op_data):
     return advice
 
 
-def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool = False):
+def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool = False, stack_by_category:bool = False):
     # Ensure we filter out signpost rows before processing because they aren't useful in the stacked report
     filtered_rows = filter_signposts(rows)
     
@@ -877,21 +935,32 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
     data = {header: [row[header].raw_value for row in filtered_rows] for header in visible_headers}
     df = pd.DataFrame(data)
 
-    if (stack_by_input0_layout):
+    if stack_by_category:
+        # Classify operations by category
+        df["OP Code Joined"] = df["OP Code"].apply(lambda x: classify_operation(x))
+    elif stack_by_input0_layout:
         df["OP Code Joined"] = df["OP Code"].str.split().str[0] \
             + " (in0:" + df["Input 0 Memory"].str.split('_').str[-2].str.lower() + "_" + df["Input 0 Memory"].str.split('_').str[-1].str.lower() + ")"
     else:
         df["OP Code Joined"] = df["OP Code"].str.split().str[0]
 
     # Group by the joined OP Code and aggregate the data
-    stacked_df = df.groupby("OP Code Joined").agg(
-        Device_Time_Sum_us=("Device Time", "sum"),
-        Ops_Count=("Device Time", "size"),
-        Flops_min=("FLOPs %", "min"),
-        Flops_max=("FLOPs %", "max"),
-        Flops_mean=("FLOPs %", "mean"),
-        Flops_std=("FLOPs %", "std"),
-    ).reset_index()
+    if stack_by_category:
+        # For category stacking, don't include FLOPs stats as they're not meaningful across different op types
+        stacked_df = df.groupby("OP Code Joined").agg(
+            Device_Time_Sum_us=("Device Time", "sum"),
+            Ops_Count=("Device Time", "size"),
+        ).reset_index()
+    else:
+        # For regular stacking, include FLOPs statistics
+        stacked_df = df.groupby("OP Code Joined").agg(
+            Device_Time_Sum_us=("Device Time", "sum"),
+            Ops_Count=("Device Time", "size"),
+            Flops_min=("FLOPs %", "min"),
+            Flops_max=("FLOPs %", "max"),
+            Flops_mean=("FLOPs %", "mean"),
+            Flops_std=("FLOPs %", "std"),
+        ).reset_index()
 
     # Calculate the percentage of device time
     total_device_time = stacked_df["Device_Time_Sum_us"].sum()
@@ -936,7 +1005,7 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
         bar = plt.bar(1, row["Device_Time_Sum_us"], width, label=row["OP Code Joined"], bottom=bottom, color=color)
 
         text = f"({row['%']:.1f}%) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f}us; {row['Ops_Count']} ops"
-        if not pd.isna(row["Flops_mean"]):
+        if "Flops_mean" in row.index and not pd.isna(row["Flops_mean"]):
             text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
 
         # Add overlay text if the data is significant
@@ -1064,11 +1133,13 @@ def main():
     args, id_range = parse_args()
     generate_perf_report(
         args.csv_file, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
-        args.tracing_mode, args.raw_op_codes, args.no_host_ops, args.no_stacked_report, args.no_stack_by_in0, args.stacked_csv)
+        args.tracing_mode, args.raw_op_codes, args.no_host_ops, args.no_stacked_report, args.no_stack_by_in0, args.stack_by_category, args.stacked_csv)
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="User-friendly Performance Report Analysis Tool")
+    parser = argparse.ArgumentParser(
+        description="User-friendly Performance Report Analysis Tool"
+    )
     parser.add_argument("csv_file", type=str, help="Path to the performance report CSV file")
     parser.add_argument("--signpost", type=str, help="Specify a signpost to use for analysis", default=None)
     parser.add_argument(
@@ -1091,6 +1162,9 @@ def parse_args():
     parser.add_argument("--no-stack-by-in0", action="store_true",
         help="Do not group the stacked report by the layout of Input 0 (extracted from the Input 0 Memory column)"
         )
+    parser.add_argument("--stack-by-category", action="store_true",
+        help=generate_category_help_text()
+        )
     parser.add_argument("--stacked-csv", type=str, 
                 help="Output filename for the stacked report CSV; Defaults to OUTPUT_FILE_stacked.csv", metavar="STACKED_FILE")
 
@@ -1111,7 +1185,7 @@ def parse_args():
 
 def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
                          id_range, csv_output_file, no_advice, tracing_mode,
-                         raw_op_codes, no_host_ops, no_stacked_report, no_stack_by_in0, stacked_report_file):
+                         raw_op_codes, no_host_ops, no_stacked_report, no_stack_by_in0, stack_by_category, stacked_report_file):
     df = pd.read_csv(csv_file, low_memory=False)
 
     # Detect CSV format version
@@ -1235,7 +1309,7 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
 
     # handle stacked report generation
     if not(no_stacked_report) and rows:
-        stacked_report = generate_stacked_report(rows, visible_headers, not(no_stack_by_in0))
+        stacked_report = generate_stacked_report(rows, visible_headers, not(no_stack_by_in0), stack_by_category)
 
         if not(csv_output_file):
             print_stacked_report(stacked_report)
