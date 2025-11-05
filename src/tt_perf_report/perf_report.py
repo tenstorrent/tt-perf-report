@@ -105,7 +105,7 @@ OPERATION_CATEGORIES = {
     "Data Movement": {
         "MoveDeviceOperation", "CopyDeviceOperation", "InterleavedToShardedDeviceOperation", 
         "ShardedToInterleavedDeviceOperation", "InterleavedToShardedPartialDeviceOperation",
-        "ShardedToInterleavedPartialDeviceOperation", "HaloDeviceOperation", "WhereDeviceOperation", "CloneOperation", "ReshardOperation"
+        "ShardedToInterleavedPartialDeviceOperation", "HaloDeviceOperation", "WhereDeviceOperation", "CloneOperation", "ReshardDeviceOperation"
     },
     "Tensor Modification": {
         "ReshapeDeviceOperation", "Transpose", "PermuteDeviceOperation", "SliceDeviceOperation",
@@ -933,11 +933,15 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
 
     # Create a pandas DataFrame from rows and headers
     data = {header: [row[header].raw_value for row in filtered_rows] for header in visible_headers}
+    
+    # Always add Op Category column
+    data["Op Category"] = [classify_operation(row["OP Code"].raw_value) for row in filtered_rows]
+    
     df = pd.DataFrame(data)
 
     if stack_by_category:
-        # Classify operations by category
-        df["OP Code Joined"] = df["OP Code"].apply(lambda x: classify_operation(x))
+        # Use the already computed Op Category column
+        df["OP Code Joined"] = df["Op Category"]
     elif stack_by_input0_layout:
         df["OP Code Joined"] = df["OP Code"].str.split().str[0] \
             + " (in0:" + df["Input 0 Memory"].str.split('_').str[-2].str.lower() + "_" + df["Input 0 Memory"].str.split('_').str[-1].str.lower() + ")"
@@ -952,10 +956,11 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
             Ops_Count=("Device Time", "size"),
         ).reset_index()
     else:
-        # For regular stacking, include FLOPs statistics
+        # For regular stacking, include FLOPs statistics and Op Category
         stacked_df = df.groupby("OP Code Joined").agg(
             Device_Time_Sum_us=("Device Time", "sum"),
             Ops_Count=("Device Time", "size"),
+            Op_Category=("Op Category", "first"),  # Take the first category (they should all be the same for the same op)
             Flops_min=("FLOPs %", "min"),
             Flops_max=("FLOPs %", "max"),
             Flops_mean=("FLOPs %", "mean"),
