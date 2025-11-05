@@ -12,6 +12,7 @@ from typing import Any, Optional, Union
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
 # Global variable to store color preference
 color_output = None  # None means auto-detect, True forces color, False forces no color
@@ -102,14 +103,14 @@ OPERATION_CATEGORIES = {
         "OptimizedConvNew", "Conv2d", "Matmul", "BinaryNgDeviceOperation", "BinaryDeviceOperation",
         "UnaryDeviceOperation", "Pool2D", "UpSample", "GroupNorm", "GridSample", "AccumulationDeviceOperation"
     },
-    "Data Movement": {
+    "DM": {
         "MoveDeviceOperation", "CopyDeviceOperation", "InterleavedToShardedDeviceOperation", 
         "ShardedToInterleavedDeviceOperation", "InterleavedToShardedPartialDeviceOperation",
-        "ShardedToInterleavedPartialDeviceOperation", "HaloDeviceOperation", "WhereDeviceOperation", "CloneOperation", "ReshardDeviceOperation"
+        "ShardedToInterleavedPartialDeviceOperation", "HaloDeviceOperation", "WhereDeviceOperation", "CloneOperation", "ReshardDeviceOperation",
+        "PaddedSliceDeviceOperation", "SliceWriteDeviceOperation",
     },
-    "Tensor Modification": {
-        "ReshapeDeviceOperation", "Transpose", "PermuteDeviceOperation", "SliceDeviceOperation",
-        "PaddedSliceDeviceOperation", "SliceWriteDeviceOperation", "ConcatDeviceOperation",
+    "TM": {
+        "ReshapeDeviceOperation", "Transpose", "PermuteDeviceOperation", "SliceDeviceOperation", "ConcatDeviceOperation",
         "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "TypecastDeviceOperation"
     }
 }
@@ -994,7 +995,74 @@ def dump_stacked_report(stacked_df: pd.DataFrame, output_file: str):
     stacked_df.to_csv(output_file, index=False, float_format="%.1f")
 
 
-def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: float = 0.02):
+def _get_category_color_palettes():
+    """Define color palettes for each operation category."""
+    return {
+        "Compute": [plt.cm.Purples(i) for i in np.arange(1.0, 0.4, -0.05)],
+        "TM": [plt.cm.Greens(i) for i in np.arange(1.0, 0.4, -0.05)],
+        "DM": [plt.cm.Oranges(i) for i in np.arange(0.8, 0.2, -0.05)],
+        "Other": [plt.cm.Greys(i) for i in np.arange(1.0, 0.4, -0.05)],
+    }
+
+def _get_category_border_colors():
+    """Define border colors for each operation category."""
+    return {
+        "Compute": "black",
+        "TM": "black", 
+        "DM": "black",
+        "Other": "black"
+    }
+
+def _sort_dataframe_by_category(stacked_df: pd.DataFrame) -> pd.DataFrame:
+    """Sort DataFrame by category order when using category-based visualization."""
+    category_order = ["Compute", "TM", "DM", "Other"]
+    
+    # Create a categorical column with the desired order
+    stacked_df["category_sort"] = pd.Categorical(stacked_df["Op_Category"], categories=category_order, ordered=True)
+    
+    # Sort by category first, then by Device_Time_Sum_us descending within each category
+    stacked_df = stacked_df.sort_values(["category_sort", "Device_Time_Sum_us"], ascending=[True, False])
+    
+    # Drop the helper column
+    return stacked_df.drop("category_sort", axis=1)
+
+def _get_color_for_bar(i: int, row: pd.Series, stack_by_category: bool, use_category_colors: bool, 
+                      current_category: str, category_color_index: int, 
+                      category_color_palettes: dict, fallback_colors: list) -> tuple:
+    """
+    Determine the color for a bar based on the coloring scheme.
+    
+    Returns:
+        tuple: (color, updated_category_color_index)
+    """
+    if use_category_colors and not stack_by_category and "Op_Category" in row.index and current_category in category_color_palettes:
+        # Use category-specific colors
+        palette = category_color_palettes[current_category]
+        if category_color_index < len(palette):
+            color = palette[category_color_index]
+        else:
+            color = fallback_colors[(category_color_index - len(palette)) % len(fallback_colors)]
+        return color, category_color_index + 1
+    else:
+        # Use original tab20 color scheme
+        color = fallback_colors[i % len(fallback_colors)]
+        return color, category_color_index
+
+def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_category: bool = False, use_category_colors: bool = True, threshold: float = 0.02):
+    # For stack_by_category, we need special handling since each bar represents a category
+    # Sort data appropriately based on stacking mode
+    if stack_by_category:
+        # When stacking by category, sort by predefined category order
+        category_order = ["Compute", "TM", "DM", "Other"]
+        if use_category_colors:
+            stacked_df["category_sort"] = pd.Categorical(stacked_df["OP Code Joined"], categories=category_order, ordered=True)
+            stacked_df = stacked_df.sort_values(["category_sort", "Device_Time_Sum_us"], ascending=[True, False])
+            stacked_df = stacked_df.drop("category_sort", axis=1)
+    else:
+        # For non-category stacking, use category-based sorting if enabled
+        if use_category_colors and "Op_Category" in stacked_df.columns:
+            stacked_df = _sort_dataframe_by_category(stacked_df)
+    
     # Prepare data for the stacked bar plot
     device_time_sum = stacked_df["Device_Time_Sum_us"]
     total_sum = device_time_sum.sum()
@@ -1003,10 +1071,45 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
     plt.figure(figsize=(6, 8), dpi=300)
     width = 0.5
     bottom = 0
-    colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
+    
+    # Get color schemes
+    category_color_palettes = _get_category_color_palettes()
+    category_border_colors = _get_category_border_colors()
+    fallback_colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
+    
+    # Track category boundaries for borders and color indexing
+    category_borders = []
+    current_category = None
+    category_start = 0
+    category_color_index = 0
+    previous_category_label = None  # Track previous category for label display
 
     for i, row in stacked_df.iterrows():
-        color = colors[i % len(colors)]
+        if stack_by_category and use_category_colors:
+            # When stacking by category, use single color per category
+            category_name = row["OP Code Joined"]  # This IS the category name
+            if category_name in category_color_palettes:
+                color = category_color_palettes[category_name][0]  # Use first color from palette
+            else:
+                color = fallback_colors[i % len(fallback_colors)]
+        else:
+            # Check if we're starting a new category (only for non-category stacking with category colors)
+            if use_category_colors and not stack_by_category and "Op_Category" in stacked_df.columns:
+                if row["Op_Category"] != current_category:
+                    # Save the previous category boundary
+                    if current_category is not None:
+                        category_borders.append((current_category, category_start, bottom))
+                    current_category = row["Op_Category"]
+                    category_start = bottom
+                    category_color_index = 0  # Reset color index for new category
+            
+            # Get color for this bar
+            color, category_color_index = _get_color_for_bar(
+                i, row, stack_by_category, use_category_colors, 
+                current_category, category_color_index, 
+                category_color_palettes, fallback_colors
+            )
+
         bar = plt.bar(1, row["Device_Time_Sum_us"], width, label=row["OP Code Joined"], bottom=bottom, color=color)
 
         text = f"({row['%']:.1f}%) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f}us; {row['Ops_Count']} ops"
@@ -1024,7 +1127,45 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
             fontsize=6,
             color="white"
             )
+
+        # Add category labels (vertical, outside the bar) unless using classic colors
+        # Only show label for the first operation in each category
+        if use_category_colors:
+            # Always show category name, regardless of grouping mode
+            if stack_by_category:
+                category_label = row["OP Code Joined"]  # When grouping by category, this IS the category
+            elif "Op_Category" in row:
+                category_label = row["Op_Category"]  # When grouping by op/memory, get the category
+            else:
+                category_label = "Other"  # Fallback
+            
+            # Only add label if this is a new category (first occurrence)
+            if category_label != previous_category_label:
+                plt.text(
+                    bar[0].get_x() - 0.02,  # Position to the right of the bar
+                    bottom + row["Device_Time_Sum_us"] / 2,      # Centered vertically on the bar
+                    category_label,  # Always the category name
+                    ha="left",
+                    va="center",
+                    fontsize=6,
+                    fontweight="bold",
+                    color="black",
+                    rotation=90  # Vertical text
+                )
+                previous_category_label = category_label
+        
         bottom += row["Device_Time_Sum_us"]
+    
+    # Add the final category boundary (only for non-category stacking)
+    if use_category_colors and not stack_by_category and "Op_Category" in stacked_df.columns and current_category is not None:
+        category_borders.append((current_category, category_start, bottom))
+    
+    # Draw transparent borders around each category (only for non-category stacking)
+    if use_category_colors and not stack_by_category and category_borders:
+        for category, start, end in category_borders:
+            border_color = category_border_colors.get(category, "gray")
+            plt.bar(1, end - start, width, bottom=start, 
+                   fill=False, edgecolor=border_color, linewidth=2, alpha=0.8)
 
     # Set plot labels and title
     plt.xlim(1 - width / 2 - 0.05, 1 + width / 2 + 0.05)
@@ -1138,7 +1279,7 @@ def main():
     args, id_range = parse_args()
     generate_perf_report(
         args.csv_file, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
-        args.tracing_mode, args.raw_op_codes, args.no_host_ops, args.no_stacked_report, args.no_stack_by_in0, args.stack_by_category, args.stacked_csv)
+        args.tracing_mode, args.raw_op_codes, args.no_host_ops, args.no_summary, args.group_by, args.classic_colors, args.summary_file)
 
 
 def parse_args():
@@ -1163,15 +1304,14 @@ def parse_args():
     parser.add_argument("--tracing-mode", action="store_true", help="Do not sort when in tracing mode")
     parser.add_argument("--raw-op-codes", action="store_true", help="Include raw op codes in output")
     parser.add_argument("--no-host-ops", action="store_true", help="Do not include host ops in output")
-    parser.add_argument("--no-stacked-report", action="store_true", help="Do not generate a stacked report")
-    parser.add_argument("--no-stack-by-in0", action="store_true",
-        help="Do not group the stacked report by the layout of Input 0 (extracted from the Input 0 Memory column)"
-        )
-    parser.add_argument("--stack-by-category", action="store_true",
-        help=generate_category_help_text()
-        )
-    parser.add_argument("--stacked-csv", type=str, 
-                help="Output filename for the stacked report CSV; Defaults to OUTPUT_FILE_stacked.csv", metavar="STACKED_FILE")
+    parser.add_argument("--no-summary", action="store_true", help="Skip generating the operation summary report")
+    parser.add_argument("--group-by", choices=["op", "memory", "category"], 
+        default="memory", 
+        help="Group summary by: 'op' (operation name), 'memory' (input0 layout), 'category' (compute/data/tensor)")
+    parser.add_argument("--classic-colors", action="store_true",
+        help="Use classic tab20 colors instead of category-themed colors")
+    parser.add_argument("--summary-file", type=str, metavar="FILE",
+        help="Output file for summary report (CSV and PNG)")
 
     args = parser.parse_args()
 
@@ -1190,7 +1330,7 @@ def parse_args():
 
 def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
                          id_range, csv_output_file, no_advice, tracing_mode,
-                         raw_op_codes, no_host_ops, no_stacked_report, no_stack_by_in0, stack_by_category, stacked_report_file):
+                         raw_op_codes, no_host_ops, no_summary, group_by, classic_colors, summary_file):
     df = pd.read_csv(csv_file, low_memory=False)
 
     # Detect CSV format version
@@ -1313,8 +1453,15 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
             print_advice_section(rows, visible_headers, col_widths)
 
     # handle stacked report generation
+    # Convert new arguments to internal logic
+    no_stacked_report = no_summary
+    stack_by_in0 = (group_by == 'memory')
+    stack_by_category = (group_by == 'category')
+    use_simple_colors = classic_colors
+    stacked_report_file = summary_file
+    
     if not(no_stacked_report) and rows:
-        stacked_report = generate_stacked_report(rows, visible_headers, not(no_stack_by_in0), stack_by_category)
+        stacked_report = generate_stacked_report(rows, visible_headers, stack_by_in0, stack_by_category)
 
         if not(csv_output_file):
             print_stacked_report(stacked_report)
@@ -1326,7 +1473,7 @@ def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
             print(colored(f"Writing CSV stacked report to {base_stacked_report_file}.csv", "cyan"))
             dump_stacked_report(stacked_report, f"{base_stacked_report_file}.csv")
             print(colored(f"Plotting PNG stacked report to {base_stacked_report_file}.png", "cyan"))
-            plot_stacked_report(stacked_report, f"{base_stacked_report_file}.png")
+            plot_stacked_report(stacked_report, f"{base_stacked_report_file}.png", stack_by_category, not use_simple_colors)
 
 
 def is_host_op(op_data):
