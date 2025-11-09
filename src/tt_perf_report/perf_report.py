@@ -101,7 +101,7 @@ def tflops_per_core(math_fidelity):
 OPERATION_CATEGORIES = {
     "Compute": {
         "OptimizedConvNew", "Conv2d", "Matmul", "BinaryNgDeviceOperation", "BinaryDeviceOperation",
-        "UnaryDeviceOperation", "Pool2D", "UpSample", "GroupNorm", "GridSample", "AccumulationDeviceOperation"
+        "UnaryDeviceOperation", "Pool2D", "UpSample", "GroupNorm", "GridSample", "AccumulationDeviceOperation", "LayerNorm", "ScaledDotProductAttention"
     },
     "DM": {
         "MoveDeviceOperation", "CopyDeviceOperation", "InterleavedToShardedDeviceOperation", 
@@ -111,7 +111,8 @@ OPERATION_CATEGORIES = {
     },
     "TM": {
         "ReshapeDeviceOperation", "Transpose", "PermuteDeviceOperation", "SliceDeviceOperation", "ConcatDeviceOperation",
-        "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "TypecastDeviceOperation"
+        "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "TypecastDeviceOperation", 
+        "NLPConcatHeadsDeviceOperation", "NlpCreateHeadsDeviceOperation"
     }
 }
 
