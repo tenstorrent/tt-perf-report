@@ -116,6 +116,10 @@ The tool automatically highlights potential optimization opportunities:
 
 ## Examples
 
+
+> **Note:**  
+> `trace.csv` in the examples below refers to your input CSV file (the performance trace you want to analyze).
+
 Typical use:
 
 ```bash
