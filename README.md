@@ -16,9 +16,9 @@ Installing with pipx will automatically create a virtual environment and make th
 
 ## Generating Performance Traces
 
-1. Build Metal with performance tracing enabled:
+1. Build Metal with performance tracing (enabled in default build):
 ```bash
-./build_metal -p
+./build_metal
 ```
 
 2. Run your test in TT-Metal with the tracy module to capture traces:
@@ -115,6 +115,10 @@ The tool automatically highlights potential optimization opportunities:
 - Yellow metrics indicate room for optimization
 
 ## Examples
+
+
+> **Note:**  
+> `trace.csv` in the examples below refers to your input CSV file (the performance trace you want to analyze).
 
 Typical use:
 
