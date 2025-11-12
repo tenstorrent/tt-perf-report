@@ -112,7 +112,7 @@ OPERATION_CATEGORIES = {
     "TM": {
         "ReshapeDeviceOperation", "Transpose", "PermuteDeviceOperation", "SliceDeviceOperation", "ConcatDeviceOperation",
         "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "TypecastDeviceOperation", 
-        "NLPConcatHeadsDeviceOperation", "NlpCreateHeadsDeviceOperation"
+        "NLPConcatHeadsDeviceOperation", "NlpCreateHeadsDeviceOperation", "TernaryDeviceOperation"
     }
 }
 
