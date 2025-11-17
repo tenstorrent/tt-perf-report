@@ -8,7 +8,7 @@ import os
 import re
 import sys
 from collections import defaultdict
-from typing import Any, Optional, Union
+from typing import Any, List, Optional, Union
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -961,6 +961,43 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
     # Save the plot to a file
     plt.savefig(output_file)
 
+def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
+    merged_frames = []
+    num_devices_per_system = None
+
+    for file_index, csv_path in enumerate(csv_files):
+        df = pd.read_csv(csv_path, low_memory=False)
+
+        if "DEVICE ID" not in df.columns:
+            print(colored(f"CSV '{csv_path}' is missing the 'DEVICE ID' column.", "red"))
+            sys.exit(1)
+
+        df["DEVICE ID"] = pd.to_numeric(df["DEVICE ID"], errors="coerce")
+        device_ids = df["DEVICE ID"].dropna()
+        max_device_id = int(device_ids.max()) if not device_ids.empty else -1
+        current_num_devices = max_device_id + 1 if max_device_id >= 0 else 0
+
+        if num_devices_per_system is None:
+            num_devices_per_system = current_num_devices
+        elif current_num_devices != num_devices_per_system:
+            print(
+                colored(
+                    f"CSV '{csv_path}' reports max device ID {max_device_id}, expected {num_devices_per_system - 1}",
+                    "red",
+                )
+            )
+            sys.exit(1)
+
+        device_offset = file_index * num_devices_per_system
+        if device_offset:
+            df.loc[df["DEVICE ID"].notna(), "DEVICE ID"] = (
+                df.loc[df["DEVICE ID"].notna(), "DEVICE ID"] + device_offset
+            )
+
+        merged_frames.append(df)
+
+    return pd.concat(merged_frames, ignore_index=True)
+
 def merge_device_rows(df):
     block_by_device = defaultdict(list)
 
@@ -1063,13 +1100,13 @@ def filter_signposts(rows):
 def main():
     args, id_range = parse_args()
     generate_perf_report(
-        args.csv_file, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
+        args.csv_files, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
         args.tracing_mode, args.raw_op_codes, args.no_host_ops, args.no_stacked_report, args.no_stack_by_in0, args.stacked_csv)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="User-friendly Performance Report Analysis Tool")
-    parser.add_argument("csv_file", type=str, help="Path to the performance report CSV file")
+    parser.add_argument("csv_files", type=str, nargs="+", help="Paths to one or more performance report CSV files")
     parser.add_argument("--signpost", type=str, help="Specify a signpost to use for analysis", default=None)
     parser.add_argument(
         "--ignore-signposts", action="store_true", help="Ignore all signposts and use the entire file for analysis"
@@ -1109,10 +1146,10 @@ def parse_args():
     return args, id_range
 
 
-def generate_perf_report(csv_file, signpost, ignore_signposts, min_percentage,
+def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
                          id_range, csv_output_file, no_advice, tracing_mode,
                          raw_op_codes, no_host_ops, no_stacked_report, no_stack_by_in0, stacked_report_file):
-    df = pd.read_csv(csv_file, low_memory=False)
+    df = merge_perf_traces(csv_files)
 
     # Detect CSV format version
     csv_format = detect_csv_format(df)
