@@ -126,6 +126,12 @@ Typical use:
 tt-perf-report trace.csv
 ```
 
+Merge traces captured on multiple machines from the same workload run:
+
+```bash
+tt-perf-report trace_host0.csv trace_host1.csv trace_host2.csv
+```
+
 Build a table of all ops with no advice:
 
 ```bash
