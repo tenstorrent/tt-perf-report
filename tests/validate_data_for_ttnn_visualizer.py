@@ -15,7 +15,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from tt_perf_report.perf_report import generate_perf_report
 
-# Shared test data (sample output from TT-NN)
+# Shared test data (sample output from TT-NN - Initial rows from report 2025_09_18_11_39_20)
 TEST_CSV_CONTENT = """OP CODE,OP TYPE,GLOBAL CALL COUNT,DEVICE ID,ATTRIBUTES,MATH FIDELITY,CORE COUNT,PARALLELIZATION STRATEGY,HOST START TS,HOST END TS,HOST DURATION [ns],DEVICE FW START CYCLE,DEVICE FW END CYCLE,OP TO OP LATENCY [ns],OP TO OP LATENCY BR/NRISC START [ns],DEVICE FW DURATION [ns],DEVICE KERNEL DURATION [ns],DEVICE KERNEL DURATION DM START [ns],DEVICE KERNEL DURATION PER CORE MIN [ns],DEVICE KERNEL DURATION PER CORE MAX [ns],DEVICE KERNEL DURATION PER CORE AVG [ns],DEVICE KERNEL FIRST TO LAST START [ns],DEVICE BRISC KERNEL DURATION [ns],DEVICE NCRISC KERNEL DURATION [ns],DEVICE TRISC0 KERNEL DURATION [ns],DEVICE TRISC1 KERNEL DURATION [ns],DEVICE TRISC2 KERNEL DURATION [ns],DEVICE ERISC KERNEL DURATION [ns],DEVICE COMPUTE CB WAIT FRONT [ns],DEVICE COMPUTE CB RESERVE BACK [ns],DISPATCH TOTAL CQ CMD OP TIME [ns],DISPATCH GO SEND WAIT TIME [ns],INPUT_0_W_PAD[LOGICAL],INPUT_0_Z_PAD[LOGICAL],INPUT_0_Y_PAD[LOGICAL],INPUT_0_X_PAD[LOGICAL],INPUT_0_LAYOUT,INPUT_0_DATATYPE,INPUT_0_MEMORY,INPUT_1_W_PAD[LOGICAL],INPUT_1_Z_PAD[LOGICAL],INPUT_1_Y_PAD[LOGICAL],INPUT_1_X_PAD[LOGICAL],INPUT_1_LAYOUT,INPUT_1_DATATYPE,INPUT_1_MEMORY,INPUT_2_W_PAD[LOGICAL],INPUT_2_Z_PAD[LOGICAL],INPUT_2_Y_PAD[LOGICAL],INPUT_2_X_PAD[LOGICAL],INPUT_2_LAYOUT,INPUT_2_DATATYPE,INPUT_2_MEMORY,INPUT_3_W_PAD[LOGICAL],INPUT_3_Z_PAD[LOGICAL],INPUT_3_Y_PAD[LOGICAL],INPUT_3_X_PAD[LOGICAL],INPUT_3_LAYOUT,INPUT_3_DATATYPE,INPUT_3_MEMORY,OUTPUT_0_W_PAD[LOGICAL],OUTPUT_0_Z_PAD[LOGICAL],OUTPUT_0_Y_PAD[LOGICAL],OUTPUT_0_X_PAD[LOGICAL],OUTPUT_0_LAYOUT,OUTPUT_0_DATATYPE,OUTPUT_0_MEMORY,METAL TRACE ID,METAL TRACE REPLAY SESSION ID,COMPUTE KERNEL SOURCE,COMPUTE KERNEL HASH,DATA MOVEMENT KERNEL SOURCE,DATA MOVEMENT KERNEL HASH,TENSIX DM 0 MAX KERNEL SIZE [B],TENSIX DM 1 MAX KERNEL SIZE [B],TENSIX COMPUTE 0 MAX KERNEL SIZE [B],TENSIX COMPUTE 1 MAX KERNEL SIZE [B],TENSIX COMPUTE 2 MAX KERNEL SIZE [B],ACTIVE ETH DM 0 MAX KERNEL SIZE [B],ACTIVE ETH DM 1 MAX KERNEL SIZE [B],IDLE ETH DM 0 MAX KERNEL SIZE [B],IDLE ETH DM 1 MAX KERNEL SIZE [B],PM IDEAL [ns],PM COMPUTE [ns],PM BANDWIDTH [ns],PM REQ I BW,PM REQ O BW,PM FPU UTIL (%),NOC UTIL (%),DRAM BW UTIL (%),NPE CONG IMPACT (%)
 OftNet module started,signpost,,,,,,,11491655433,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 TilizeWithValPadding,tt_dnn_device,1024,0,{'enough_space_height': 'true'; 'enough_space_width': 'true'; 'output_dtype': 'DataType::BFLOAT16'; 'output_mem_config': 'MemoryConfig(memory_layout=TensorMemoryLayout::INTERLEAVED;buffer_type=BufferType::DRAM;shard_spec=std::nullopt;nd_shard_spec=std::nullopt;created_with_nd_shard_spec=0)'; 'output_padded_shape': 'Shape([1; 384; 1280; 32])'; 'pad_value': '0'; 'use_multicore': 'true'},HiFi4,20,,12029758729,12029892888,134159,17397991088874,17398002833932,0,0,8700043,8699373,8699373,8412818,8699277,8561921,134,8699373,8698988,8698971,8665201,8688181,,,,,,1[1],384[384],1280[1280],3[3],ROW_MAJOR,BFLOAT16,DEV_1_DRAM_INTERLEAVED,,,,,,,,,,,,,,,,,,,,,,1[1],384[384],1280[1280],32[3],TILE,BFLOAT16,DEV_1_DRAM_INTERLEAVED,,,['ttnn/cpp/ttnn/deprecated/tt_dnn/kernels/compute/tilize.cpp'],['tilize/13595278099964611939/'],['ttnn/cpp/ttnn/operations/data_movement/tilize_with_val_padding/device/kernels/dataflow/reader_unary_pad_dims_split_rows_multicore.cpp'; 'ttnn/cpp/ttnn/operations/eltwise/unary/device/kernels/dataflow/writer_unary_interleaved_start_id.cpp'],['reader_unary_pad_dims_split_rows_multicore/16155120703705794183/'; 'writer_unary_interleaved_start_id/1571380508649531845/'],1068,1644,1168,740,1576,0,0,0,0,1048496,1048496,305175,[2.8127145767211914],[30.002288818359375],12.053,,,
@@ -174,6 +174,61 @@ class TestCSVOutput(unittest.TestCase):
                     except:
                         pass
 
+    # TT-NN Visualizer request with signpost
+    def test_csv_headers_with_signpost(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False
+        ) as input_file:
+            input_file.write(TEST_CSV_CONTENT)
+            input_file.flush()
+
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".csv", delete=False
+            ) as output_file:
+                try:
+                    with patch("sys.stdout", new_callable=StringIO):
+                        generate_perf_report(
+                            csv_files=[input_file.name],
+                            signpost='ResNet module started',
+                            ignore_signposts=False,
+                            min_percentage=0.5,
+                            id_range=None,
+                            csv_output_file=output_file.name,
+                            no_advice=False,
+                            tracing_mode=False,
+                            raw_op_codes=True,
+                            no_host_ops=False,
+                            no_stacked_report=True,
+                            no_stack_by_in0=True,
+                            stacked_report_file=None,
+                        )
+
+                    with open(output_file.name, "r") as f:
+                        reader = csv.reader(f)
+                        actual_headers = next(reader)
+                        data_rows = list(reader)
+
+                        # Check that the first row after signpost is the expected operation
+                        # After "ResNet module started" the next operation is "InterleavedToShardedDeviceOperation"
+                        first_row_after_signpost = data_rows[0]
+                        op_code_index = actual_headers.index("OP Code")
+                        expected_op_after_signpost = "InterleavedToShardedDeviceOperation"
+                        actual_op_after_signpost = first_row_after_signpost[op_code_index]
+                        
+                        self.assertEqual(
+                            actual_op_after_signpost,
+                            expected_op_after_signpost,
+                            f"First operation after 'ResNet module started' signpost should be '{expected_op_after_signpost}', got '{actual_op_after_signpost}'"
+                        )
+
+                # Clean up
+                finally:
+                    try:
+                        os.unlink(input_file.name)
+                        os.unlink(output_file.name)
+                    except:
+                        pass
+
 
 class TestStackedCSVOutput(unittest.TestCase):
     def setUp(self):
@@ -288,11 +343,6 @@ class TestStackedCSVOutput(unittest.TestCase):
                             no_stack_by_in0=False,
                             stacked_report_file=stacked_csv_file,
                         )
-
-                    self.assertTrue(
-                        os.path.exists(stacked_csv_file),
-                        "Stacked CSV file should be created",
-                    )
 
                     with open(stacked_csv_file, "r") as f:
                         reader = csv.reader(f)
