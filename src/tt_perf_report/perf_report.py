@@ -1231,18 +1231,20 @@ def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
         "Math Fidelity",
     ]
 
+    additional_headers = [
+        "Output Datatype",
+        "Input 0 Datatype",
+        "Input 1 Datatype",
+        "DRAM Sharded",
+        "Input 0 Memory",
+        "Inner Dim Block Size",
+        "Output Subblock H",
+        "Output Subblock W",
+        "Global Call Count",
+    ]
+
     if csv_output_file:
-        all_headers = visible_headers + [
-            "Output Datatype",
-            "Input 0 Datatype",
-            "Input 1 Datatype",
-            "DRAM Sharded",
-            "Input 0 Memory",
-            "Inner Dim Block Size",
-            "Output Subblock H",
-            "Output Subblock W",
-            "Global Call Count",
-        ]
+        all_headers = visible_headers + additional_headers
         if not no_advice:
             all_headers.append("Advice")
         if raw_op_codes:
