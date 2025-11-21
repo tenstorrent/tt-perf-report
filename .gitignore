@@ -1,0 +1,5 @@
+src/tt_perf_report/__pycache__/
+tests/__pycache__/
+ttnn_env/
+.DS_Store
+build/

@@ -1,0 +1,34 @@
+name: Verify TT-NN Visualizer Data Validity
+
+on: push
+
+jobs:
+  build:
+    name: Build distribution 📦
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.x"
+
+    - name: Install pypa/build
+      run: >-
+        python3 -m
+        pip install ".[test]"
+
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    
+    steps: 
+      - name: Validate TT-NN Visualizer Data
+        run: python -m pytest tests/validate_data_for_ttnn_visualizer.py -v
+
+
+    
