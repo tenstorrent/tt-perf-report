@@ -1,5 +1,4 @@
-src/tt_perf_report/__pycache__/
-tests/__pycache__/
-ttnn_env/
+**/__pycache__/
 .DS_Store
-build/
+build
+*egg-info
