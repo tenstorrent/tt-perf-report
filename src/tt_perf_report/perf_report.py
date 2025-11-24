@@ -1135,17 +1135,24 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_cat
             # Always show category name, regardless of grouping mode
             if stack_by_category:
                 category_label = row["OP Code Joined"]  # When grouping by category, this IS the category
+                # For category grouping, we can get percentage directly from the row
+                category_percentage = row["%"]
             elif "Op_Category" in row:
                 category_label = row["Op_Category"]  # When grouping by op/memory, get the category
+                # For op/memory grouping, calculate category percentage by summing all ops in that category
+                category_total_time = stacked_df[stacked_df["Op_Category"] == category_label]["Device_Time_Sum_us"].sum()
+                category_percentage = (category_total_time / total_sum) * 100
             else:
                 category_label = "Other"  # Fallback
+                category_percentage = 0
             
             # Only add label if this is a new category (first occurrence)
             if category_label != previous_category_label:
+                label_text = f"{category_label}({category_percentage:.1f}%)"
                 plt.text(
                     bar[0].get_x() - 0.02,  # Position to the right of the bar
-                    bottom + row["Device_Time_Sum_us"] / 2,      # Centered vertically on the bar
-                    category_label,  # Always the category name
+                    bottom + total_sum * category_percentage/200, # Centered vertically on the bar
+                    label_text,  # Category name with percentage
                     ha="left",
                     va="center",
                     fontsize=6,
