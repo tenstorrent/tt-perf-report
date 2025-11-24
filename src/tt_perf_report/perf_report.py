@@ -854,6 +854,11 @@ def print_matmul_advice(rows, headers, col_widths):
             print()  # Add a blank line between matmuls
 
 
+def has_utilization_data(flops_percentage):
+    """Check if an operation has utilization (FLOPS) data."""
+    return pd.notna(flops_percentage) and flops_percentage is not None
+
+
 def generate_matmul_advice(op_data):
     advice = []
 
@@ -968,6 +973,30 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
             Flops_mean=("FLOPs %", "mean"),
             Flops_std=("FLOPs %", "std"),
         ).reset_index()
+        
+        # Calculate weighted mean FLOPS for operations that have utilization data
+        def calculate_weighted_mean_flops(group):
+            # Filter out rows with NaN FLOPS values
+            valid_rows = group.dropna(subset=["FLOPs %"])
+            if valid_rows.empty:
+                return np.nan
+            
+            # Check if any rows in this group have utilization data
+            if not any(has_utilization_data(flops_val) for flops_val in valid_rows["FLOPs %"]):
+                return np.nan
+            
+            # Calculate weighted mean: sum(flops_percentage * device_time) / total_device_time
+            numerator = (valid_rows["FLOPs %"] * valid_rows["Device Time"]).sum()
+            denominator = valid_rows["Device Time"].sum()
+            
+            if denominator == 0:
+                return np.nan
+            
+            return numerator / denominator
+        
+        # Add the weighted mean column
+        weighted_means = df.groupby("OP Code Joined").apply(calculate_weighted_mean_flops)
+        stacked_df["Flops_weighted_mean"] = stacked_df["OP Code Joined"].map(weighted_means)
 
     # Calculate the percentage of device time
     total_device_time = stacked_df["Device_Time_Sum_us"].sum()
@@ -1115,7 +1144,11 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_cat
 
         text = f"({row['%']:.1f}%) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f}us; {row['Ops_Count']} ops"
         if "Flops_mean" in row.index and not pd.isna(row["Flops_mean"]):
-            text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
+            # Use weighted mean if available, otherwise fall back to regular mean
+            if "Flops_weighted_mean" in row.index and not pd.isna(row["Flops_weighted_mean"]):
+                text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] weighted_mean={row['Flops_weighted_mean']:.1f}% (mean={row['Flops_mean']:.1f} ± {row['Flops_std']:.1f}%)"
+            else:
+                text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
 
         # Add overlay text if the data is significant
         if row["Device_Time_Sum_us"] >= total_sum * threshold:
