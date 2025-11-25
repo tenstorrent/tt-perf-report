@@ -105,7 +105,7 @@ def test_csv_headers_with_all_options(expected_headers, test_csv_content, mocker
                             if "(signpost)" in row.get("OP Code", ""):
                                 signposts.append(row)
 
-                            # TT-NN Visualizer expects a splittable advice field
+                            # Note: TT-NN Visualizer expects a splittable advice field
                             if advice_field and advice_field.strip():
                                 advice_items = advice_field.split(" • ")
                                 assert isinstance(advice_items, list), \
@@ -175,7 +175,6 @@ def test_csv_headers_with_signpost(test_csv_content, mocker):
                     data_rows = list(reader)
 
                     # Check that the first row after signpost is the expected operation
-                    # After "ResNet module started" the next operation is "InterleavedToShardedDeviceOperation"
                     first_row_after_signpost = data_rows[0]
                     op_code_index = actual_headers.index("OP Code")
                     expected_op_after_signpost = "InterleavedToShardedDeviceOperation"
@@ -254,7 +253,6 @@ def test_stacked_csv_headers(expected_stacked_headers, test_csv_content, mocker)
 
                     # Ensure that no signpost rows are present
                     for row in data_rows:
-                        # Access by index since data_rows contains raw lists, not dicts
                         op_code_joined = row[1] if len(row) > 1 else ""
                         assert "(signpost)" not in op_code_joined, \
                             f"Stacked CSV should not contain signpost rows, but found: {op_code_joined}"
@@ -318,7 +316,6 @@ def test_stacked_csv_headers_with_input0_layout(expected_stacked_headers, test_c
 
                     # Ensure that no signpost rows are present
                     for row in data_rows:
-                        # Access by index since data_rows contains raw lists, not dicts
                         op_code_joined = row[1] if len(row) > 1 else ""
                         assert "(signpost)" not in op_code_joined, \
                             f"Stacked CSV should not contain signpost rows, but found: {op_code_joined}"
