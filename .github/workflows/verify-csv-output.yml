@@ -1,10 +1,10 @@
-name: Verify TT-NN Visualizer Data Validity
+name: Verify Data Output
 
 on: push
 
 jobs:
   build:
-    name: Setup
+    name: Validate CSV Output
     runs-on: ubuntu-latest
 
     steps:
@@ -23,5 +23,5 @@ jobs:
         pip install ".[test]"
 
     - name: Run tests
-      run: python -m pytest tests/validate_data_for_ttnn_visualizer.py -v
+      run: python -m pytest tests/validate_csv_output.py -v
     

@@ -12,7 +12,7 @@ keywords = ["tenstorrent", "tt-metal"]
 dependencies = ["pandas", "matplotlib"]
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "pytest-mock"]
 
 [project.scripts]
 tt-perf-report = "tt_perf_report.perf_report:main"
