@@ -1,0 +1,27 @@
+name: Verify Data Output
+
+on: push
+
+jobs:
+  build:
+    name: Validate CSV Output
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.x"
+
+    - name: Install dependencies
+      run: >-
+        python3 -m
+        pip install ".[test]"
+
+    - name: Run tests
+      run: python -m pytest tests/validate_csv_output.py -v
+    
