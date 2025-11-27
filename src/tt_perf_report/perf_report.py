@@ -912,7 +912,6 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
             else:
                 stacked_df.loc[g.index, "%"] = 0
     else:    
-        # Calculate the percentage of device time
         total_device_time = stacked_df["Device_Time_Sum_us"].sum()
 
         if total_device_time != 0:
@@ -947,35 +946,71 @@ def dump_stacked_report(stacked_df: pd.DataFrame, output_file: str):
     stacked_df.to_csv(output_file, index=False, float_format="%.1f")
 
 
-def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: float = 0.02):
+def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: float = 0.02, no_merge_devices: bool = False):
     if not HAS_MATPLOTLIB:
         print(f"Skipping plot generation for {output_file} (matplotlib not available)")
         return
+    
+    if no_merge_devices:
+        devices = sorted(stacked_df["Device"].unique())
+        width = 0.2
+        fig, ax = plt.subplots(figsize=(max(6, len(devices) * 2), 8), dpi=300)
+        colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
 
-    devices = sorted(stacked_df["Device"].unique())
-    width = 0.2
-    fig, ax = plt.subplots(figsize=(max(6, len(devices) * 2), 8), dpi=300)
-    colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
+        for i, dev in enumerate(devices):
+            dev_data = stacked_df[stacked_df["Device"] == dev]
+            bottom = 0
+            for j, row in dev_data.iterrows():
+                color = colors[j % len(colors)]
+                bar = ax.bar(i, row["Device_Time_Sum_us"], width, label=row["OP Code Joined"], bottom=bottom, color=color)
+                if row["Device_Time_Sum_us"] >= dev_data["Device_Time_Sum_us"].sum() * threshold:
+                    txt = f"{row['%']:.1f}%\n{row['OP Code Joined']}\n{row['Device_Time_Sum_us']:.0f}us"
+                    ax.text(bar[0].get_x() + bar[0].get_width() / 2, bottom + row["Device_Time_Sum_us"] / 2,
+                            txt, ha="center", va="center", fontsize=6, color="white")
+                bottom += row["Device_Time_Sum_us"]
 
-    for i, dev in enumerate(devices):
-        dev_data = stacked_df[stacked_df["Device"] == dev]
+        ax.set_xticks(range(len(devices)))
+        ax.set_xticklabels([f"Dev {d}" for d in devices])
+        ax.set_ylabel("Device Time [us]")
+        ax.set_title("Stacked Device Time per Device (100% per dev)")
+    else:
+        # Prepare data for the stacked bar plot
+        device_time_sum = stacked_df["Device_Time_Sum_us"]
+        total_sum = device_time_sum.sum()
+
+        # Create a stacked bar plot
+        plt.figure(figsize=(6, 8), dpi=300)
+        width = 0.5
         bottom = 0
-        for j, row in dev_data.iterrows():
-            color = colors[j % len(colors)]
-            bar = ax.bar(i, row["Device_Time_Sum_us"], width, label=row["OP Code Joined"], bottom=bottom, color=color)
-            if row["Device_Time_Sum_us"] >= dev_data["Device_Time_Sum_us"].sum() * threshold:
-                txt = f"{row['%']:.1f}%\n{row['OP Code Joined']}\n{row['Device_Time_Sum_us']:.0f}us"
-                ax.text(bar[0].get_x() + bar[0].get_width() / 2, bottom + row["Device_Time_Sum_us"] / 2,
-                        txt, ha="center", va="center", fontsize=6, color="white")
+        colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
+
+        for i, row in stacked_df.iterrows():
+            color = colors[i % len(colors)]
+            bar = plt.bar(1, row["Device_Time_Sum_us"], width, label=row["OP Code Joined"], bottom=bottom, color=color)
+
+            text = f"({row['%']:.1f}%) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f}us; {row['Ops_Count']} ops"
+            if not pd.isna(row["Flops_mean"]):
+                text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
+
+            # Add overlay text if the data is significant
+            if row["Device_Time_Sum_us"] >= total_sum * threshold:
+                plt.text(
+                bar[0].get_x() + bar[0].get_width() / 2,
+                bottom + row["Device_Time_Sum_us"] / 2,
+                text,
+                ha="center",
+                va="center",
+                fontsize=6,
+                color="white"
+                )
             bottom += row["Device_Time_Sum_us"]
 
-    ax.set_xticks(range(len(devices)))
-    ax.set_xticklabels([f"Dev {d}" for d in devices])
-    ax.set_ylabel("Device Time [us]")
-    ax.set_title("Stacked Device Time per Device (100% per dev)")
+        # Set plot labels and title
+        plt.xlim(1 - width / 2 - 0.05, 1 + width / 2 + 0.05)
+        plt.ylabel("Device Time [us]")
+        plt.title(f"Stacked Device Time (Total: {total_sum:.1f} us)")
+    
     plt.tight_layout()
-
-    # Save the plot to a file
     plt.savefig(output_file)
 
 def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
@@ -1296,7 +1331,7 @@ def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
     # handle stacked report generation
     if not(no_stacked_report) and rows:
         stacked_report = generate_stacked_report(rows, visible_headers, not(no_stack_by_in0), no_merge_devices)
-
+        
         if not csv_output_file:
             print_stacked_report(stacked_report, no_merge_devices)
         if stacked_report_file or csv_output_file:
