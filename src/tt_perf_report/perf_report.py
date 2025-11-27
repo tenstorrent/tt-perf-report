@@ -8,16 +8,21 @@ import os
 import re
 import sys
 from collections import defaultdict
-from typing import Any, List, Optional, Union
+from typing import Any, Optional, Union
 
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
+    print("Warning: matplotlib not available, plotting disabled")
 import pandas as pd
 
 # Global variable to store color preference
 color_output = None  # None means auto-detect, True forces color, False forces no color
 
 
-def get_value_physical_logical(input, is_physical : bool = True):
+def get_value_physical_logical(input, is_physical: bool = True):
     # Handle numeric inputs (old format)
     if isinstance(input, (int, float)):
         return int(input)
@@ -570,6 +575,11 @@ def analyze_op(row, prev_row, csv_format="v2"):
     output["Inner Dim Block Size"] = in0_block_w
     output["Output Subblock H"] = out_subblock_h
     output["Output Subblock W"] = out_subblock_w
+
+    if "DEVICE ID" in row:
+        output["Device"] = Cell(int(row["DEVICE ID"]))
+    else:
+        output["Device"] = Cell(None)
 
     return output, op_to_op_gap.raw_value
 
@@ -1293,7 +1303,7 @@ def is_host_op(op_data):
     return "(torch)" in op_data["OP Code"].raw_value
 
 def is_signpost_op(op_data):
-    return  "signpost" in op_data["OP Code"].raw_value
+    return "signpost" in op_data["OP Code"].raw_value
 
 if __name__ == "__main__":
     main()
