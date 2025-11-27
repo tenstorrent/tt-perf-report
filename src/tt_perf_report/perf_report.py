@@ -876,15 +876,12 @@ def generate_matmul_advice(op_data):
     return advice
 
 
-def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool = False):
+def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool = False, no_merge_devices:bool = False):
     # Ensure we filter out signpost rows before processing because they aren't useful in the stacked report
     filtered_rows = filter_signposts(rows)
     
     if stack_by_input0_layout:
         visible_headers.append("Input 0 Memory")
-
-    if "Device" not in visible_headers:
-        visible_headers.append("Device")
 
     data = {header: [row[header].raw_value for row in filtered_rows] for header in visible_headers}
     df = pd.DataFrame(data)
@@ -895,8 +892,10 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
     else:
         df["OP Code Joined"] = df["OP Code"].str.split().str[0]
 
+    grouping = ["OP Code Joined", "Device"] if no_merge_devices else ["OP Code Joined"]
+
     # Group by the joined OP Code and aggregate the data
-    stacked_df = df.groupby(["OP Code Joined", "Device"]).agg(
+    stacked_df = df.groupby(grouping).agg(
         Device_Time_Sum_us=("Device Time", "sum"),
         Ops_Count=("Device Time", "size"),
         Flops_min=("FLOPs %", "min"),
@@ -905,12 +904,21 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
         Flops_std=("FLOPs %", "std"),
     ).reset_index()
 
-    for dev, g in stacked_df.groupby("Device"):
-        tot = g["Device_Time_Sum_us"].sum()
-        if tot > 0:
-            stacked_df.loc[g.index, "%"] = (g["Device_Time_Sum_us"] / tot) * 100
+    if no_merge_devices:
+        for dev, g in stacked_df.groupby("Device"):
+            tot = g["Device_Time_Sum_us"].sum()
+            if tot > 0:
+                stacked_df.loc[g.index, "%"] = (g["Device_Time_Sum_us"] / tot) * 100
+            else:
+                stacked_df.loc[g.index, "%"] = 0
+    else:    
+        # Calculate the percentage of device time
+        total_device_time = stacked_df["Device_Time_Sum_us"].sum()
+
+        if total_device_time != 0:
+            stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / total_device_time) * 100
         else:
-            stacked_df.loc[g.index, "%"] = 0
+            stacked_df["%"] = 0
 
     cols = stacked_df.columns.tolist()
     cols.insert(0, cols.pop(cols.index("%")))
@@ -921,15 +929,18 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
     return stacked_df
 
 
-def print_stacked_report(stacked_df: pd.DataFrame):
+def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = False):
     print("\n📊 Stacked report 📊\n============\n")
-    # Sort by device for better organization
-    sorted_df = stacked_df.sort_values(by=["Device", "%"], ascending=[True, False])
-    print(sorted_df.to_string(
-        index=False,
-        float_format="%.2f",
-        columns=["%", "OP Code Joined", "Device", "Device_Time_Sum_us", "Ops_Count", "Flops_mean", "Flops_std"]
-    ))
+
+    if no_merge_devices:
+        sorted_df = stacked_df.sort_values(by=["Device", "%"], ascending=[True, False])
+        print(sorted_df.to_string(
+            index=False,
+            float_format="%.2f",
+            columns=["%", "OP Code Joined", "Device", "Device_Time_Sum_us", "Ops_Count", "Flops_mean", "Flops_std"]
+        ))
+    else: 
+        print(stacked_df.to_string(index=False, float_format="%.2f"))
 
 
 def dump_stacked_report(stacked_df: pd.DataFrame, output_file: str):
@@ -1019,13 +1030,13 @@ def merge_device_rows(df):
     merged_blocks = []
 
     global_index = 0
-    while any(len(block_by_device[d]) > 0 for d in device_ids):
+    while max(len(block_by_device[device_id]) for device_id in device_ids) > 0:
         blocks = []
         op_name = None
         missing_devices = []
-
         for device_id in device_ids:
-            if not block_by_device[device_id]:
+            if not len(block_by_device[device_id]):
+                print(colored(f"Warning: Device {device_id} is missing operation {op_name} at index {global_index}", "yellow"))
                 continue
             if op_name is None:
                 op_name = block_by_device[device_id][0][0]
@@ -1036,21 +1047,30 @@ def merge_device_rows(df):
             blocks.append(block_by_device[device_id].pop(0))
 
         if missing_devices:
-            print(colored(f"Warning: {op_name} at index {global_index} missing on devices {missing_devices}", "yellow"))
+            print(colored(f"Warning: {op_name} at index {global_index} not present in CSV for {len(missing_devices)} devices {missing_devices} - do not trust data for this op or directly subsequent ops with the same name", "yellow"))
 
         if not blocks:
             break
 
-        # NEW: Always use MAX duration, and keep original DEVICE ID
-        max_block = max(blocks, key=lambda x: x[1]["DEVICE KERNEL DURATION [ns]"])
-        merged_block = max_block[1].copy()
-        merged_block["DEVICE ID"] = max_block[1]["DEVICE ID"]  # Keep real device
-        merged_blocks.append(merged_block)
+        if "AllGather" in op_name or "ReduceScatter" in op_name or "AllReduce" in op_name:
+            # For collective ops, take the average duration over all rows within a block
+            device_kernel_durations = [d["DEVICE KERNEL DURATION [ns]"] 
+                             for _, d in blocks 
+                             if pd.notna(d["DEVICE KERNEL DURATION [ns]"])]
+            # Use the first block's data but update its duration with the average
+            base_block = blocks[0][1].copy()
+            base_block["DEVICE KERNEL DURATION [ns]"] = (
+                sum(device_kernel_durations) / len(device_kernel_durations) if device_kernel_durations else float("nan")
+            )
+            merged_blocks.append(base_block)
+        else:
+            # For non-collective ops, take the row with maximum duration
+            max_duration_block = max(blocks, key=lambda x: x[1]["DEVICE KERNEL DURATION [ns]"])
+            merged_blocks.append(max_duration_block[1])
 
         global_index += 1
 
     return pd.DataFrame(merged_blocks)
-
 
 def parse_id_range(id_range_str):
     if id_range_str is None:
@@ -1275,10 +1295,10 @@ def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
 
     # handle stacked report generation
     if not(no_stacked_report) and rows:
-        stacked_report = generate_stacked_report(rows, visible_headers, not(no_stack_by_in0))
+        stacked_report = generate_stacked_report(rows, visible_headers, not(no_stack_by_in0), no_merge_devices)
 
         if not csv_output_file:
-            print_stacked_report(stacked_report)
+            print_stacked_report(stacked_report, no_merge_devices)
         if stacked_report_file or csv_output_file:
             base = stacked_report_file or f"{os.path.splitext(csv_output_file)[0]}_stacked"
             print(colored(f"Writing CSV stacked report to {base}.csv", "cyan"))
