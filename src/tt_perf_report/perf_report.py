@@ -144,8 +144,8 @@ def filter_by_signpost(df, signpost=None, end_signpost=None, ignore_signposts=Fa
                 if end_signpost in signpost_rows["OP CODE"].values:
                     print(colored(f"Using specified end signpost: {end_signpost}", "cyan"))
                     return df[
-                        df["OP CODE"].eq(signpost).cummax() & df["OP CODE"].ne(end_signpost).cummin().shift(1).fillna(True)
-                    ]
+                        df["OP CODE"].eq(signpost).cummax() & df["OP CODE"].ne(end_signpost).cummin()
+                    ].iloc[1:]
             return df[df["OP CODE"].eq(signpost).cummax()].iloc[1:]
         print(colored(f"Specified signpost '{signpost}' not found. Defaulting to the last signpost.", "yellow"))
 
