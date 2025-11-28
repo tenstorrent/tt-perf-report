@@ -10,14 +10,19 @@ import sys
 from collections import defaultdict
 from typing import Any, List, Optional, Union
 
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
+    print("Warning: matplotlib not available, plotting disabled")
 import pandas as pd
 
 # Global variable to store color preference
 color_output = None  # None means auto-detect, True forces color, False forces no color
 
 
-def get_value_physical_logical(input, is_physical : bool = True):
+def get_value_physical_logical(input, is_physical: bool = True):
     # Handle numeric inputs (old format)
     if isinstance(input, (int, float)):
         return int(input)
@@ -433,19 +438,19 @@ def analyze_op(row, prev_row, csv_format="v2"):
     op_code = Cell(row["OP CODE"])
     cores = Cell(int(row["CORE COUNT"]) if pd.notna(row["CORE COUNT"]) else None)
     device_time = Cell(
-        row["DEVICE KERNEL DURATION [ns]"] / 1000 if pd.notna(row["DEVICE KERNEL DURATION [ns]"]) else None,
-        unit="us",
+        row["DEVICE KERNEL DURATION [ns]"] / 1000 if pd.notna(row["DEVICE KERNEL DURATION [ns]"]) else 0,
+        unit="μs",
         decimals=0,
     )
 
     if prev_row is not None and pd.notna(prev_row["OP TO OP LATENCY [ns]"]):
         op_to_op_gap = Cell(
             row["OP TO OP LATENCY [ns]"] / 1000 if pd.notna(row["OP TO OP LATENCY [ns]"]) else None,
-            unit="us",
+            unit="μs",
             decimals=0,
         )
     else:
-        op_to_op_gap = Cell(None, unit="us", decimals=0)
+        op_to_op_gap = Cell(None, unit="μs", decimals=0)
 
     def get_entry(k: str) -> Union[str, None]:
         return row[k] if k in row else None
@@ -526,11 +531,17 @@ def analyze_op(row, prev_row, csv_format="v2"):
         dram_percentage = Cell(None, unit="%", decimals=1)
         flops = Cell(None, unit="TFLOPs", decimals=1)
         flops_percentage = Cell(None, unit="%", decimals=1)
+    
+    if "DEVICE ID" in row and pd.notna(row["DEVICE ID"]) and isinstance(row["DEVICE ID"], (int, float)):
+        device_id = Cell(int(row["DEVICE ID"]))
+    else:
+        device_id = Cell(None)
 
     output = {
         "ID": None,
         "Bound": Cell(""),
         "OP Code": op_code,
+        "Device": device_id,
         "Device Time": device_time,
         "Op-to-Op Gap": op_to_op_gap,
         "Cores": cores,
@@ -718,8 +729,8 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
         "Total %": Cell(100.0, unit="%", decimals=1),
         "Bound": Cell(""),
         "OP Code": Cell(f"{device_ops} device ops, {host_ops} host ops, {signpost_count} signposts"),
-        "Device Time": Cell(total_device_time, unit="us", decimals=0),
-        "Op-to-Op Gap": Cell(total_visible_gap, unit="us", decimals=0),
+        "Device Time": Cell(total_device_time, unit="μs", decimals=0),
+        "Op-to-Op Gap": Cell(total_visible_gap, unit="μs", decimals=0),
     }
     for header in headers:
         if header not in total_row:
@@ -765,7 +776,7 @@ def print_op_to_op_gap_advice(rows, headers, col_widths):
 
         percentage_saved = (max_gap_overhead / total_duration) * 100
         print(
-            f"\nThese ops have a >6us gap since the previous operation. Running with tracing could save {max_gap_overhead:.0f} us ({percentage_saved:.1f}% of overall time)"
+            f"\nThese ops have a >6us gap since the previous operation. Running with tracing could save {max_gap_overhead:.0f} μs ({percentage_saved:.1f}% of overall time)"
         )
         print(
             "Alternatively ensure device is not waiting for the host and use device.enable_async(True). Experts can try moving runtime args in the kernels to compile-time args.\n"
@@ -866,25 +877,26 @@ def generate_matmul_advice(op_data):
     return advice
 
 
-def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool = False):
+def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool = False, no_merge_devices:bool = False):
     # Ensure we filter out signpost rows before processing because they aren't useful in the stacked report
     filtered_rows = filter_signposts(rows)
     
     if stack_by_input0_layout:
         visible_headers.append("Input 0 Memory")
 
-    # Create a pandas DataFrame from rows and headers
     data = {header: [row[header].raw_value for row in filtered_rows] for header in visible_headers}
     df = pd.DataFrame(data)
 
-    if (stack_by_input0_layout):
+    if stack_by_input0_layout:
         df["OP Code Joined"] = df["OP Code"].str.split().str[0] \
             + " (in0:" + df["Input 0 Memory"].str.split('_').str[-2].str.lower() + "_" + df["Input 0 Memory"].str.split('_').str[-1].str.lower() + ")"
     else:
         df["OP Code Joined"] = df["OP Code"].str.split().str[0]
 
+    grouping = ["OP Code Joined", "Device"] if no_merge_devices else ["OP Code Joined"]
+
     # Group by the joined OP Code and aggregate the data
-    stacked_df = df.groupby("OP Code Joined").agg(
+    stacked_df = df.groupby(grouping).agg(
         Device_Time_Sum_us=("Device Time", "sum"),
         Ops_Count=("Device Time", "size"),
         Flops_min=("FLOPs %", "min"),
@@ -893,15 +905,17 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
         Flops_std=("FLOPs %", "std"),
     ).reset_index()
 
-    # Calculate the percentage of device time
-    total_device_time = stacked_df["Device_Time_Sum_us"].sum()
+    # Ensure Device column stays as integer if it exists
+    if "Device" in stacked_df.columns:
+        stacked_df["Device"] = stacked_df["Device"].astype(int)
 
-    if total_device_time != 0:
-        stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / total_device_time) * 100
-    else:
-        stacked_df["%"] = 0
-        
-    # Reorder columns to move Device_Time_Percentage to be the 3rd column
+    if no_merge_devices:
+        device_totals = stacked_df.groupby("Device")["Device_Time_Sum_us"].transform("sum")
+        stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / device_totals * 100).fillna(0)
+    else:    
+        total_device_time = stacked_df["Device_Time_Sum_us"].sum()
+        stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / total_device_time * 100).fillna(0) if total_device_time != 0 else 0
+
     cols = stacked_df.columns.tolist()
     cols.insert(0, cols.pop(cols.index("%")))
     stacked_df = stacked_df[cols]
@@ -911,54 +925,73 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
     return stacked_df
 
 
-def print_stacked_report(stacked_df: pd.DataFrame):
+def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = False):
     print("\n📊 Stacked report 📊\n============\n")
-    print(stacked_df.to_string(index=False, float_format="%.2f"))
+
+    if no_merge_devices:
+        columns = ["%", "OP Code Joined", "Device", "Device_Time_Sum_us", "Ops_Count", "Flops_mean", "Flops_std"]
+        display_df = stacked_df[columns].sort_values(by=["Device", "%"], ascending=[True, False])
+        print(display_df.to_string(index=False, float_format="%.2f"))
+    else:
+        print(stacked_df.to_string(index=False, float_format="%.2f"))
 
 
 def dump_stacked_report(stacked_df: pd.DataFrame, output_file: str):
-    stacked_df.to_csv(output_file, index=False, float_format="%.1f")
+    stacked_df.to_csv(output_file, index=False, float_format="%.2f")
 
 
-def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: float = 0.02):
-    # Prepare data for the stacked bar plot
-    device_time_sum = stacked_df["Device_Time_Sum_us"]
-    total_sum = device_time_sum.sum()
-
-    # Create a stacked bar plot
-    plt.figure(figsize=(6, 8), dpi=300)
-    width = 0.5
-    bottom = 0
+def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: float = 0.02, no_merge_devices: bool = False):
+    if not HAS_MATPLOTLIB:
+        print(f"Skipping plot generation for {output_file} (matplotlib not available)")
+        return
+    
     colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
+    bar_width = 0.5
+    
+    if no_merge_devices:
+        devices = sorted(stacked_df["Device"].unique())
+        fig, ax = plt.subplots(figsize=(max(6, len(devices) * 2), 8), dpi=300)
+        data_groups = [(i, stacked_df[stacked_df["Device"] == dev]) for i, dev in enumerate(devices)]
+        total_sum = None  # Per-device totals used for threshold
+        title = "Stacked Device Time per Device (100% per device)"
+        xlim = None
+    else:
+        plt.figure(figsize=(6, 8), dpi=300)
+        ax = plt.gca()
+        data_groups = [(1, stacked_df)]
+        total_sum = stacked_df["Device_Time_Sum_us"].sum()
+        title = f"Stacked Device Time (Total: {total_sum:.1f} μs)"
+        xlim = (1 - bar_width / 2 - 0.05, 1 + bar_width / 2 + 0.05)
 
-    for i, row in stacked_df.iterrows():
-        color = colors[i % len(colors)]
-        bar = plt.bar(1, row["Device_Time_Sum_us"], width, label=row["OP Code Joined"], bottom=bottom, color=color)
+    for x_pos, group_data in data_groups:
+        threshold_total = total_sum if total_sum else group_data["Device_Time_Sum_us"].sum()
+        bottom = 0
+        
+        for j, (_, row) in enumerate(group_data.iterrows()):
+            color = colors[j % len(colors)]
+            bar = ax.bar(x_pos, row["Device_Time_Sum_us"], bar_width, bottom=bottom, color=color)
+            
+            if row["Device_Time_Sum_us"] >= threshold_total * threshold:
+                if no_merge_devices:
+                    text = f"{row['%']:.1f}%\n{row['OP Code Joined']}\n{row['Device_Time_Sum_us']:.0f} μs"
+                else:
+                    text = f"({row['%']:.1f}%) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f} μs; {row['Ops_Count']} ops"
+                    if not pd.isna(row["Flops_mean"]):
+                        text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
+                
+                ax.text(bar[0].get_x() + bar[0].get_width() / 2, bottom + row["Device_Time_Sum_us"] / 2,
+                       text, ha="center", va="center", fontsize=6, color="white")
+            bottom += row["Device_Time_Sum_us"]
 
-        text = f"({row['%']:.1f}%) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f}us; {row['Ops_Count']} ops"
-        if not pd.isna(row["Flops_mean"]):
-            text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
-
-        # Add overlay text if the data is significant
-        if row["Device_Time_Sum_us"] >= total_sum * threshold:
-            plt.text(
-            bar[0].get_x() + bar[0].get_width() / 2,
-            bottom + row["Device_Time_Sum_us"] / 2,
-            text,
-            ha="center",
-            va="center",
-            fontsize=6,
-            color="white"
-            )
-        bottom += row["Device_Time_Sum_us"]
-
-    # Set plot labels and title
-    plt.xlim(1 - width / 2 - 0.05, 1 + width / 2 + 0.05)
-    plt.ylabel("Device Time [us]")
-    plt.title(f"Stacked Device Time (Total: {total_sum:.1f} us)")
+    if no_merge_devices:
+        ax.set_xticks(range(len(devices)))
+        ax.set_xticklabels([f"Dev {d}" for d in devices])
+    else:
+        ax.set_xlim(*xlim)
+    
+    ax.set_ylabel("Device Time [μs]")
+    ax.set_title(title)
     plt.tight_layout()
-
-    # Save the plot to a file
     plt.savefig(output_file)
 
 def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
@@ -1055,7 +1088,6 @@ def merge_device_rows(df):
 
     return pd.DataFrame(merged_blocks)
 
-
 def parse_id_range(id_range_str):
     if id_range_str is None:
         return None
@@ -1085,7 +1117,7 @@ def filter_by_id_range(rows, id_range):
 
         # Reset the op-to-op gap for the first item in the filtered range
         if filtered_rows:
-            filtered_rows[0]["Op-to-Op Gap"] = Cell(None, unit="us", decimals=0)
+            filtered_rows[0]["Op-to-Op Gap"] = Cell(None, unit="μs", decimals=0)
 
         return filtered_rows
     return rows
@@ -1101,7 +1133,8 @@ def main():
     args, id_range = parse_args()
     generate_perf_report(
         args.csv_files, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
-        args.tracing_mode, args.raw_op_codes, args.no_host_ops, args.no_stacked_report, args.no_stack_by_in0, args.stacked_csv)
+        args.tracing_mode, args.raw_op_codes, args.no_host_ops, args.no_stacked_report, args.no_stack_by_in0, args.stacked_csv, args.no_merge_devices
+    )
 
 
 def parse_args():
@@ -1130,6 +1163,7 @@ def parse_args():
         )
     parser.add_argument("--stacked-csv", type=str, 
                 help="Output filename for the stacked report CSV; Defaults to OUTPUT_FILE_stacked.csv", metavar="STACKED_FILE")
+    parser.add_argument("--no-merge-devices", action="store_true", help="Don't merge rows from multiple devices")
 
     args = parser.parse_args()
 
@@ -1148,14 +1182,11 @@ def parse_args():
 
 def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
                          id_range, csv_output_file, no_advice, tracing_mode,
-                         raw_op_codes, no_host_ops, no_stacked_report, no_stack_by_in0, stacked_report_file):
+                         raw_op_codes, no_host_ops, no_stacked_report, no_stack_by_in0, stacked_report_file, no_merge_devices):
     df = merge_perf_traces(csv_files)
 
     # Detect CSV format version
     csv_format = detect_csv_format(df)
-
-    if csv_format != "v2":
-        print(colored(f"Detected CSV format: v1 (legacy format)", "cyan"))
 
     # Add a column for original row numbers
     df["ORIGINAL_ROW"] = df.index + 2  # +2 to match Excel row numbers (1-based + header)
@@ -1170,8 +1201,9 @@ def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
 
     df = filter_by_signpost(df, signpost, ignore_signposts)
 
-    # Check if the file contains multiple devices
-    if "DEVICE ID" in df.columns and df["DEVICE ID"].nunique() > 1:
+    if no_merge_devices and "DEVICE ID" in df.columns and df["DEVICE ID"].nunique() > 1:
+        print(colored(f"Detected data from {df['DEVICE ID'].nunique()} devices. Keeping separate device data...", "cyan"))
+    else:
         print(colored(f"Detected data from {df['DEVICE ID'].nunique()} devices. Merging device data...", "cyan"))
         df = merge_device_rows(df)
 
@@ -1191,6 +1223,7 @@ def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
         # append " (signpost)" to the OP Code if this row is a signpost to distinguish it
         if "signpost" in row["OP TYPE"]:
             op_data["OP Code"].raw_value = f"{row['OP CODE']} (signpost)"
+
         rows.append(op_data)
         prev_row = row
 
@@ -1221,6 +1254,7 @@ def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
         "Total %",
         "Bound",
         "OP Code",
+        "Device",
         "Device Time",
         "Op-to-Op Gap",
         "Cores",
@@ -1228,7 +1262,7 @@ def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
         "DRAM %",
         "FLOPs",
         "FLOPs %",
-        "Math Fidelity",
+        "Math Fidelity"
     ]
 
     additional_headers = [
@@ -1268,32 +1302,32 @@ def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
             max(max(visible_length(str(row[header])) for row in rows), visible_length(header))
             for header in visible_headers
         ]
+        dev_idx = visible_headers.index("Device")
+        col_widths[dev_idx] = max(col_widths[dev_idx], 7)
+
         print_performance_table(rows, visible_headers, col_widths, device_ops, host_ops, signpost_count)
         if not no_advice:
             print_advice_section(rows, visible_headers, col_widths)
 
     # handle stacked report generation
     if not(no_stacked_report) and rows:
-        stacked_report = generate_stacked_report(rows, visible_headers, not(no_stack_by_in0))
-
-        if not(csv_output_file):
-            print_stacked_report(stacked_report)
+        stacked_report = generate_stacked_report(rows, visible_headers, not(no_stack_by_in0), no_merge_devices)
+        
+        if not csv_output_file:
+            print_stacked_report(stacked_report, no_merge_devices)
         if stacked_report_file or csv_output_file:
-            if not stacked_report_file:
-                base_stacked_report_file = f"{os.path.splitext(csv_output_file)[0]}_stacked"
-            else:
-                base_stacked_report_file = os.path.splitext(stacked_report_file)[0]
-            print(colored(f"Writing CSV stacked report to {base_stacked_report_file}.csv", "cyan"))
-            dump_stacked_report(stacked_report, f"{base_stacked_report_file}.csv")
-            print(colored(f"Plotting PNG stacked report to {base_stacked_report_file}.png", "cyan"))
-            plot_stacked_report(stacked_report, f"{base_stacked_report_file}.png")
+            base = stacked_report_file or f"{os.path.splitext(csv_output_file)[0]}_stacked"
+            print(colored(f"Writing CSV stacked report to {base}.csv", "cyan"))
+            dump_stacked_report(stacked_report, f"{base}.csv")
+            print(colored(f"Plotting PNG stacked report to {base}.png", "cyan"))
+            plot_stacked_report(stacked_report, f"{base}.png")
 
 
 def is_host_op(op_data):
     return "(torch)" in op_data["OP Code"].raw_value
 
 def is_signpost_op(op_data):
-    return  "signpost" in op_data["OP Code"].raw_value
+    return "signpost" in op_data["OP Code"].raw_value
 
 if __name__ == "__main__":
     main()
