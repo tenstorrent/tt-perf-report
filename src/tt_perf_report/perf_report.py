@@ -932,12 +932,9 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
     print("\n📊 Stacked report 📊\n============\n")
 
     if no_merge_devices:
-        sorted_df = stacked_df.sort_values(by=["Device", "%"], ascending=[True, False])
-        print(sorted_df.to_string(
-            index=False,
-            float_format="%.2f",
-            columns=["%", "OP Code Joined", "Device", "Device_Time_Sum_us", "Ops_Count", "Flops_mean", "Flops_std"]
-        ))
+        columns = ["%", "OP Code Joined", "Device", "Device_Time_Sum_us", "Ops_Count", "Flops_mean", "Flops_std"]
+        sorted_df = stacked_df[columns].sort_values(by=["Device", "%"], ascending=[True, False])
+        print(sorted_df.to_string(index=False, float_format="%.2f"))
     else: 
         print(stacked_df.to_string(index=False, float_format="%.2f"))
 
@@ -951,11 +948,12 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
         print(f"Skipping plot generation for {output_file} (matplotlib not available)")
         return
     
+    colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
+    
     if no_merge_devices:
         devices = sorted(stacked_df["Device"].unique())
         width = 0.2
         fig, ax = plt.subplots(figsize=(max(6, len(devices) * 2), 8), dpi=300)
-        colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
 
         for i, dev in enumerate(devices):
             dev_data = stacked_df[stacked_df["Device"] == dev]
@@ -974,15 +972,12 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
         ax.set_ylabel("Device Time [us]")
         ax.set_title("Stacked Device Time per Device (100% per dev)")
     else:
-        # Prepare data for the stacked bar plot
         device_time_sum = stacked_df["Device_Time_Sum_us"]
         total_sum = device_time_sum.sum()
 
-        # Create a stacked bar plot
         plt.figure(figsize=(6, 8), dpi=300)
         width = 0.5
         bottom = 0
-        colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
 
         for i, row in stacked_df.iterrows():
             color = colors[i % len(colors)]
@@ -992,7 +987,6 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
             if not pd.isna(row["Flops_mean"]):
                 text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
 
-            # Add overlay text if the data is significant
             if row["Device_Time_Sum_us"] >= total_sum * threshold:
                 plt.text(
                 bar[0].get_x() + bar[0].get_width() / 2,
@@ -1005,7 +999,6 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
                 )
             bottom += row["Device_Time_Sum_us"]
 
-        # Set plot labels and title
         plt.xlim(1 - width / 2 - 0.05, 1 + width / 2 + 0.05)
         plt.ylabel("Device Time [us]")
         plt.title(f"Stacked Device Time (Total: {total_sum:.1f} us)")
