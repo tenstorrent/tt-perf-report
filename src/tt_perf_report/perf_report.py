@@ -138,10 +138,23 @@ def filter_by_signpost(df, signpost=None, ignore_signposts=False):
         return df
 
     if signpost:
-        if signpost in signpost_rows["OP CODE"].values:
+        matching = signpost_rows[signpost_rows["OP CODE"] == signpost]
+        if len(matching) >= 2:
             print(colored(f"Using specified signpost: {signpost}", "cyan"))
-            return df[df["OP CODE"].eq(signpost).cummax()].iloc[1:]
-        print(colored(f"Specified signpost '{signpost}' not found. Defaulting to the last signpost.", "yellow"))
+            first_idx, second_idx = matching.index[:2].tolist()
+            window = df.loc[(df.index > first_idx) & (df.index < second_idx)]
+            return window[window["OP TYPE"] != "signpost"]
+        elif len(matching) == 1:
+            print(
+                colored(
+                    f"Only one '{signpost}' signpost found; using rows after it for analysis.",
+                    "yellow",
+                )
+            )
+            window = df.loc[df.index > matching.index[0]]
+            return window[window["OP TYPE"] != "signpost"]
+        else:
+            print(colored(f"Specified signpost '{signpost}' not found. Defaulting to the last signpost.", "yellow"))
 
     if signpost_rows.empty:
         print(colored("No signposts found in the file. Using the entire file for analysis.", "yellow"))
@@ -150,7 +163,8 @@ def filter_by_signpost(df, signpost=None, ignore_signposts=False):
     last_signpost = signpost_rows.iloc[-1]["OP CODE"]
     print(colored(f"Detected signposts: {', '.join(signpost_rows['OP CODE'])}", "cyan"))
     print(colored(f"Using last signpost: {last_signpost} for analysis.", "cyan"))
-    return df[df["OP CODE"].eq(last_signpost).cummax()].iloc[1:]
+    window = df[df["OP CODE"].eq(last_signpost).cummax()].iloc[1:]
+    return window[window["OP TYPE"] != "signpost"]
 
 
 def get_datatype_size(datatype):
@@ -1107,7 +1121,7 @@ def main():
 def parse_args():
     parser = argparse.ArgumentParser(description="User-friendly Performance Report Analysis Tool")
     parser.add_argument("csv_files", type=str, nargs="+", help="Paths to one or more performance report CSV files")
-    parser.add_argument("--signpost", type=str, help="Specify a signpost to use for analysis", default=None)
+    parser.add_argument("--signpost", type=str, help="Specify a signpost to use for analysis. Signposts are used to mark the start and end of a program section.", default=None)
     parser.add_argument(
         "--ignore-signposts", action="store_true", help="Ignore all signposts and use the entire file for analysis"
     )
