@@ -531,11 +531,17 @@ def analyze_op(row, prev_row, csv_format="v2"):
         dram_percentage = Cell(None, unit="%", decimals=1)
         flops = Cell(None, unit="TFLOPs", decimals=1)
         flops_percentage = Cell(None, unit="%", decimals=1)
+    
+    if "DEVICE ID" in row and pd.notna(row["DEVICE ID"]) and isinstance(row["DEVICE ID"], (int, float)):
+        device_id = Cell(int(row["DEVICE ID"]))
+    else:
+        device_id = Cell(None)
 
     output = {
         "ID": None,
         "Bound": Cell(""),
         "OP Code": op_code,
+        "Device": device_id,
         "Device Time": device_time,
         "Op-to-Op Gap": op_to_op_gap,
         "Cores": cores,
@@ -575,11 +581,6 @@ def analyze_op(row, prev_row, csv_format="v2"):
     output["Inner Dim Block Size"] = in0_block_w
     output["Output Subblock H"] = out_subblock_h
     output["Output Subblock W"] = out_subblock_w
-
-    if "DEVICE ID" in row and pd.notna(row["DEVICE ID"]) and isinstance(row["DEVICE ID"], (int, float)):
-        output["Device"] = Cell(int(row["DEVICE ID"]))
-    else:
-        output["Device"] = Cell(None)
 
     return output, op_to_op_gap.raw_value
 
