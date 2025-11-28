@@ -66,6 +66,7 @@ def test_csv_headers_with_all_options(expected_headers, test_csv_content, mocker
                 generate_perf_report(
                     csv_files=[input_file.name],
                     signpost=None,
+                    end_signpost=None,
                     ignore_signposts=True,
                     min_percentage=0.5,
                     id_range=None,
@@ -156,6 +157,7 @@ def test_csv_headers_with_signpost(test_csv_content, mocker):
                 generate_perf_report(
                     csv_files=[input_file.name],
                     signpost='ResNet module started',
+                    end_signpost=None,
                     ignore_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
@@ -191,6 +193,57 @@ def test_csv_headers_with_signpost(test_csv_content, mocker):
                 except OSError:
                     pass
 
+# Request with end_signpost # TODO
+def test_csv_headers_with_end_signpost(test_csv_content, mocker):
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".csv", delete=False
+    ) as input_file:
+        input_file.write(test_csv_content)
+        input_file.flush()
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False
+        ) as output_file:
+            try:
+                mocker.patch("sys.stdout", new_callable=StringIO)
+                generate_perf_report(
+                    csv_files=[input_file.name],
+                    signpost='ResNet module started',
+                    end_signpost='ResNet module finished',
+                    ignore_signposts=False,
+                    min_percentage=0.5,
+                    id_range=None,
+                    csv_output_file=output_file.name,
+                    no_advice=False,
+                    tracing_mode=False,
+                    raw_op_codes=True,
+                    no_host_ops=False,
+                    no_stacked_report=True,
+                    no_stack_by_in0=True,
+                    stacked_report_file=None,
+                )
+
+                with open(output_file.name, "r") as f:
+                    reader = csv.reader(f)
+                    actual_headers = next(reader)
+                    data_rows = list(reader)
+
+                    # Check that the first row after signpost is the expected operation
+                    first_row_after_signpost = data_rows[-1]
+                    op_code_index = actual_headers.index("OP Code")
+                    expected_op_after_signpost = "ShardedToInterleavedDeviceOperation"
+                    actual_op_after_signpost = first_row_after_signpost[op_code_index]
+                    
+                    assert actual_op_after_signpost == expected_op_after_signpost, \
+                        f"First operation after 'ResNet module started' signpost should be '{expected_op_after_signpost}', got '{actual_op_after_signpost}'"
+
+            # Clean up
+            finally:
+                try:
+                    os.unlink(input_file.name)
+                    os.unlink(output_file.name)
+                except OSError:
+                    pass
 
 # Expected stacked headers fixture
 @pytest.fixture
@@ -221,6 +274,7 @@ def test_stacked_csv_headers(expected_stacked_headers, test_csv_content, mocker)
                 generate_perf_report(
                     csv_files=[input_file.name],
                     signpost=None,
+                    end_signpost=None,
                     ignore_signposts=True,
                     min_percentage=0.5,
                     id_range=None,
@@ -280,6 +334,7 @@ def test_stacked_csv_headers_with_input0_layout(expected_stacked_headers, test_c
                 generate_perf_report(
                     csv_files=[input_file.name],
                     signpost=None,
+                    end_signpost=None,
                     ignore_signposts=True,
                     min_percentage=0.5,
                     id_range=None,
