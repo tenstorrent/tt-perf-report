@@ -932,7 +932,7 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
 
 
 def dump_stacked_report(stacked_df: pd.DataFrame, output_file: str):
-    stacked_df.to_csv(output_file, index=False, float_format="%.1f")
+    stacked_df.to_csv(output_file, index=False, float_format="%.2f")
 
 
 def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: float = 0.02, no_merge_devices: bool = False):
