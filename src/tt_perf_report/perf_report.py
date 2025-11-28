@@ -906,19 +906,11 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
     ).reset_index()
 
     if no_merge_devices:
-        for dev, g in stacked_df.groupby("Device"):
-            tot = g["Device_Time_Sum_us"].sum()
-            if tot > 0:
-                stacked_df.loc[g.index, "%"] = (g["Device_Time_Sum_us"] / tot) * 100
-            else:
-                stacked_df.loc[g.index, "%"] = 0
+        device_totals = stacked_df.groupby("Device")["Device_Time_Sum_us"].transform("sum")
+        stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / device_totals * 100).fillna(0)
     else:    
         total_device_time = stacked_df["Device_Time_Sum_us"].sum()
-
-        if total_device_time != 0:
-            stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / total_device_time) * 100
-        else:
-            stacked_df["%"] = 0
+        stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / total_device_time * 100).fillna(0) if total_device_time != 0 else 0
 
     cols = stacked_df.columns.tolist()
     cols.insert(0, cols.pop(cols.index("%")))
@@ -934,9 +926,8 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
 
     if no_merge_devices:
         columns = ["%", "OP Code Joined", "Device", "Device_Time_Sum_us", "Ops_Count", "Flops_mean", "Flops_std"]
-        sorted_df = stacked_df[columns].sort_values(by=["Device", "%"], ascending=[True, False])
-        print(sorted_df.to_string(index=False, float_format="%.2f"))
-    else: 
+        print(stacked_df[columns].sort_values(by=["Device", "%"], ascending=[True, False]).to_string(index=False, float_format="%.2f"))
+    else:
         print(stacked_df.to_string(index=False, float_format="%.2f"))
 
 
