@@ -439,18 +439,18 @@ def analyze_op(row, prev_row, csv_format="v2"):
     cores = Cell(int(row["CORE COUNT"]) if pd.notna(row["CORE COUNT"]) else None)
     device_time = Cell(
         row["DEVICE KERNEL DURATION [ns]"] / 1000 if pd.notna(row["DEVICE KERNEL DURATION [ns]"]) else 0,
-        unit="us",
+        unit="μs",
         decimals=0,
     )
 
     if prev_row is not None and pd.notna(prev_row["OP TO OP LATENCY [ns]"]):
         op_to_op_gap = Cell(
             row["OP TO OP LATENCY [ns]"] / 1000 if pd.notna(row["OP TO OP LATENCY [ns]"]) else None,
-            unit="us",
+            unit="μs",
             decimals=0,
         )
     else:
-        op_to_op_gap = Cell(None, unit="us", decimals=0)
+        op_to_op_gap = Cell(None, unit="μs", decimals=0)
 
     def get_entry(k: str) -> Union[str, None]:
         return row[k] if k in row else None
@@ -729,8 +729,8 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
         "Total %": Cell(100.0, unit="%", decimals=1),
         "Bound": Cell(""),
         "OP Code": Cell(f"{device_ops} device ops, {host_ops} host ops, {signpost_count} signposts"),
-        "Device Time": Cell(total_device_time, unit="us", decimals=0),
-        "Op-to-Op Gap": Cell(total_visible_gap, unit="us", decimals=0),
+        "Device Time": Cell(total_device_time, unit="μs", decimals=0),
+        "Op-to-Op Gap": Cell(total_visible_gap, unit="μs", decimals=0),
     }
     for header in headers:
         if header not in total_row:
@@ -776,7 +776,7 @@ def print_op_to_op_gap_advice(rows, headers, col_widths):
 
         percentage_saved = (max_gap_overhead / total_duration) * 100
         print(
-            f"\nThese ops have a >6us gap since the previous operation. Running with tracing could save {max_gap_overhead:.0f} us ({percentage_saved:.1f}% of overall time)"
+            f"\nThese ops have a >6us gap since the previous operation. Running with tracing could save {max_gap_overhead:.0f} μs ({percentage_saved:.1f}% of overall time)"
         )
         print(
             "Alternatively ensure device is not waiting for the host and use device.enable_async(True). Experts can try moving runtime args in the kernels to compile-time args.\n"
@@ -941,60 +941,51 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
         return
     
     colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
+    bar_width = 0.5
     
     if no_merge_devices:
         devices = sorted(stacked_df["Device"].unique())
-        width = 0.2
         fig, ax = plt.subplots(figsize=(max(6, len(devices) * 2), 8), dpi=300)
-
-        for i, dev in enumerate(devices):
-            dev_data = stacked_df[stacked_df["Device"] == dev]
-            bottom = 0
-            for j, row in dev_data.iterrows():
-                color = colors[j % len(colors)]
-                bar = ax.bar(i, row["Device_Time_Sum_us"], width, label=row["OP Code Joined"], bottom=bottom, color=color)
-                if row["Device_Time_Sum_us"] >= dev_data["Device_Time_Sum_us"].sum() * threshold:
-                    txt = f"{row['%']:.1f}%\n{row['OP Code Joined']}\n{row['Device_Time_Sum_us']:.0f}us"
-                    ax.text(bar[0].get_x() + bar[0].get_width() / 2, bottom + row["Device_Time_Sum_us"] / 2,
-                            txt, ha="center", va="center", fontsize=6, color="white")
-                bottom += row["Device_Time_Sum_us"]
-
-        ax.set_xticks(range(len(devices)))
-        ax.set_xticklabels([f"Dev {d}" for d in devices])
-        ax.set_ylabel("Device Time [us]")
-        ax.set_title("Stacked Device Time per Device (100% per dev)")
+        data_groups = [(i, stacked_df[stacked_df["Device"] == dev]) for i, dev in enumerate(devices)]
+        total_sum = None  # Per-device totals used for threshold
+        title = "Stacked Device Time per Device (100% per device)"
+        xlim = None
     else:
-        device_time_sum = stacked_df["Device_Time_Sum_us"]
-        total_sum = device_time_sum.sum()
-
         plt.figure(figsize=(6, 8), dpi=300)
-        width = 0.5
+        ax = plt.gca()
+        data_groups = [(1, stacked_df)]
+        total_sum = stacked_df["Device_Time_Sum_us"].sum()
+        title = f"Stacked Device Time (Total: {total_sum:.1f} μs)"
+        xlim = (1 - bar_width / 2 - 0.05, 1 + bar_width / 2 + 0.05)
+
+    for x_pos, group_data in data_groups:
+        threshold_total = total_sum if total_sum else group_data["Device_Time_Sum_us"].sum()
         bottom = 0
-
-        for i, row in stacked_df.iterrows():
-            color = colors[i % len(colors)]
-            bar = plt.bar(1, row["Device_Time_Sum_us"], width, label=row["OP Code Joined"], bottom=bottom, color=color)
-
-            text = f"({row['%']:.1f}%) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f}us; {row['Ops_Count']} ops"
-            if not pd.isna(row["Flops_mean"]):
-                text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
-
-            if row["Device_Time_Sum_us"] >= total_sum * threshold:
-                plt.text(
-                bar[0].get_x() + bar[0].get_width() / 2,
-                bottom + row["Device_Time_Sum_us"] / 2,
-                text,
-                ha="center",
-                va="center",
-                fontsize=6,
-                color="white"
-                )
+        
+        for j, (_, row) in enumerate(group_data.iterrows()):
+            color = colors[j % len(colors)]
+            bar = ax.bar(x_pos, row["Device_Time_Sum_us"], bar_width, bottom=bottom, color=color)
+            
+            if row["Device_Time_Sum_us"] >= threshold_total * threshold:
+                if no_merge_devices:
+                    text = f"{row['%']:.1f}%\n{row['OP Code Joined']}\n{row['Device_Time_Sum_us']:.0f} μs"
+                else:
+                    text = f"({row['%']:.1f}%) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f} μs; {row['Ops_Count']} ops"
+                    if not pd.isna(row["Flops_mean"]):
+                        text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
+                
+                ax.text(bar[0].get_x() + bar[0].get_width() / 2, bottom + row["Device_Time_Sum_us"] / 2,
+                       text, ha="center", va="center", fontsize=6, color="white")
             bottom += row["Device_Time_Sum_us"]
 
-        plt.xlim(1 - width / 2 - 0.05, 1 + width / 2 + 0.05)
-        plt.ylabel("Device Time [us]")
-        plt.title(f"Stacked Device Time (Total: {total_sum:.1f} us)")
+    if no_merge_devices:
+        ax.set_xticks(range(len(devices)))
+        ax.set_xticklabels([f"Dev {d}" for d in devices])
+    else:
+        ax.set_xlim(*xlim)
     
+    ax.set_ylabel("Device Time [μs]")
+    ax.set_title(title)
     plt.tight_layout()
     plt.savefig(output_file)
 
@@ -1121,7 +1112,7 @@ def filter_by_id_range(rows, id_range):
 
         # Reset the op-to-op gap for the first item in the filtered range
         if filtered_rows:
-            filtered_rows[0]["Op-to-Op Gap"] = Cell(None, unit="us", decimals=0)
+            filtered_rows[0]["Op-to-Op Gap"] = Cell(None, unit="μs", decimals=0)
 
         return filtered_rows
     return rows
