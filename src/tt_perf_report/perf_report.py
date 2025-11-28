@@ -130,29 +130,43 @@ class Cell:
         return self.format()
 
 
-def filter_by_signpost(df, signpost=None, ignore_signposts=False):
+def filter_by_signpost(df, signpost=None, signpost_range=None, ignore_signposts=False):
     signpost_rows = df[df["OP TYPE"] == "signpost"]
 
     if ignore_signposts:
         print(colored("Ignoring all signposts. Using the entire file for analysis.", "cyan"))
         return df
 
-    if signpost:
-        matching = signpost_rows[signpost_rows["OP CODE"] == signpost]
+    def _strip_signposts(window):
+        return window[window["OP TYPE"] != "signpost"]
+
+    def _rows_after_idx(idx):
+        window = df.loc[df.index > idx]
+        return _strip_signposts(window)
+
+    if signpost_range:
+        matching = signpost_rows[signpost_rows["OP CODE"] == signpost_range]
         if len(matching) >= 2:
-            print(colored(f"Using specified signpost: {signpost}", "cyan"))
+            print(colored(f"Using signpost range: {signpost_range}", "cyan"))
             first_idx, second_idx = matching.index[:2].tolist()
             window = df.loc[(df.index > first_idx) & (df.index < second_idx)]
-            return window[window["OP TYPE"] != "signpost"]
+            return _strip_signposts(window)
         elif len(matching) == 1:
             print(
                 colored(
-                    f"Only one '{signpost}' signpost found; using rows after it for analysis.",
+                    f"Only one '{signpost_range}' signpost found; using rows after it for analysis.",
                     "yellow",
                 )
             )
-            window = df.loc[df.index > matching.index[0]]
-            return window[window["OP TYPE"] != "signpost"]
+            return _rows_after_idx(matching.index[0])
+        else:
+            print(colored(f"Specified signpost '{signpost_range}' not found. Defaulting to the last signpost.", "yellow"))
+
+    if signpost:
+        matching = signpost_rows[signpost_rows["OP CODE"] == signpost]
+        if len(matching) >= 1:
+            print(colored(f"Using operations after '{signpost}'.", "cyan"))
+            return _rows_after_idx(matching.index[0])
         else:
             print(colored(f"Specified signpost '{signpost}' not found. Defaulting to the last signpost.", "yellow"))
 
@@ -164,7 +178,7 @@ def filter_by_signpost(df, signpost=None, ignore_signposts=False):
     print(colored(f"Detected signposts: {', '.join(signpost_rows['OP CODE'])}", "cyan"))
     print(colored(f"Using last signpost: {last_signpost} for analysis.", "cyan"))
     window = df[df["OP CODE"].eq(last_signpost).cummax()].iloc[1:]
-    return window[window["OP TYPE"] != "signpost"]
+    return _strip_signposts(window)
 
 
 def get_datatype_size(datatype):
@@ -1114,14 +1128,20 @@ def filter_signposts(rows):
 def main():
     args, id_range = parse_args()
     generate_perf_report(
-        args.csv_files, args.signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
+        args.csv_files, args.signpost, args.signpost_range, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
         args.tracing_mode, args.raw_op_codes, args.no_host_ops, args.no_stacked_report, args.no_stack_by_in0, args.stacked_csv)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="User-friendly Performance Report Analysis Tool")
     parser.add_argument("csv_files", type=str, nargs="+", help="Paths to one or more performance report CSV files")
-    parser.add_argument("--signpost", type=str, help="Specify a signpost to use for analysis. Signposts are used to mark the start and end of a program section.", default=None)
+    parser.add_argument("--signpost", type=str, help="Specify a signpost to use for analysis. Signposts are used to mark the start of the relevant program section.", default=None)
+    parser.add_argument(
+        "--signpost-range",
+        type=str,
+        help="Specify a signpost to delimit a range. Requires two occurrences and uses the rows between them.",
+        default=None,
+    )
     parser.add_argument(
         "--ignore-signposts", action="store_true", help="Ignore all signposts and use the entire file for analysis"
     )
@@ -1150,6 +1170,10 @@ def parse_args():
     # Set the global color_output variable
     set_color_output(args.color, args.no_color)
 
+    if args.signpost and args.signpost_range:
+        print(colored("Cannot use --signpost and --signpost-range together.", "red"))
+        exit(1)
+
     # Parse id_range
     try:
         id_range = parse_id_range(args.id_range)
@@ -1160,7 +1184,7 @@ def parse_args():
     return args, id_range
 
 
-def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
+def generate_perf_report(csv_files, signpost, signpost_range, ignore_signposts, min_percentage,
                          id_range, csv_output_file, no_advice, tracing_mode,
                          raw_op_codes, no_host_ops, no_stacked_report, no_stack_by_in0, stacked_report_file):
     df = merge_perf_traces(csv_files)
@@ -1182,7 +1206,7 @@ def generate_perf_report(csv_files, signpost, ignore_signposts, min_percentage,
     else:
         print(colored("Warning: 'HOST START TS' column not found. CSV will not be sorted.", "yellow"))
 
-    df = filter_by_signpost(df, signpost, ignore_signposts)
+    df = filter_by_signpost(df, signpost, signpost_range, ignore_signposts)
 
     # Check if the file contains multiple devices
     if "DEVICE ID" in df.columns and df["DEVICE ID"].nunique() > 1:
