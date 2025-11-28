@@ -905,6 +905,10 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
         Flops_std=("FLOPs %", "std"),
     ).reset_index()
 
+    # Ensure Device column stays as integer if it exists
+    if "Device" in stacked_df.columns:
+        stacked_df["Device"] = stacked_df["Device"].astype(int)
+
     if no_merge_devices:
         device_totals = stacked_df.groupby("Device")["Device_Time_Sum_us"].transform("sum")
         stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / device_totals * 100).fillna(0)
@@ -926,7 +930,8 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
 
     if no_merge_devices:
         columns = ["%", "OP Code Joined", "Device", "Device_Time_Sum_us", "Ops_Count", "Flops_mean", "Flops_std"]
-        print(stacked_df[columns].sort_values(by=["Device", "%"], ascending=[True, False]).to_string(index=False, float_format="%.2f"))
+        display_df = stacked_df[columns].sort_values(by=["Device", "%"], ascending=[True, False])
+        print(display_df.to_string(index=False, float_format="%.2f"))
     else:
         print(stacked_df.to_string(index=False, float_format="%.2f"))
 
