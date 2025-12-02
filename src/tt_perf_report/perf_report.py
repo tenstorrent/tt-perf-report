@@ -174,9 +174,12 @@ def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signpo
             # If you supply the same signpost for start and end, we need to find the next occurrence if it exists
             if start_signpost == end_signpost:
                 index = index + 1
+                if len(matching) > 2:
+                    print(colored(f"Multiple occurrences of signpost '{end_signpost}' found. Using the second occurrence for the end filter.", "yellow"))
 
             if index < len(matching.index):
                 has_filtered_by_signposts = True
+            
                 filtered_data = _rows_before_idx(matching.index[index])
             else:
                 print(colored(f"Not enough occurrences of signpost '{end_signpost}' to apply to both start and end filters.", "yellow"))
