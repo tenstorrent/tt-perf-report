@@ -65,7 +65,8 @@ def test_csv_headers_with_all_options(expected_headers, test_csv_content, mocker
                 mocker.patch("sys.stdout", new_callable=StringIO)
                 generate_perf_report(
                     csv_files=[input_file.name],
-                    signpost=None,
+                    start_signpost=None,
+                    end_signpost=None,
                     ignore_signposts=True,
                     min_percentage=0.5,
                     id_range=None,
@@ -155,7 +156,8 @@ def test_csv_headers_with_signpost(test_csv_content, mocker):
                 mocker.patch("sys.stdout", new_callable=StringIO)
                 generate_perf_report(
                     csv_files=[input_file.name],
-                    signpost='ResNet module started',
+                    start_signpost='ResNet module started',
+                    end_signpost='ResNet module finished',
                     ignore_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
@@ -174,14 +176,18 @@ def test_csv_headers_with_signpost(test_csv_content, mocker):
                     actual_headers = next(reader)
                     data_rows = list(reader)
 
-                    # Check that the first row after signpost is the expected operation
+                    # Check that the first row after signpost and the last row are the expected operations
                     first_row_after_signpost = data_rows[0]
                     op_code_index = actual_headers.index("OP Code")
                     expected_op_after_signpost = "InterleavedToShardedDeviceOperation"
                     actual_op_after_signpost = first_row_after_signpost[op_code_index]
+                    expected_last_op = "ShardedToInterleavedDeviceOperation"
                     
                     assert actual_op_after_signpost == expected_op_after_signpost, \
                         f"First operation after 'ResNet module started' signpost should be '{expected_op_after_signpost}', got '{actual_op_after_signpost}'"
+                    
+                    assert expected_last_op == data_rows[-1][op_code_index], \
+                        f"Last operation before 'ResNet module finished' signpost should be '{expected_last_op}', got '{data_rows[-1][op_code_index]}'"
 
             # Clean up
             finally:
@@ -220,7 +226,8 @@ def test_stacked_csv_headers(expected_stacked_headers, test_csv_content, mocker)
                 mocker.patch("sys.stdout", new_callable=StringIO)
                 generate_perf_report(
                     csv_files=[input_file.name],
-                    signpost=None,
+                    start_signpost=None,
+                    end_signpost=None,
                     ignore_signposts=True,
                     min_percentage=0.5,
                     id_range=None,
@@ -279,7 +286,8 @@ def test_stacked_csv_headers_with_input0_layout(expected_stacked_headers, test_c
                 mocker.patch("sys.stdout", new_callable=StringIO)
                 generate_perf_report(
                     csv_files=[input_file.name],
-                    signpost=None,
+                    start_signpost=None,
+                    end_signpost=None,
                     ignore_signposts=True,
                     min_percentage=0.5,
                     id_range=None,
