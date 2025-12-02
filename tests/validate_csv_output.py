@@ -67,6 +67,7 @@ def test_csv_headers_with_all_options(expected_headers, test_csv_content, mocker
                 generate_perf_report(
                     csv_files=[input_file.name],
                     signpost=None,
+                    signpost_range=None,
                     ignore_signposts=True,
                     min_percentage=0.5,
                     id_range=None,
@@ -158,6 +159,7 @@ def test_csv_headers_with_signpost(test_csv_content, mocker):
                 generate_perf_report(
                     csv_files=[input_file.name],
                     signpost='ResNet module started',
+                    signpost_range=None,
                     ignore_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
@@ -226,6 +228,7 @@ def test_stacked_csv_headers(expected_stacked_headers, test_csv_content, mocker)
                 generate_perf_report(
                     csv_files=[input_file.name],
                     signpost=None,
+                    signpost_range=None,
                     ignore_signposts=True,
                     min_percentage=0.5,
                     id_range=None,
@@ -288,6 +291,7 @@ def test_stacked_csv_headers_with_input0_layout(expected_stacked_headers, test_c
                 generate_perf_report(
                     csv_files=[input_file.name],
                     signpost=None,
+                    signpost_range=None,
                     ignore_signposts=True,
                     min_percentage=0.5,
                     id_range=None,
