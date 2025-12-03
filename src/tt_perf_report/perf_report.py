@@ -1365,7 +1365,7 @@ def generate_perf_report(csv_files, start_signpost, end_signpost, ignore_signpos
             print(colored(f"Writing CSV stacked report to {base}.csv", "cyan"))
             dump_stacked_report(stacked_report, f"{base}.csv")
             print(colored(f"Plotting PNG stacked report to {base}.png", "cyan"))
-            plot_stacked_report(stacked_report, f"{base}.png")
+            plot_stacked_report(stacked_report, f"{base}.png", no_merge_devices=no_merge_devices)
 
 
 def is_host_op(op_data):
