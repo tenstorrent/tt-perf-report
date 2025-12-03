@@ -996,7 +996,6 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
         data_groups = [(i, stacked_df[stacked_df["Device"] == dev]) for i, dev in enumerate(devices)]
         total_sum = None  # Per-device totals used for threshold
         title = "Stacked Device Time per Device (100% per device)"
-        xlim = None
     else:
         plt.figure(figsize=(6, 8), dpi=300)
         ax = plt.gca()
