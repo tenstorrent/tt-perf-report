@@ -22,7 +22,7 @@ import pandas as pd
 color_output = None  # None means auto-detect, True forces color, False forces no color
 
 
-def get_value_physical_logical(input, is_physical : bool = True):
+def get_value_physical_logical(input, is_physical: bool = True):
     # Handle numeric inputs (old format)
     if isinstance(input, (int, float)):
         return int(input)
@@ -31,7 +31,7 @@ def get_value_physical_logical(input, is_physical : bool = True):
     if isinstance(input, str) and "[" in input and "]" in input:
         physical_part = input.split("[")[0]
         logical_part = input.split("[")[1].split("]")[0]
-        
+
         if is_physical:
             return int(physical_part)
         else:
@@ -112,7 +112,11 @@ class Cell:
         if self.raw_value is None or pd.isna(self.raw_value):
             return ""
 
-        if isinstance(self.raw_value, str) and ("Matmul" in self.raw_value or "OptimizedConvNew" in self.raw_value or "HaloDeviceOperation" in self.raw_value):
+        if isinstance(self.raw_value, str) and (
+            "Matmul" in self.raw_value
+            or "OptimizedConvNew" in self.raw_value
+            or "HaloDeviceOperation" in self.raw_value
+        ):
             parts = self.raw_value.split(maxsplit=1)
             op_name = parts[0]
             size = parts[1] if len(parts) > 1 else ""
@@ -150,7 +154,7 @@ def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signpo
 
     def _strip_signposts(window):
         return window[window["OP TYPE"] != "signpost"]
-    
+
     def _rows_before_idx(idx):
         window = filtered_data.loc[filtered_data.index < idx]
         return _strip_signposts(window)
@@ -175,7 +179,7 @@ def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signpo
         if len(matching) > 0:
             index = 0
             print(colored(f"Using operations until '{end_signpost}'.", "cyan"))
-            
+
             # If you supply the same signpost for start and end, we need to find the next occurrence if it exists
             if start_signpost == end_signpost:
                 index = index + 1
@@ -184,7 +188,7 @@ def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signpo
 
             if index < len(matching.index):
                 has_filtered_by_signposts = True
-            
+
                 filtered_data = _rows_before_idx(matching.index[index])
             else:
                 print(colored(f"Not enough occurrences of signpost '{end_signpost}' to apply to both start and end filters.", "yellow"))
@@ -381,6 +385,7 @@ def analyze_matmul(row, csv_format="v2"):
         core_count,  # Return the potentially adjusted core count
     )
 
+
 def analyze_halo(row):
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
 
@@ -476,6 +481,7 @@ def analyze_conv(row, csv_format="v2"):
         math_fidelity,
         config,
     )
+
 
 def analyze_op(row, prev_row, csv_format="v2"):
     op_code = Cell(row["OP CODE"])
@@ -674,8 +680,8 @@ def color_row(op_data, percentage, min_percentage):
         op_colors = {
             "(torch)": "red",
             "Matmul": "magenta",
-            "OptimizedConvNew" : "orange",
-            "Conv2d" : "orange",
+            "OptimizedConvNew": "orange",
+            "Conv2d": "orange",
             "LayerNorm": "cyan",
             "AllGather": "cyan",
             "AllReduce": "cyan",
@@ -922,7 +928,7 @@ def generate_matmul_advice(op_data):
 def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool = False, no_merge_devices: bool = False):
     # Ensure we filter out signpost rows before processing because they aren't useful in the stacked report
     filtered_rows = filter_signposts(rows)
-    
+
     if stack_by_input0_layout:
         visible_headers.append("Input 0 Memory")
 
@@ -986,10 +992,10 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
     if not HAS_MATPLOTLIB:
         print(f"Skipping plot generation for {output_file} (matplotlib not available)")
         return
-    
+
     colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
     bar_width = 0.5
-    
+
     if no_merge_devices:
         devices = sorted(stacked_df["Device"].unique())
         fig, ax = plt.subplots(figsize=(max(6, len(devices) * 2), 8), dpi=300)
@@ -1029,11 +1035,12 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
         ax.set_xticklabels([f"Dev {d}" for d in devices])
     else:
         ax.set_xlim(*xlim)
-    
+
     ax.set_ylabel("Device Time [us]")
     ax.set_title(title)
     plt.tight_layout()
     plt.savefig(output_file)
+
 
 def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
     merged_frames = []
@@ -1071,6 +1078,7 @@ def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
         merged_frames.append(df)
 
     return pd.concat(merged_frames, ignore_index=True)
+
 
 def merge_device_rows(df):
     block_by_device = defaultdict(list)
@@ -1129,6 +1137,7 @@ def merge_device_rows(df):
 
     return pd.DataFrame(merged_blocks)
 
+
 def parse_id_range(id_range_str):
     if id_range_str is None:
         return None
@@ -1167,14 +1176,29 @@ def filter_by_id_range(rows, id_range):
 def filter_host_ops(rows):
     return [row for row in rows if not is_host_op(row)]
 
+
 def filter_signposts(rows):
     return [row for row in rows if not is_signpost_op(row)]
+
 
 def main():
     args, id_range = parse_args()
     generate_perf_report(
-        args.csv_files, args.start_signpost, args.end_signpost, args.ignore_signposts, args.min_percentage, id_range, args.csv, args.no_advice,
-        args.tracing_mode, args.raw_op_codes, args.no_host_ops, args.no_stacked_report, args.no_stack_by_in0, args.stacked_csv, args.no_merge_devices
+        args.csv_files,
+        args.start_signpost,
+        args.end_signpost,
+        args.ignore_signposts,
+        args.min_percentage,
+        id_range,
+        args.csv,
+        args.no_advice,
+        args.tracing_mode,
+        args.raw_op_codes,
+        args.no_host_ops,
+        args.no_stacked_report,
+        args.no_stack_by_in0,
+        args.stacked_csv,
+        args.no_merge_devices,
     )
 
 
@@ -1222,9 +1246,23 @@ def parse_args():
     return args, id_range
 
 
-def generate_perf_report(csv_files, start_signpost, end_signpost, ignore_signposts, min_percentage,
-                         id_range, csv_output_file, no_advice, tracing_mode,
-                         raw_op_codes, no_host_ops, no_stacked_report, no_stack_by_in0, stacked_report_file, no_merge_devices):
+def generate_perf_report(
+    csv_files,
+    start_signpost,
+    end_signpost,
+    ignore_signposts,
+    min_percentage,
+    id_range,
+    csv_output_file,
+    no_advice,
+    tracing_mode,
+    raw_op_codes,
+    no_host_ops,
+    no_stacked_report,
+    no_stack_by_in0,
+    stacked_report_file,
+    no_merge_devices,
+):
     df = merge_perf_traces(csv_files)
 
     # Detect CSV format version
@@ -1307,7 +1345,7 @@ def generate_perf_report(csv_files, start_signpost, end_signpost, ignore_signpos
         "DRAM %",
         "FLOPs",
         "FLOPs %",
-        "Math Fidelity"
+        "Math Fidelity",
     ]
 
     additional_headers = [
@@ -1371,8 +1409,10 @@ def generate_perf_report(csv_files, start_signpost, end_signpost, ignore_signpos
 def is_host_op(op_data):
     return "(torch)" in op_data["OP Code"].raw_value
 
+
 def is_signpost_op(op_data):
     return "signpost" in op_data["OP Code"].raw_value
+
 
 if __name__ == "__main__":
     main()
