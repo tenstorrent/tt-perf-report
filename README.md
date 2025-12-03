@@ -46,7 +46,8 @@ for _ in range(10):
 The tool uses the last signpost by default, which is typically the most relevant section for a performance test(e.g., the final iteration after compilation / warmup).
 
 Common signpost usage:
-- `--signpost name`: Analyze ops after the specified signpost
+- `--start-signpost NAME`: Analyze ops after the specified signpost
+- `--end-signpost NAME`: Analyze ops before the specified signpost
 - `--ignore-signposts`: Analyze the entire trace
 
 ## Filtering Operations
