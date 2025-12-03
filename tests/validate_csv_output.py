@@ -228,6 +228,7 @@ def test_csv_headers_with_end_signpost(test_csv_content, mocker):
                     no_stacked_report=True,
                     no_stack_by_in0=True,
                     stacked_report_file=None,
+                    no_merge_devices=False,
                 )
 
                 with open(output_file.name, "r") as f:
@@ -284,6 +285,7 @@ def test_csv_headers_with_both_signposts(test_csv_content, mocker):
                     no_stacked_report=True,
                     no_stack_by_in0=True,
                     stacked_report_file=None,
+                    no_merge_devices=False,
                 )
 
                 with open(output_file.name, "r") as f:
@@ -340,6 +342,7 @@ def test_csv_headers_with_both_signposts_same_name(test_csv_content, mocker):
                     no_stacked_report=True,
                     no_stack_by_in0=True,
                     stacked_report_file=None,
+                    no_merge_devices=False,
                 )
 
                 with open(output_file.name, "r") as f:
