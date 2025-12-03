@@ -919,7 +919,7 @@ def generate_matmul_advice(op_data):
     return advice
 
 
-def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool = False, no_merge_devices:bool = False):
+def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool = False, no_merge_devices: bool = False):
     # Ensure we filter out signpost rows before processing because they aren't useful in the stacked report
     filtered_rows = filter_signposts(rows)
     
