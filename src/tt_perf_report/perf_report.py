@@ -574,7 +574,6 @@ def analyze_op(row, prev_row, csv_format="v2"):
         dram_percentage = Cell(None, unit="%", decimals=1)
         flops = Cell(None, unit="TFLOPs", decimals=1)
         flops_percentage = Cell(None, unit="%", decimals=1)
-    
     if "DEVICE ID" in row and pd.notna(row["DEVICE ID"]) and isinstance(row["DEVICE ID"], (int, float)):
         device_id = Cell(int(row["DEVICE ID"]))
     else:
