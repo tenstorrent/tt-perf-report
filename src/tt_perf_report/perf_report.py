@@ -17,7 +17,7 @@ import pandas as pd
 color_output = None  # None means auto-detect, True forces color, False forces no color
 
 
-def get_value_physical_logical(input, is_physical : bool = True):
+def get_value_physical_logical(input, is_physical: bool = True):
     # Handle numeric inputs (old format)
     if isinstance(input, (int, float)):
         return int(input)
@@ -477,18 +477,18 @@ def analyze_op(row, prev_row, csv_format="v2"):
     cores = Cell(int(row["CORE COUNT"]) if pd.notna(row["CORE COUNT"]) else None)
     device_time = Cell(
         row["DEVICE KERNEL DURATION [ns]"] / 1000 if pd.notna(row["DEVICE KERNEL DURATION [ns]"]) else None,
-        unit="us",
+        unit="μs",
         decimals=0,
     )
 
     if prev_row is not None and pd.notna(prev_row["OP TO OP LATENCY [ns]"]):
         op_to_op_gap = Cell(
             row["OP TO OP LATENCY [ns]"] / 1000 if pd.notna(row["OP TO OP LATENCY [ns]"]) else None,
-            unit="us",
+            unit="μs",
             decimals=0,
         )
     else:
-        op_to_op_gap = Cell(None, unit="us", decimals=0)
+        op_to_op_gap = Cell(None, unit="μs", decimals=0)
 
     def get_entry(k: str) -> Union[str, None]:
         return row[k] if k in row else None
@@ -761,8 +761,8 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
         "Total %": Cell(100.0, unit="%", decimals=1),
         "Bound": Cell(""),
         "OP Code": Cell(f"{device_ops} device ops, {host_ops} host ops, {signpost_count} signposts"),
-        "Device Time": Cell(total_device_time, unit="us", decimals=0),
-        "Op-to-Op Gap": Cell(total_visible_gap, unit="us", decimals=0),
+        "Device Time": Cell(total_device_time, unit="μs", decimals=0),
+        "Op-to-Op Gap": Cell(total_visible_gap, unit="μs", decimals=0),
     }
     for header in headers:
         if header not in total_row:
@@ -808,7 +808,7 @@ def print_op_to_op_gap_advice(rows, headers, col_widths):
 
         percentage_saved = (max_gap_overhead / total_duration) * 100
         print(
-            f"\nThese ops have a >6us gap since the previous operation. Running with tracing could save {max_gap_overhead:.0f} us ({percentage_saved:.1f}% of overall time)"
+            f"\nThese ops have a >6 μs gap since the previous operation. Running with tracing could save {max_gap_overhead:.0f} μs ({percentage_saved:.1f}% of overall time)"
         )
         print(
             "Alternatively ensure device is not waiting for the host and use device.enable_async(True). Experts can try moving runtime args in the kernels to compile-time args.\n"
@@ -978,7 +978,7 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
         color = colors[i % len(colors)]
         bar = plt.bar(1, row["Device_Time_Sum_us"], width, label=row["OP Code Joined"], bottom=bottom, color=color)
 
-        text = f"({row['%']:.1f}%) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f}us; {row['Ops_Count']} ops"
+        text = f"({row['%']:.1f}%) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f} μs; {row['Ops_Count']} ops"
         if not pd.isna(row["Flops_mean"]):
             text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
 
@@ -997,8 +997,8 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
 
     # Set plot labels and title
     plt.xlim(1 - width / 2 - 0.05, 1 + width / 2 + 0.05)
-    plt.ylabel("Device Time [us]")
-    plt.title(f"Stacked Device Time (Total: {total_sum:.1f} us)")
+    plt.ylabel("Device Time [μs]")
+    plt.title(f"Stacked Device Time (Total: {total_sum:.1f} μs)")
     plt.tight_layout()
 
     # Save the plot to a file
@@ -1128,7 +1128,7 @@ def filter_by_id_range(rows, id_range):
 
         # Reset the op-to-op gap for the first item in the filtered range
         if filtered_rows:
-            filtered_rows[0]["Op-to-Op Gap"] = Cell(None, unit="us", decimals=0)
+            filtered_rows[0]["Op-to-Op Gap"] = Cell(None, unit="μs", decimals=0)
 
         return filtered_rows
     return rows
