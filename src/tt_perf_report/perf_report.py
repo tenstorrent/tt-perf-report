@@ -954,7 +954,7 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout:bool =
     if no_merge_devices:
         device_totals = stacked_df.groupby("Device")["Device_Time_Sum_us"].transform("sum")
         stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / device_totals * 100).fillna(0)
-    else:    
+    else:
         total_device_time = stacked_df["Device_Time_Sum_us"].sum()
         stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / total_device_time * 100).fillna(0) if total_device_time != 0 else 0
 
