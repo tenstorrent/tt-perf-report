@@ -29,6 +29,7 @@ def expected_headers():
         "Total %",
         "Bound",
         "OP Code",
+        "Device",
         "Device Time",
         "Op-to-Op Gap",
         "Cores",
@@ -78,6 +79,7 @@ def test_csv_headers_with_all_options(expected_headers, test_csv_content, mocker
                     no_stacked_report=True,
                     no_stack_by_in0=True,
                     stacked_report_file=None,
+                    no_merge_devices=False,
                 )
 
                 assert os.path.exists(output_file.name), "Output CSV file should be created"
@@ -169,6 +171,7 @@ def test_csv_headers_with_start_signpost(test_csv_content, mocker):
                     no_stacked_report=True,
                     no_stack_by_in0=True,
                     stacked_report_file=None,
+                    no_merge_devices=False,
                 )
 
                 with open(output_file.name, "r") as f:
@@ -225,6 +228,7 @@ def test_csv_headers_with_end_signpost(test_csv_content, mocker):
                     no_stacked_report=True,
                     no_stack_by_in0=True,
                     stacked_report_file=None,
+                    no_merge_devices=False,
                 )
 
                 with open(output_file.name, "r") as f:
@@ -281,6 +285,7 @@ def test_csv_headers_with_both_signposts(test_csv_content, mocker):
                     no_stacked_report=True,
                     no_stack_by_in0=True,
                     stacked_report_file=None,
+                    no_merge_devices=False,
                 )
 
                 with open(output_file.name, "r") as f:
@@ -337,6 +342,7 @@ def test_csv_headers_with_both_signposts_same_name(test_csv_content, mocker):
                     no_stacked_report=True,
                     no_stack_by_in0=True,
                     stacked_report_file=None,
+                    no_merge_devices=False,
                 )
 
                 with open(output_file.name, "r") as f:
@@ -387,8 +393,10 @@ def test_stacked_csv_headers(expected_stacked_headers, test_csv_content, mocker)
         input_file.write(test_csv_content)
         input_file.flush()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            stacked_csv_file = os.path.join(temp_dir, "test_stacked.csv")
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix="", delete=False
+        ) as output_file:
+            stacked_csv_file = output_file.name + ".csv"
 
             try:
                 mocker.patch("sys.stdout", new_callable=StringIO)
@@ -406,7 +414,8 @@ def test_stacked_csv_headers(expected_stacked_headers, test_csv_content, mocker)
                     no_host_ops=False,
                     no_stacked_report=False,
                     no_stack_by_in0=True,
-                    stacked_report_file=stacked_csv_file,
+                    stacked_report_file=output_file.name,
+                    no_merge_devices=False,
                 )
 
                 assert os.path.exists(stacked_csv_file), "Stacked CSV file should be created"
@@ -447,8 +456,10 @@ def test_stacked_csv_headers_with_input0_layout(expected_stacked_headers, test_c
         input_file.write(test_csv_content)
         input_file.flush()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            stacked_csv_file = os.path.join(temp_dir, "test_stacked_in0.csv")
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix="", delete=False
+        ) as output_file:
+            stacked_csv_file = output_file.name + ".csv"
 
             try:
                 mocker.patch("sys.stdout", new_callable=StringIO)
@@ -466,7 +477,8 @@ def test_stacked_csv_headers_with_input0_layout(expected_stacked_headers, test_c
                     no_host_ops=False,
                     no_stacked_report=False,
                     no_stack_by_in0=False,
-                    stacked_report_file=stacked_csv_file,
+                    stacked_report_file=output_file.name,
+                    no_merge_devices=False,
                 )
 
                 with open(stacked_csv_file, "r") as f:
