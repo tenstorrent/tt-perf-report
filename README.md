@@ -49,6 +49,7 @@ Common signpost usage:
 - `--start-signpost NAME`: Analyze ops after the specified signpost
 - `--end-signpost NAME`: Analyze ops before the specified signpost
 - `--ignore-signposts`: Analyze the entire trace
+- `--show-signposts`: Keep signposts visible in the output table (by default they are filtered out)
 
 ## Filtering Operations
 
