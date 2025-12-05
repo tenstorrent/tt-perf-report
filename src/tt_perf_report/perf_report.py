@@ -1082,6 +1082,8 @@ def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
 
 def merge_device_rows(df):
     block_by_device = defaultdict(list)
+    # Preserve non-device ops (host ops, signposts, etc.)
+    non_device_rows = []
 
     for _, row in df.iterrows():
         op_name = row["OP CODE"]
@@ -1090,6 +1092,8 @@ def merge_device_rows(df):
         if op_type == "tt_dnn_device":
             device_id = int(row["DEVICE ID"])
             block_by_device[device_id].append((op_name, row.to_dict()))
+        else:
+            non_device_rows.append(row.to_dict())
 
     device_ids = sorted(block_by_device.keys())
     merged_blocks = []
@@ -1135,7 +1139,8 @@ def merge_device_rows(df):
 
         global_index += 1
 
-    return pd.DataFrame(merged_blocks)
+    all_rows = merged_blocks + non_device_rows
+    return pd.DataFrame(all_rows)
 
 
 def parse_id_range(id_range_str):
