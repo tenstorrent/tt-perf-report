@@ -49,9 +49,9 @@ Common signpost usage:
 - `--start-signpost NAME`: Analyze ops after the specified signpost
 - `--end-signpost NAME`: Analyze ops before the specified signpost
 - `--ignore-signposts`: Analyze the entire trace
-- `--show-signposts`: Keep signposts visible in the output table (by default they are filtered out)
+- `--print-signposts`: Keep signposts visible in the output table (by default they are filtered out)
 
-The `--show-signposts` flag is particularly useful when you have multiple similar operations and want to distinguish them in the output. For example, if your model has multiple matmuls, you can place a signpost before each one:
+The `--print-signposts` flag is particularly useful when you have multiple similar operations and want to distinguish them in the output. For example, if your model has multiple matmuls, you can place a signpost before each one:
 
 ```python
 tracy.signpost("Q projection matmul")

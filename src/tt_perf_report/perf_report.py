@@ -139,23 +139,23 @@ class Cell:
         return self.format()
 
 
-def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signposts=False, show_signposts=False):
+def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signposts=False, print_signposts=False):
     signpost_rows = df[df["OP TYPE"] == "signpost"]
     filtered_data = df
     has_filtered_by_signposts = False
 
+    def _strip_signposts(window):
+        if print_signposts:
+            return window
+        return window[window["OP TYPE"] != "signpost"]
+
     if ignore_signposts:
         print(colored("Ignoring all signposts. Using the entire file for analysis.", "cyan"))
-        return df
+        return _strip_signposts(df)
 
     if signpost_rows.empty:
         print(colored("No signposts found in the file. Using the entire file for analysis.", "yellow"))
-        return df
-
-    def _strip_signposts(window):
-        if show_signposts:
-            return window
-        return window[window["OP TYPE"] != "signpost"]
+        return _strip_signposts(df)
 
     def _rows_before_idx(idx):
         window = filtered_data.loc[filtered_data.index < idx]
@@ -1202,7 +1202,7 @@ def main():
         args.start_signpost,
         args.end_signpost,
         args.ignore_signposts,
-        args.show_signposts,
+        args.print_signposts,
         args.min_percentage,
         id_range,
         args.csv,
@@ -1226,7 +1226,7 @@ def parse_args():
         "--ignore-signposts", action="store_true", help="Ignore all signposts and use the entire file for analysis"
     )
     parser.add_argument(
-        "--show-signposts", action="store_true", help="Keep signposts visible in the output table"
+        "--print-signposts", action="store_true", help="Keep signposts visible in the output table"
     )
     parser.add_argument(
         "--min-percentage", type=float, default=0.5, help="Minimum percentage for coloring (default: 0.5)"
@@ -1269,7 +1269,7 @@ def generate_perf_report(
     start_signpost,
     end_signpost,
     ignore_signposts,
-    show_signposts,
+    print_signposts,
     min_percentage,
     id_range,
     csv_output_file,
@@ -1301,7 +1301,7 @@ def generate_perf_report(
     else:
         print(colored("Warning: 'HOST START TS' column not found. CSV will not be sorted.", "yellow"))
 
-    df = filter_by_signpost(df, start_signpost, end_signpost, ignore_signposts, show_signposts)
+    df = filter_by_signpost(df, start_signpost, end_signpost, ignore_signposts, print_signposts)
 
     if no_merge_devices and "DEVICE ID" in df.columns and df["DEVICE ID"].nunique() > 1:
         print(colored(f"Detected data from {df['DEVICE ID'].nunique()} devices. Keeping separate device data...", "cyan"))
