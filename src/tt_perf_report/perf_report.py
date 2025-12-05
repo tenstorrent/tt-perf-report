@@ -1094,6 +1094,10 @@ def merge_device_rows(df):
     device_ids = sorted(block_by_device.keys())
     merged_blocks = []
 
+    # If there are no device operations, return an empty dataframe
+    if not device_ids:
+        return pd.DataFrame()
+
     global_index = 0
     while max(len(block_by_device[device_id]) for device_id in device_ids) > 0:
         blocks = []
@@ -1283,11 +1287,14 @@ def generate_perf_report(
         print(colored("Warning: 'HOST START TS' column not found. CSV will not be sorted.", "yellow"))
 
     df = filter_by_signpost(df, start_signpost, end_signpost, ignore_signposts)
+    unique_devices = df["DEVICE ID"].nunique()
 
     if no_merge_devices and "DEVICE ID" in df.columns and df["DEVICE ID"].nunique() > 1:
-        print(colored(f"Detected data from {df['DEVICE ID'].nunique()} devices. Keeping separate device data...", "cyan"))
+        print(colored(f"Detected data from {unique_devices} devices. Keeping separate device data...", "cyan"))
+    elif unique_devices == 0:
+        print(colored("No device operations found in the CSV data.", "yellow"))
     else:
-        print(colored(f"Detected data from {df['DEVICE ID'].nunique()} devices. Merging device data...", "cyan"))
+        print(colored(f"Detected data from {unique_devices} devices. Merging device data...", "cyan"))
         df = merge_device_rows(df)
 
     rows = []
