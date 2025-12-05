@@ -158,11 +158,17 @@ def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signpo
         return _strip_signposts(df)
 
     def _rows_before_idx(idx):
-        window = filtered_data.loc[filtered_data.index < idx]
+        if print_signposts:
+            window = filtered_data.loc[filtered_data.index <= idx]
+        else:
+            window = filtered_data.loc[filtered_data.index < idx]
         return _strip_signposts(window)
 
     def _rows_after_idx(idx):
-        window = filtered_data.loc[filtered_data.index > idx]
+        if print_signposts:
+            window = filtered_data.loc[filtered_data.index >= idx]
+        else:
+            window = filtered_data.loc[filtered_data.index > idx]
         return _strip_signposts(window)
 
     if start_signpost:
@@ -203,7 +209,9 @@ def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signpo
     last_signpost = signpost_rows.iloc[-1]["OP CODE"]
     print(colored(f"Detected signposts: {', '.join(signpost_rows['OP CODE'])}", "cyan"))
     print(colored(f"Using last signpost: {last_signpost} for analysis.", "cyan"))
-    window = df[df["OP CODE"].eq(last_signpost).cummax()].iloc[1:]
+    window = df[df["OP CODE"].eq(last_signpost).cummax()]
+    if not print_signposts:
+        window = window.iloc[1:]
     return _strip_signposts(window)
 
 
