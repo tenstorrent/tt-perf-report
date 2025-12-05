@@ -139,28 +139,36 @@ class Cell:
         return self.format()
 
 
-def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signposts=False):
+def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signposts=False, print_signposts=False):
     signpost_rows = df[df["OP TYPE"] == "signpost"]
     filtered_data = df
     has_filtered_by_signposts = False
 
+    def _strip_signposts(window):
+        if print_signposts:
+            return window
+        return window[window["OP TYPE"] != "signpost"]
+
     if ignore_signposts:
         print(colored("Ignoring all signposts. Using the entire file for analysis.", "cyan"))
-        return df
+        return _strip_signposts(df)
 
     if signpost_rows.empty:
         print(colored("No signposts found in the file. Using the entire file for analysis.", "yellow"))
-        return df
-
-    def _strip_signposts(window):
-        return window[window["OP TYPE"] != "signpost"]
+        return _strip_signposts(df)
 
     def _rows_before_idx(idx):
-        window = filtered_data.loc[filtered_data.index < idx]
+        if print_signposts:
+            window = filtered_data.loc[filtered_data.index <= idx]
+        else:
+            window = filtered_data.loc[filtered_data.index < idx]
         return _strip_signposts(window)
 
     def _rows_after_idx(idx):
-        window = filtered_data.loc[filtered_data.index > idx]
+        if print_signposts:
+            window = filtered_data.loc[filtered_data.index >= idx]
+        else:
+            window = filtered_data.loc[filtered_data.index > idx]
         return _strip_signposts(window)
 
     if start_signpost:
@@ -201,7 +209,9 @@ def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signpo
     last_signpost = signpost_rows.iloc[-1]["OP CODE"]
     print(colored(f"Detected signposts: {', '.join(signpost_rows['OP CODE'])}", "cyan"))
     print(colored(f"Using last signpost: {last_signpost} for analysis.", "cyan"))
-    window = df[df["OP CODE"].eq(last_signpost).cummax()].iloc[1:]
+    window = df[df["OP CODE"].eq(last_signpost).cummax()]
+    if not print_signposts:
+        window = window.iloc[1:]
     return _strip_signposts(window)
 
 
@@ -1082,12 +1092,16 @@ def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
 
 def merge_device_rows(df):
     block_by_device = defaultdict(list)
+    signpost_rows = []
 
     for _, row in df.iterrows():
         op_name = row["OP CODE"]
         op_type = row["OP TYPE"]
 
-        if op_type == "tt_dnn_device":
+        if op_type == "signpost":
+            # Preserve signpost rows to add back later
+            signpost_rows.append(row.to_dict())
+        elif op_type == "tt_dnn_device":
             device_id = int(row["DEVICE ID"])
             block_by_device[device_id].append((op_name, row.to_dict()))
 
@@ -1135,7 +1149,15 @@ def merge_device_rows(df):
 
         global_index += 1
 
-    return pd.DataFrame(merged_blocks)
+    # Combine merged device rows with signpost rows and sort by HOST START TS
+    all_rows = merged_blocks + signpost_rows
+    result_df = pd.DataFrame(all_rows)
+
+    # Sort by HOST START TS if the column exists
+    if "HOST START TS" in result_df.columns and not result_df.empty:
+        result_df = result_df.sort_values(by="HOST START TS")
+
+    return result_df
 
 
 def parse_id_range(id_range_str):
@@ -1188,6 +1210,7 @@ def main():
         args.start_signpost,
         args.end_signpost,
         args.ignore_signposts,
+        args.print_signposts,
         args.min_percentage,
         id_range,
         args.csv,
@@ -1209,6 +1232,9 @@ def parse_args():
     parser.add_argument("--end-signpost", type=str, help="Specify a signpost to delimit the ending range of the data. The first instance of the matching signpost will be used as the end of the data range. If the same value is provided for both start and end, the end range will be the second instance of the signpost.", default=None)
     parser.add_argument(
         "--ignore-signposts", action="store_true", help="Ignore all signposts and use the entire file for analysis"
+    )
+    parser.add_argument(
+        "--print-signposts", action="store_true", help="Keep signposts visible in the output table"
     )
     parser.add_argument(
         "--min-percentage", type=float, default=0.5, help="Minimum percentage for coloring (default: 0.5)"
@@ -1251,6 +1277,7 @@ def generate_perf_report(
     start_signpost,
     end_signpost,
     ignore_signposts,
+    print_signposts,
     min_percentage,
     id_range,
     csv_output_file,
@@ -1282,7 +1309,7 @@ def generate_perf_report(
     else:
         print(colored("Warning: 'HOST START TS' column not found. CSV will not be sorted.", "yellow"))
 
-    df = filter_by_signpost(df, start_signpost, end_signpost, ignore_signposts)
+    df = filter_by_signpost(df, start_signpost, end_signpost, ignore_signposts, print_signposts)
 
     if no_merge_devices and "DEVICE ID" in df.columns and df["DEVICE ID"].nunique() > 1:
         print(colored(f"Detected data from {df['DEVICE ID'].nunique()} devices. Keeping separate device data...", "cyan"))

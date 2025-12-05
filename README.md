@@ -49,6 +49,22 @@ Common signpost usage:
 - `--start-signpost NAME`: Analyze ops after the specified signpost
 - `--end-signpost NAME`: Analyze ops before the specified signpost
 - `--ignore-signposts`: Analyze the entire trace
+- `--print-signposts`: Keep signposts visible in the output table (by default they are filtered out)
+
+The `--print-signposts` flag is particularly useful when you have multiple similar operations and want to distinguish them in the output. For example, if your model has multiple matmuls, you can place a signpost before each one:
+
+```python
+tracy.signpost("Q projection matmul")
+q = ttnn.matmul(x, w_q)
+
+tracy.signpost("K projection matmul")
+k = ttnn.matmul(x, w_k)
+
+tracy.signpost("V projection matmul")
+v = ttnn.matmul(x, w_v)
+```
+
+With `--show-signposts`, the signposts will appear in the output table, making it easy to identify which matmul corresponds to which projection when analyzing performance results.
 
 ## Filtering Operations
 
