@@ -1289,7 +1289,7 @@ def generate_perf_report(
     df = filter_by_signpost(df, start_signpost, end_signpost, ignore_signposts)
     unique_devices = df["DEVICE ID"].nunique()
 
-    if no_merge_devices and "DEVICE ID" in df.columns and df["DEVICE ID"].nunique() > 1:
+    if no_merge_devices and "DEVICE ID" in df.columns and unique_devices > 1:
         print(colored(f"Detected data from {unique_devices} devices. Keeping separate device data...", "cyan"))
     elif unique_devices == 0:
         print(colored("No device operations found in the CSV data.", "yellow"))
