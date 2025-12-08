@@ -1140,7 +1140,15 @@ def merge_device_rows(df):
         global_index += 1
 
     all_rows = merged_blocks + non_device_rows
-    return pd.DataFrame(all_rows)
+    result_df = pd.DataFrame(all_rows)
+    
+    # Restore chronological order by sorting by original row position or timestamp
+    if "ORIGINAL_ROW" in result_df.columns:
+        result_df = result_df.sort_values(by="ORIGINAL_ROW").reset_index(drop=True)
+    elif "HOST START TS" in result_df.columns:
+        result_df = result_df.sort_values(by="HOST START TS").reset_index(drop=True)
+    
+    return result_df
 
 
 def parse_id_range(id_range_str):
