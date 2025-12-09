@@ -69,6 +69,7 @@ def test_csv_headers_with_all_options(expected_headers, test_csv_content, mocker
                     start_signpost=None,
                     end_signpost=None,
                     ignore_signposts=True,
+                    print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
                     csv_output_file=output_file.name,
@@ -161,6 +162,7 @@ def test_csv_headers_with_start_signpost(test_csv_content, mocker):
                     start_signpost='ResNet module started',
                     end_signpost=None,
                     ignore_signposts=False,
+                    print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
                     csv_output_file=output_file.name,
@@ -192,6 +194,12 @@ def test_csv_headers_with_start_signpost(test_csv_content, mocker):
                     
                     assert actual_last_op == expected_last_op, \
                         f"Last operation should be '{expected_last_op}', got '{actual_last_op}'"
+                    
+                    # Signposts should be filtered out
+                    for row in data_rows:
+                        actual_op = row[op_code_index]
+                        assert "(signpost)" not in actual_op, \
+                            f"Output should not contain signpost rows, but found: {actual_op}"
 
             # Clean up
             finally:
@@ -218,6 +226,7 @@ def test_csv_headers_with_end_signpost(test_csv_content, mocker):
                     start_signpost=None,
                     end_signpost='ResNet module finished',
                     ignore_signposts=False,
+                    print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
                     csv_output_file=output_file.name,
@@ -249,6 +258,12 @@ def test_csv_headers_with_end_signpost(test_csv_content, mocker):
                     
                     assert expected_last_op == actual_last_op, \
                         f"Last operation before 'ResNet module finished' signpost should be '{expected_last_op}', got '{actual_last_op}'"
+                    
+                    # Signposts should be filtered out
+                    for row in data_rows:
+                        actual_op = row[op_code_index]
+                        assert "(signpost)" not in actual_op, \
+                            f"Output should not contain signpost rows, but found: {actual_op}"
 
             # Clean up
             finally:
@@ -275,6 +290,7 @@ def test_csv_headers_with_both_signposts(test_csv_content, mocker):
                     start_signpost='ResNet module started',
                     end_signpost='ResNet module finished',
                     ignore_signposts=False,
+                    print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
                     csv_output_file=output_file.name,
@@ -306,6 +322,12 @@ def test_csv_headers_with_both_signposts(test_csv_content, mocker):
                     
                     assert expected_last_op == actual_last_op, \
                         f"Last operation before 'ResNet module finished' signpost should be '{expected_last_op}', got '{actual_last_op}'"
+                    
+                    # Signposts should be filtered out
+                    for row in data_rows:
+                        actual_op = row[op_code_index]
+                        assert "(signpost)" not in actual_op, \
+                            f"Output should not contain signpost rows, but found: {actual_op}"
 
             # Clean up
             finally:
@@ -332,6 +354,7 @@ def test_csv_headers_with_both_signposts_same_name(test_csv_content, mocker):
                     start_signpost='OFT block started',
                     end_signpost='OFT block started',
                     ignore_signposts=False,
+                    print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
                     csv_output_file=output_file.name,
@@ -363,6 +386,82 @@ def test_csv_headers_with_both_signposts_same_name(test_csv_content, mocker):
                     
                     assert expected_last_op == actual_last_op, \
                         f"Last operation before 'OFT block started (signpost)' signpost should be '{expected_last_op}', got '{actual_last_op}'"
+                    
+                    # Signposts should be filtered out
+                    for row in data_rows:
+                        actual_op = row[op_code_index]
+                        assert "(signpost)" not in actual_op, \
+                            f"Output should not contain signpost rows, but found: {actual_op}"
+
+            # Clean up
+            finally:
+                try:
+                    os.unlink(input_file.name)
+                    os.unlink(output_file.name)
+                except OSError:
+                    pass
+
+def test_csv_headers_with_print_signposts(test_csv_content, mocker):
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".csv", delete=False
+    ) as input_file:
+        input_file.write(test_csv_content)
+        input_file.flush()
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False
+        ) as output_file:
+            try:
+                mocker.patch("sys.stdout", new_callable=StringIO)
+                generate_perf_report(
+                    csv_files=[input_file.name],
+                    start_signpost='ResNet module started',
+                    end_signpost='ResNet module finished',
+                    ignore_signposts=False,
+                    print_signposts=True,
+                    min_percentage=0.5,
+                    id_range=None,
+                    csv_output_file=output_file.name,
+                    no_advice=False,
+                    tracing_mode=False,
+                    raw_op_codes=True,
+                    no_host_ops=False,
+                    no_stacked_report=True,
+                    no_stack_by_in0=True,
+                    stacked_report_file=None,
+                    no_merge_devices=False,
+                )
+
+                with open(output_file.name, "r") as f:
+                    reader = csv.reader(f)
+                    actual_headers = next(reader)
+                    data_rows = list(reader)
+
+                    # Check that the data is delimited by the two chosen signposts
+                    first_row = data_rows[0]
+                    op_code_index = actual_headers.index("OP Code")
+                    expected_first_op = "InterleavedToShardedDeviceOperation"
+                    actual_first_op = first_row[op_code_index]
+                    expected_last_op = "ShardedToInterleavedDeviceOperation"
+                    actual_last_op = data_rows[-1][op_code_index]
+                    
+                    assert actual_first_op == expected_first_op, \
+                        f"First operation after 'ResNet module started' signpost should be '{expected_first_op}', got '{actual_first_op}'"
+                    
+                    assert expected_last_op == actual_last_op, \
+                        f"Last operation before 'ResNet module finished' signpost should be '{expected_last_op}', got '{actual_last_op}'"
+                    
+                    # Signposts should be present
+                    signpost_count = 0
+
+                    for row in data_rows:
+                        actual_op = row[op_code_index]
+
+                        if " (signpost)" in actual_op:
+                            signpost_count += 1
+                        
+                    assert signpost_count == 16, \
+                        f"Output should contain 16 signpost rows between start and end signposts, found: {signpost_count} signposts"
 
             # Clean up
             finally:
@@ -405,6 +504,7 @@ def test_stacked_csv_headers(expected_stacked_headers, test_csv_content, mocker)
                     start_signpost=None,
                     end_signpost=None,
                     ignore_signposts=True,
+                    print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
                     csv_output_file=None,
@@ -468,6 +568,7 @@ def test_stacked_csv_headers_with_input0_layout(expected_stacked_headers, test_c
                     start_signpost=None,
                     end_signpost=None,
                     ignore_signposts=True,
+                    print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
                     csv_output_file=None,
