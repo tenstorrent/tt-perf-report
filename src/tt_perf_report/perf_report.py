@@ -1147,8 +1147,11 @@ def merge_device_rows(df):
     all_rows = merged_blocks + non_device_rows  
     result_df = pd.DataFrame(all_rows)
 
-    # Ensure proper ordering by HOST START TS after merging
-    result_df = result_df.sort_values(by="HOST START TS")
+    # Restore chronological order by sorting by original row position or timestamp
+    if "ORIGINAL_ROW" in result_df.columns:
+        result_df = result_df.sort_values(by="ORIGINAL_ROW").reset_index(drop=True)
+    elif "HOST START TS" in result_df.columns:
+        result_df = result_df.sort_values(by="HOST START TS").reset_index(drop=True)
     
     return result_df
 
