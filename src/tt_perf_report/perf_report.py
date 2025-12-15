@@ -929,6 +929,10 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
     # Ensure we filter out signpost rows before processing because they aren't useful in the stacked report
     filtered_rows = filter_signposts(rows)
 
+    # Return an empty DataFrame if there are no rows to process
+    if len(filtered_rows) == 0:
+        return pd.DataFrame() 
+
     if stack_by_input0_layout:
         visible_headers.append("Input 0 Memory")
 
@@ -1421,6 +1425,10 @@ def generate_perf_report(
     # handle stacked report generation
     if not(no_stacked_report) and rows:
         stacked_report = generate_stacked_report(rows, visible_headers, not(no_stack_by_in0), no_merge_devices)
+
+        if stacked_report.empty:
+            print(colored("No data available for stacked report generation.", "yellow"))
+            return
         
         if not csv_output_file:
             print_stacked_report(stacked_report, no_merge_devices)
