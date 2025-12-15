@@ -1317,7 +1317,6 @@ def generate_perf_report(
         df = merge_device_rows(df)
 
     rows = []
-    prev_row = None
     prev_non_signpost_row = None
     device_ops = 0
     host_ops = 0
