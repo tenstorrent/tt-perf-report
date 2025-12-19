@@ -142,8 +142,8 @@ def total_dram_bandwidth_gb_s(arch="wormhole"):
 # Operation category classification - single source of truth
 OPERATION_CATEGORIES = {
     "Compute": {
-        "OptimizedConvNew", "Conv2d", "Matmul", "BinaryNgDeviceOperation", "BinaryDeviceOperation",
-        "UnaryDeviceOperation", "Pool2D", "UpSample", "GroupNorm", "GridSample", "AccumulationDeviceOperation", "LayerNorm", "ScaledDotProductAttention"
+        "OptimizedConvNew", "Conv2d", "Conv2dDeviceOperation", "Matmul", "BinaryNgDeviceOperation", "BinaryDeviceOperation",
+        "UnaryDeviceOperation", "Pool2D", "UpSample", "GroupNorm", "GridSample", "AccumulationDeviceOperation", "LayerNorm", "ScaledDotProductAttention", "ReduceDeviceOperation", "SoftmaxDeviceOperation"
     },
     "DM": {
         "MoveDeviceOperation", "CopyDeviceOperation", "InterleavedToShardedDeviceOperation", 
@@ -152,9 +152,9 @@ OPERATION_CATEGORIES = {
         "PaddedSliceDeviceOperation", "SliceWriteDeviceOperation",
     },
     "TM": {
-        "ReshapeDeviceOperation", "Transpose", "PermuteDeviceOperation", "SliceDeviceOperation", "ConcatDeviceOperation",
+        "ReshapeDeviceOperation", "Transpose", "TransposeDeviceOperation", "PermuteDeviceOperation", "SliceDeviceOperation", "ConcatDeviceOperation",
         "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "TypecastDeviceOperation", 
-        "NLPConcatHeadsDeviceOperation", "NlpCreateHeadsDeviceOperation", "TernaryDeviceOperation"
+        "NLPConcatHeadsDeviceOperation", "NlpCreateHeadsDeviceOperation", "TernaryDeviceOperation", "FillPadDeviceOperation",
     }
 }
 
