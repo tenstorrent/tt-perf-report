@@ -143,7 +143,7 @@ def total_dram_bandwidth_gb_s(arch="wormhole"):
 OPERATION_CATEGORIES = {
     "Compute": {
         "OptimizedConvNew", "Conv2d", "Conv2dDeviceOperation", "Matmul", "BinaryNgDeviceOperation", "BinaryDeviceOperation",
-        "UnaryDeviceOperation", "Pool2D", "UpSample", "GroupNorm", "GridSample", "AccumulationDeviceOperation", "LayerNorm", "ScaledDotProductAttention", "ReduceDeviceOperation", "SoftmaxDeviceOperation"
+        "UnaryDeviceOperation", "Pool2D", "UpSample", "GroupNorm", "GridSample", "AccumulationDeviceOperation", "LayerNorm", "ScaledDotProductAttention", "ReduceDeviceOperation", "SoftmaxDeviceOperation", "EmbeddingsDeviceOperation", "LayerNormDeviceOperation", "MinimalMatmulOp"
     },
     "DM": {
         "MoveDeviceOperation", "CopyDeviceOperation", "InterleavedToShardedDeviceOperation", 
