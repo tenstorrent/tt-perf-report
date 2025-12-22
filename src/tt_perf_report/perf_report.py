@@ -492,9 +492,10 @@ def analyze_op(row, prev_row, csv_format="v2"):
         decimals=0,
     )
 
-    if prev_row is not None and pd.notna(prev_row["OP TO OP LATENCY [ns]"]):
+    # Calculate op-to-op gap only if there's a valid previous non-signpost operation
+    if prev_row is not None and prev_row["OP TYPE"] != "signpost" and pd.notna(row["OP TO OP LATENCY [ns]"]):
         op_to_op_gap = Cell(
-            row["OP TO OP LATENCY [ns]"] / 1000 if pd.notna(row["OP TO OP LATENCY [ns]"]) else None,
+            row["OP TO OP LATENCY [ns]"] / 1000,
             unit="μs",
             decimals=0,
         )
@@ -1147,9 +1148,9 @@ def merge_device_rows(df):
 
         global_index += 1
 
-    all_rows = merged_blocks + non_device_rows
+    all_rows = merged_blocks + non_device_rows  
     result_df = pd.DataFrame(all_rows)
-    
+
     # Restore chronological order by sorting by original row position or timestamp
     if "ORIGINAL_ROW" in result_df.columns:
         result_df = result_df.sort_values(by="ORIGINAL_ROW").reset_index(drop=True)
@@ -1320,12 +1321,12 @@ def generate_perf_report(
         df = merge_device_rows(df)
 
     rows = []
-    prev_row = None
+    prev_non_signpost_row = None
     device_ops = 0
     host_ops = 0
     signpost_count = 0
     for _, row in df.iterrows():
-        op_data, current_gap = analyze_op(row, prev_row, csv_format)
+        op_data, current_gap = analyze_op(row, prev_non_signpost_row, csv_format)
         op_data["ID"] = Cell(row["ORIGINAL_ROW"])  # Use the original row number
         op_data["Global Call Count"] = Cell(row["GLOBAL CALL COUNT"])
         if raw_op_codes:
@@ -1336,9 +1337,11 @@ def generate_perf_report(
         if "signpost" in row["OP TYPE"]:
             op_data["OP Code"].raw_value = f"{row['OP CODE']} (signpost)"
             op_data["Device Time"].raw_value = None  # Signposts have no device time
+        else:
+            # Update prev_non_signpost_row only for non-signpost operations
+            prev_non_signpost_row = row
 
         rows.append(op_data)
-        prev_row = row
 
         # Count device and host ops, ignore signposts
         if is_host_op(op_data):
