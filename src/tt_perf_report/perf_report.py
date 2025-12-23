@@ -132,7 +132,10 @@ class Cell:
                 formatted = colored(formatted, self.color)
 
         if self.unit:
-            formatted += f" {colored(self.unit, 'grey')}"
+            if self.color:
+                formatted += f" {colored(self.unit, self.color)}"
+            else:
+                formatted += f" {self.unit}"
 
         return formatted
 
@@ -681,7 +684,7 @@ def print_row(row, col_widths, headers):
 
 
 def color_row(op_data, percentage, min_percentage):
-    if percentage is not None and percentage < min_percentage:
+    if percentage is not None and percentage < min_percentage and not is_host_op(op_data):
         for v in op_data.values():
             v.color = "grey"
     else:
