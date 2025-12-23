@@ -4,6 +4,7 @@
 # SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
 import argparse
 import csv
+from numbers import Number
 import os
 import re
 import sys
@@ -985,14 +986,40 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
 
 
 def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = False):
-    print("\n📊 Stacked report 📊\n============\n")
+    print("\n📊 Stacked report 📊\n====================\n")
+
+    display_df = stacked_df.copy()
+    
+    # Replace NaN values with empty string for display
+    flops_columns = ["Flops_min", "Flops_max", "Flops_mean", "Flops_std"]
+    for col in flops_columns:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: "" if pd.isna(x) else f"{x:,.2f} %")
+    
+    # Format other numeric columns with comma separators
+    if "%" in display_df.columns:
+        display_df["%"] = display_df["%"].apply(lambda x: f"{x:,.2f}") + ' %'
+    if "Device_Time_Sum_us" in display_df.columns:
+        display_df["Device_Time_Sum_us"] = display_df["Device_Time_Sum_us"].apply(lambda x: f"{x:,.2f}") + ' μs'
+
+    # Rename columns for better readability
+    formatted_header_labels = {
+        "%": "Total %",
+        "OP Code Joined": "Op Code",
+        "Device_Time_Sum_us": "Device Time Sum",
+        "Ops_Count": "Op Count",
+        "Flops_min": "Min FLOPs",
+        "Flops_max": "Max FLOPs",
+        "Flops_mean": "Mean FLOPs",
+        "Flops_std": "Std FLOPs"
+    }
+    display_df = display_df.rename(columns=formatted_header_labels)
 
     if no_merge_devices:
-        columns = ["%", "OP Code Joined", "Device", "Device_Time_Sum_us", "Ops_Count", "Flops_mean", "Flops_std"]
-        display_df = stacked_df[columns].sort_values(by=["Device", "%"], ascending=[True, False])
-        print(display_df.to_string(index=False, float_format="%.2f"))
-    else:
-        print(stacked_df.to_string(index=False, float_format="%.2f"))
+        columns = ["Total %", "Op Code", "Device", "Device Time Sum", "Op Count", "Min FLOPs", "Max FLOPs", "Mean FLOPs", "Std FLOPs"]
+        display_df = display_df[columns].sort_values(by=["Device", "Total %"], ascending=[True, False])
+    
+    print(display_df.to_string(index=False))
 
 
 def dump_stacked_report(stacked_df: pd.DataFrame, output_file: str):
