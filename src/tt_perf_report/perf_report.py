@@ -22,6 +22,24 @@ import pandas as pd
 # Global variable to store color preference
 color_output = None  # None means auto-detect, True forces color, False forces no color
 
+# Define colors for different operation types
+op_colors = {
+    "(torch)": "red",
+    "Matmul": "magenta",
+    "OptimizedConvNew": "orange",
+    "Conv2d": "orange",
+    "LayerNorm": "cyan",
+    "AllGather": "cyan",
+    "AllReduce": "cyan",
+    "ScaledDotProductAttentionDecode": "blue",
+    "ScaledDotProductAttentionGQADecode": "blue",
+    "NlpCreateHeadsDeviceOperation": "blue",
+    "NLPConcatHeadsDecodeDeviceOperation": "blue",
+    "UpdateCache": "blue",
+}
+default_cell_color = "white"
+muted_cell_color = "grey"
+
 
 def get_value_physical_logical(input, is_physical: bool = True):
     # Handle numeric inputs (old format)
@@ -671,6 +689,14 @@ def add_derived_columns(rows):
             op_data["Bound"] = Cell("HOST")
 
 
+def get_op_color(op_code):
+    for op, color in op_colors.items():
+        if op in op_code:
+            return color
+    
+    return default_cell_color
+
+
 def print_row(row, col_widths, headers):
     def format_cell(header, cell):
         # Avoid thousand separators for ID column
@@ -689,28 +715,9 @@ def print_row(row, col_widths, headers):
 def color_row(op_data, percentage, min_percentage):
     if percentage is not None and percentage < min_percentage and not is_host_op(op_data):
         for v in op_data.values():
-            v.color = "grey"
+            v.color = muted_cell_color
     else:
-        op_colors = {
-            "(torch)": "red",
-            "Matmul": "magenta",
-            "OptimizedConvNew": "orange",
-            "Conv2d": "orange",
-            "LayerNorm": "cyan",
-            "AllGather": "cyan",
-            "AllReduce": "cyan",
-            "ScaledDotProductAttentionDecode": "blue",
-            "ScaledDotProductAttentionGQADecode": "blue",
-            "NlpCreateHeadsDeviceOperation": "blue",
-            "NLPConcatHeadsDecodeDeviceOperation": "blue",
-            "UpdateCache": "blue",
-        }
-        for op, color in op_colors.items():
-            if op in op_data["OP Code"].raw_value:
-                op_data["OP Code"].color = color
-                break
-        else:
-            op_data["OP Code"].color = "white"
+        op_data["OP Code"].color = get_op_color(op_data["OP Code"].raw_value)
 
         num_cores = op_data["Cores"].raw_value
         if num_cores is not None:
@@ -719,7 +726,7 @@ def color_row(op_data, percentage, min_percentage):
             elif num_cores == 64:
                 op_data["Cores"].color = "green"
         else:
-            op_data["Cores"].color = "grey"
+            op_data["Cores"].color = muted_cell_color
 
         if op_data["Bound"].raw_value == "DRAM":
             op_data["Bound"].color = "green"
@@ -764,7 +771,7 @@ def color_row(op_data, percentage, min_percentage):
             elif fidelity_evaluation == "too_low":
                 op_data["Math Fidelity"].color = "cyan"
             else:
-                op_data["Math Fidelity"].color = "white"
+                op_data["Math Fidelity"].color = default_cell_color
 
     return op_data
 
@@ -798,7 +805,7 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
         if header not in total_row:
             total_row[header] = Cell("")
     print_row(
-        {k: Cell(v.raw_value, v.unit, v.decimals, color="grey") for k, v in total_row.items()}, col_widths, headers
+        {k: Cell(v.raw_value, v.unit, v.decimals, color=muted_cell_color) for k, v in total_row.items()}, col_widths, headers
     )
 
 
@@ -857,7 +864,7 @@ def print_matmul_advice(rows, headers, col_widths):
         for op_data in matmul_ops:
             print_row(op_data, col_widths, headers)
             advice = generate_matmul_advice(op_data)
-            color = "grey" if op_data["OP Code"].color == "grey" else "white"
+            color = muted_cell_color if op_data["OP Code"].color == muted_cell_color else default_cell_color
 
             if advice:
                 for item in advice:
@@ -1047,6 +1054,11 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
         formatted_cells = []
         for i, header in enumerate(headers):
             cell_value = str(row[header])
+            # Apply coloring to Op Code column
+            if header == "Op Code":
+                op_color = get_op_color(cell_value)
+                if op_color:
+                    cell_value = colored(cell_value, op_color)
             align = "left" if header == "Op Code" else "right"
             formatted_cells.append(pad_string(cell_value, col_widths[i], align=align))
         print("  ".join(formatted_cells))
@@ -1097,7 +1109,7 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
                         text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
                 
                 ax.text(bar[0].get_x() + bar[0].get_width() / 2, bottom + row["Device_Time_Sum_us"] / 2,
-                       text, ha="center", va="center", fontsize=6, color="white")
+                       text, ha="center", va="center", fontsize=6, color=default_cell_color)
             bottom += row["Device_Time_Sum_us"]
 
     if no_merge_devices:
