@@ -687,6 +687,7 @@ def add_derived_columns(rows):
                     op_data["Bound"] = Cell("SLOW")
         elif "(torch)" in op_data["OP Code"].raw_value:
             op_data["Bound"] = Cell("HOST")
+            op_data["Device Time"] = Cell(None)
 
 
 def get_op_color(op_code):
