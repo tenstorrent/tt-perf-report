@@ -998,9 +998,9 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
     
     # Format other numeric columns with comma separators
     if "%" in display_df.columns:
-        display_df["%"] = display_df["%"].apply(lambda x: f"{x:,.2f}") + ' %'
+        display_df["%"] = display_df["%"].apply(lambda x: f"{x:,.2f} %")
     if "Device_Time_Sum_us" in display_df.columns:
-        display_df["Device_Time_Sum_us"] = display_df["Device_Time_Sum_us"].apply(lambda x: f"{x:,.2f}") + ' μs'
+        display_df["Device_Time_Sum_us"] = display_df["Device_Time_Sum_us"].apply(lambda x: f"{x:,.2f} μs")
 
     # Rename columns for better readability
     formatted_header_labels = {
@@ -1019,7 +1019,33 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
         columns = ["Total %", "Op Code", "Device", "Device Time Sum", "Op Count", "Min FLOPs", "Max FLOPs", "Mean FLOPs", "Std FLOPs"]
         display_df = display_df[columns].sort_values(by=["Device", "Total %"], ascending=[True, False])
     
-    print(display_df.to_string(index=False))
+    # Convert to list of dictionaries for consistent formatting
+    headers = display_df.columns.tolist()
+    rows = display_df.to_dict('records')
+    
+    # Calculate column widths
+    col_widths = []
+    for i, header in enumerate(headers):
+        max_width = len(header)
+        for row in rows:
+            cell_value = str(row[header])
+            max_width = max(max_width, visible_length(cell_value))
+        col_widths.append(max_width)
+    
+    # Print header
+    print("  ".join(pad_string(header, col_widths[i], align="left" if header == "Op Code" else "right") for i, header in enumerate(headers)))
+    print("-" * sum(col_widths) + "-" * (len(headers) - 1) * 2)
+    
+    # Print rows
+    for row in rows:
+        formatted_cells = []
+        for i, header in enumerate(headers):
+            cell_value = str(row[header])
+            align = "left" if header == "Op Code" else "right"
+            formatted_cells.append(pad_string(cell_value, col_widths[i], align=align))
+        print("  ".join(formatted_cells))
+    
+    print("-" * sum(col_widths) + "-" * (len(headers) - 1) * 2)
 
 
 def dump_stacked_report(stacked_df: pd.DataFrame, output_file: str):
