@@ -668,6 +668,12 @@ def print_row(row, col_widths, headers):
     def format_cell(header, cell):
         # Avoid thousand separators for ID column
         text = colored(str(cell.raw_value), cell.color) if header == "ID" else str(cell)
+    
+        # Add signpost emoji for OP Code if it contains "(signpost)"
+        if header == "OP Code" and "(signpost)" in text:
+            text = text.replace("(signpost)", "").strip()
+            text = "🪧 " + text
+        
         return pad_string(text, col_widths[headers.index(header)], align="left" if header == "OP Code" else "right")
 
     print("  ".join(format_cell(header, row[header]) for header in headers))
