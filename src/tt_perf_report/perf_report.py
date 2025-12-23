@@ -121,7 +121,10 @@ class Cell:
             parts = self.raw_value.split(maxsplit=1)
             op_name = parts[0]
             size = parts[1] if len(parts) > 1 else ""
-            formatted = f"{colored(op_name, self.color) if self.color else op_name} {colored(size, 'grey')}"
+            if self.color:
+                formatted = f"{colored(op_name, self.color)} {colored(size, self.color)}"
+            else:
+                formatted = f"{op_name} {size}"
         else:
             try:
                 formatted = f"{float(self.raw_value):,.{self.decimals}f}"
