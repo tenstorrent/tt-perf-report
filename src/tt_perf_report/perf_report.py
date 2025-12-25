@@ -89,16 +89,63 @@ def colored(text, color):
         return text
 
 
-def tflops_per_core(math_fidelity):
-    """Source: https://tenstorrent.com/assets/one-pagers/08.01.24_Wormhole.pdf"""
-    if math_fidelity == "HiFi4":
-        return 74 / 72
-    elif math_fidelity == "HiFi2":
-        return 148 / 72
-    elif math_fidelity == "LoFi":
-        return 262 / 72
+def total_worker_cores_core(arch="wormhole"):
+    if arch == "wormhole":
+        return 64 # N150 and N300 with ETH dispatch
+    elif arch == "blackhole":
+        return 130 # P150
+    elif arch == "bh20":
+        return 20
+    elif arch == "N1":
+        return 20
     else:
-        assert False, f"Unknown math fidelity: {math_fidelity}"
+        assert False, f"Unknown architecture: {arch}"
+
+
+def tflops_per_core(math_fidelity, arch="wormhole"):
+    """Source: https://tenstorrent.com/assets/one-pagers/08.01.24_Wormhole.pdf"""
+    if arch == "wormhole":
+        if math_fidelity == "HiFi4":
+            return 74 / 72
+        elif math_fidelity == "HiFi2":
+            return 148 / 72
+        elif math_fidelity == "LoFi":
+            return 262 / 72
+        else:
+            assert False, f"Unknown math fidelity: {math_fidelity}"
+    elif arch == "blackhole" or arch == "bh20":
+        if math_fidelity == "HiFi4":
+            return 4096 * 1.35 / 1000 / 4
+        elif math_fidelity == "HiFi2":
+            return 4096 * 1.35 / 1000 / 2
+        elif math_fidelity == "LoFi":
+            return 4096 * 1.35 / 1000
+        else:
+            assert False, f"Unknown math fidelity: {math_fidelity}"
+    elif arch == "N1":
+        if math_fidelity == "HiFi4":
+            return 4096 * 0.65 / 1000 / 4
+        elif math_fidelity == "HiFi2":
+            return 4096 * 0.65 / 1000 / 2
+        elif math_fidelity == "LoFi":
+            return 4096 * 0.65 / 1000
+        else:
+            assert False, f"Unknown math fidelity: {math_fidelity}"
+    else:
+        assert False, f"Unknown architecture: {arch}"
+
+
+def total_dram_bandwidth_gb_s(arch="wormhole"):
+    if arch == "wormhole":
+        return 288
+    elif arch == "blackhole":
+        return 512 # P150
+    elif arch == "bh20":
+        return 512
+    elif arch == "N1":
+        return 120 # input + output
+    else:
+        assert False, f"Unknown architecture: {arch}"
 
 
 class Cell:
@@ -314,7 +361,7 @@ def evaluate_fidelity(
         )
 
 
-def analyze_matmul(row, csv_format="v2"):
+def analyze_matmul(row, csv_format="v2", arch="wormhole"):
     input_0_from_dram = "DRAM" in row["INPUT_0_MEMORY"]
     input_1_from_dram = "DRAM" in row["INPUT_1_MEMORY"]
 
@@ -360,7 +407,7 @@ def analyze_matmul(row, csv_format="v2"):
     if is_dram_sharded:
         core_count = 12
 
-    peak_flops_value = tflops_per_core(math_fidelity) * 1e12 * core_count
+    peak_flops_value = tflops_per_core(math_fidelity, arch) * 1e12 * core_count
 
     M, K, N = get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
     W, Z = get_value_physical_logical(row[get_column_name("INPUT_0_W", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
@@ -370,7 +417,7 @@ def analyze_matmul(row, csv_format="v2"):
     size = f"{M} x {K} x {N}"
     memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} @ {row['INPUT_1_DATATYPE']} {row['INPUT_1_MEMORY'].replace('DEV_0_', '')} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')})"
 
-    dram_percentage = (dram_speed_gb_s / 288) * 100 if dram_speed_gb_s is not None else None
+    dram_percentage = (dram_speed_gb_s / total_dram_bandwidth_gb_s(arch)) * 100 if dram_speed_gb_s is not None else None
     flops_percentage = (flops / peak_flops_value) * 100
 
     return (
@@ -422,16 +469,16 @@ def analyze_halo(row):
 
     return config
 
-def analyze_conv(row, csv_format="v2"):
+def analyze_conv(row, csv_format="v2", arch="wormhole"):
     duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
 
-    core_count = 64 # we decided to normalize to the max core count
+    core_count = total_worker_cores_core(arch)
     math_fidelity = row["MATH FIDELITY"]
 
     # Check for DRAM-sharded program config
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
 
-    peak_flops_value = tflops_per_core(math_fidelity) * 1e12 * core_count
+    peak_flops_value = tflops_per_core(math_fidelity, arch) * 1e12 * core_count
 
     NHW = get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
     CH_IN = get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
@@ -483,7 +530,7 @@ def analyze_conv(row, csv_format="v2"):
     )
 
 
-def analyze_op(row, prev_row, csv_format="v2"):
+def analyze_op(row, prev_row, csv_format="v2", arch="wormhole"):
     op_code = Cell(row["OP CODE"])
     cores = Cell(int(row["CORE COUNT"]) if pd.notna(row["CORE COUNT"]) else None)
     device_time = Cell(
@@ -542,7 +589,7 @@ def analyze_op(row, prev_row, csv_format="v2"):
             math_fidelity,
             is_dram_sharded,
             adjusted_core_count,  # Get the potentially adjusted core count
-        ) = analyze_matmul(row, csv_format)
+        ) = analyze_matmul(row, csv_format, arch)
         op_code = Cell(f"{op_code.raw_value} {size}")
         dram_speed = Cell(dram_speed, unit="GB/s", decimals=0)
         dram_percentage = Cell(dram_percentage, unit="%", decimals=1)
@@ -563,7 +610,7 @@ def analyze_op(row, prev_row, csv_format="v2"):
             memory_info,
             math_fidelity,
             config,
-        ) = analyze_conv(row, csv_format)
+        ) = analyze_conv(row, csv_format, arch)
         op_code = Cell(f"{op_code.raw_value} {size} {config}")
         dram_speed = Cell(None, unit="GB/s", decimals=0)
         dram_percentage = Cell(None, unit="%", decimals=1)
@@ -1213,6 +1260,7 @@ def main():
         args.print_signposts,
         args.min_percentage,
         id_range,
+        args.arch,
         args.csv,
         args.no_advice,
         args.tracing_mode,
@@ -1242,6 +1290,7 @@ def parse_args():
     parser.add_argument(
         "--id-range", type=str, help="Show only rows with IDs in the specified range (e.g., '5-10', '31-', or '-12')"
     )
+    parser.add_argument("--arch", type=str, help="Specify architecture (wormhole, blackhole, bh20, N1)", default="wormhole")
     parser.add_argument("--color", action="store_true", help="Force colored output even when output is redirected")
     parser.add_argument("--no-color", action="store_true", help="Force output without color")
     parser.add_argument("--csv", type=str, help="Output filename for CSV format", metavar="OUTPUT_FILE")
@@ -1280,6 +1329,7 @@ def generate_perf_report(
     print_signposts,
     min_percentage,
     id_range,
+    arch,
     csv_output_file,
     no_advice,
     tracing_mode,
@@ -1326,7 +1376,7 @@ def generate_perf_report(
     host_ops = 0
     signpost_count = 0
     for _, row in df.iterrows():
-        op_data, current_gap = analyze_op(row, prev_non_signpost_row, csv_format)
+        op_data, current_gap = analyze_op(row, prev_non_signpost_row, csv_format, arch)
         op_data["ID"] = Cell(row["ORIGINAL_ROW"])  # Use the original row number
         op_data["Global Call Count"] = Cell(row["GLOBAL CALL COUNT"])
         if raw_op_codes:
