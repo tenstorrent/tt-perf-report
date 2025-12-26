@@ -8,7 +8,8 @@ import os
 import re
 import sys
 from collections import defaultdict
-from typing import Any, List, Optional, Union
+from dataclasses import dataclass
+from typing import Any, ClassVar, Dict, List, Optional, Union
 
 try:
     import matplotlib.pyplot as plt
@@ -17,6 +18,13 @@ except ImportError:
     HAS_MATPLOTLIB = False
     print("Warning: matplotlib not available, plotting disabled")
 import pandas as pd
+from enum import Enum
+
+# CSV format versions
+class CsvFormat(Enum):
+    V1 = 1  # Original format
+    V2 = 2  # Format with _PAD[LOGICAL] columns
+    V2_1 = 3  # V2 + DEVICE ARCH and AVAILABLE WORKER CORE COUNT columns
 
 # Global variable to store color preference
 color_output = None  # None means auto-detect, True forces color, False forces no color
@@ -42,14 +50,27 @@ def get_value_physical_logical(input, is_physical: bool = True):
 
 
 def detect_csv_format(df):
-    """Detect if CSV uses v1 (old) or v2 (new) format by checking for _PAD[LOGICAL] columns"""
+    """Detect CSV format version by checking for specific columns"""
+    # Check for v2.1 columns (DEVICE ARCH and AVAILABLE WORKER CORE COUNT)
+    has_device_arch = "DEVICE ARCH" in df.columns
+    has_worker_core_count = "AVAILABLE WORKER CORE COUNT" in df.columns
+    
+    if has_device_arch or has_worker_core_count:
+        return CsvFormat.V2_1
+    
+    # Check for v2 columns (_PAD[LOGICAL])
     v2_columns = [col for col in df.columns if "_PAD[LOGICAL]" in col]
-    return "v2" if v2_columns else "v1"
+    if v2_columns:
+        return CsvFormat.V2
+    
+    # Default to v1
+    return CsvFormat.V1
 
 
 def get_column_name(base_name, csv_format):
     """Get the appropriate column name based on CSV format version"""
-    if csv_format == "v2":
+    # V2 and V2_1 both use the _PAD[LOGICAL] suffix
+    if csv_format in (CsvFormat.V2, CsvFormat.V2_1):
         return f"{base_name}_PAD[LOGICAL]"
     else:
         return base_name
@@ -89,63 +110,194 @@ def colored(text, color):
         return text
 
 
-def total_worker_cores_core(arch="wormhole"):
-    if arch == "wormhole":
-        return 64 # N150 and N300 with ETH dispatch
-    elif arch == "blackhole":
-        return 130 # P150
-    elif arch == "bh20":
-        return 20
-    elif arch == "N1":
-        return 20
-    else:
-        assert False, f"Unknown architecture: {arch}"
+@dataclass(frozen=True)
+class ArchitectureSpec:
+    """Immutable specification for a hardware architecture."""
+    name: str
+    worker_cores: int
+    dram_bandwidth_gb_s: float
+    tflops_hifi4: float
+    tflops_hifi2: float
+    tflops_lofi: float
+    
+    # Registry of known architectures
+    _SPECS: ClassVar[Dict[str, 'ArchitectureSpec']] = {}
+    
+    @classmethod
+    def register(cls, spec: 'ArchitectureSpec'):
+        """Register an architecture specification."""
+        cls._SPECS[spec.name] = spec
+        return spec
+    
+    @classmethod
+    def from_name(cls, arch_name: Optional[str], worker_cores: Optional[int] = None) -> 'ArchitectureSpec':
+        """
+        Get architecture spec by name with normalization.
+        If worker_cores is provided, it overrides the default for that architecture.
+        """
+        # Normalize name
+        normalized = arch_name.lower() if arch_name else "wormhole"
+        if normalized == "wormhole_b0":
+            normalized = "wormhole"
+
+        if normalized not in cls._SPECS:
+            raise ValueError(f"Unknown architecture: {arch_name}")
+
+        spec = cls._SPECS[normalized]
+
+        # If custom worker_cores provided, create a new spec with that value
+        if worker_cores is not None and worker_cores != spec.worker_cores:
+            return ArchitectureSpec(
+                name=spec.name,
+                worker_cores=worker_cores,
+                dram_bandwidth_gb_s=spec.dram_bandwidth_gb_s,
+                tflops_hifi4=spec.tflops_hifi4,
+                tflops_hifi2=spec.tflops_hifi2,
+                tflops_lofi=spec.tflops_lofi,
+            )
+
+        return spec
+
+    @staticmethod
+    def _get_arch_name_from_df(df) -> str:
+        """
+        Get architecture name from CSV if available (v2.1+).
+        Returns the first non-empty value from DEVICE ARCH column.
+        Defaults to 'wormhole' if not available or all values are empty.
+        """
+        csv_format = detect_csv_format(df)
+
+        if csv_format != CsvFormat.V2_1 or "DEVICE ARCH" not in df.columns:
+            print(colored("DEVICE ARCH column not found. Defaulting to 'wormhole'.", "yellow"))
+            return "wormhole"
+
+        # Get all non-empty, non-null values
+        arch_values = df["DEVICE ARCH"].dropna()
+        arch_values = arch_values[arch_values != ""]
+        
+        if arch_values.empty:
+            print(colored("No DEVICE ARCH values found. Defaulting to 'wormhole'.", "yellow"))
+            return "wormhole"
+
+        first_arch = arch_values.iloc[0]
+        
+        # Check if all values are consistent
+        unique_archs = arch_values.unique()
+        if len(unique_archs) > 1:
+            print(colored(
+                f"Warning: Multiple DEVICE ARCH values found: {list(unique_archs)}. Using first value: '{first_arch}'.",
+                "yellow"
+            ))
+
+        # Normalize architecture names
+        if first_arch == "wormhole_b0":
+            first_arch = "wormhole"
+
+        return first_arch
+
+    @staticmethod
+    def _get_worker_core_count_from_df(df) -> int:
+        """
+        Get available worker core count from CSV if available (v2.1+).
+        Returns the first non-zero value from AVAILABLE WORKER CORE COUNT column.
+        Defaults to 64 if not available or all values are zero.
+        """
+        csv_format = detect_csv_format(df)
+        
+        if csv_format != CsvFormat.V2_1 or "AVAILABLE WORKER CORE COUNT" not in df.columns:
+            print(colored("AVAILABLE WORKER CORE COUNT column not found. Defaulting to 64 cores.", "yellow"))
+            return 64
+        
+        # Get all non-zero, non-null values
+        core_counts = df["AVAILABLE WORKER CORE COUNT"].dropna()
+        core_counts = core_counts[core_counts != 0]
+        
+        if core_counts.empty:
+            print(colored("No non-zero AVAILABLE WORKER CORE COUNT values found. Defaulting to 64 cores.", "yellow"))
+            return 64
+        
+        first_count = int(core_counts.iloc[0])
+        
+        # Check if all values are consistent
+        unique_counts = core_counts.unique()
+        if len(unique_counts) > 1:
+            print(colored(
+                f"Warning: Multiple AVAILABLE WORKER CORE COUNT values found: {list(unique_counts)}. Using first value: {first_count}.",
+                "yellow"
+            ))
+        
+        return first_count
+
+    @classmethod
+    def from_df(cls, df) -> 'ArchitectureSpec':
+        """
+        Create ArchitectureSpec from CSV DataFrame.
+        
+        Args:
+            df: DataFrame containing the CSV data
+        
+        Returns:
+            ArchitectureSpec instance with appropriate configuration
+        """
+        # Detect CSV format
+        csv_format = detect_csv_format(df)
+        
+        # Get architecture name from CSV
+        arch_name = cls._get_arch_name_from_df(df)
+        
+        # Get worker core count from CSV
+        worker_cores = cls._get_worker_core_count_from_df(df)
+        
+        return cls.from_name(arch_name, worker_cores)
+
+    def tflops_per_core(self, math_fidelity: str) -> float:
+        """Get TFLOPs per core for given math fidelity."""
+        fidelity_map = {
+            "HiFi4": self.tflops_hifi4,
+            "HiFi2": self.tflops_hifi2,
+            "LoFi": self.tflops_lofi,
+        }
+        if math_fidelity not in fidelity_map:
+            raise ValueError(f"Unknown math fidelity: {math_fidelity}")
+        return fidelity_map[math_fidelity]
 
 
-def tflops_per_core(math_fidelity, arch="wormhole"):
-    """Source: https://tenstorrent.com/assets/one-pagers/08.01.24_Wormhole.pdf"""
-    if arch == "wormhole":
-        if math_fidelity == "HiFi4":
-            return 74 / 72
-        elif math_fidelity == "HiFi2":
-            return 148 / 72
-        elif math_fidelity == "LoFi":
-            return 262 / 72
-        else:
-            assert False, f"Unknown math fidelity: {math_fidelity}"
-    elif arch == "blackhole" or arch == "bh20":
-        if math_fidelity == "HiFi4":
-            return 4096 * 1.35 / 1000 / 4
-        elif math_fidelity == "HiFi2":
-            return 4096 * 1.35 / 1000 / 2
-        elif math_fidelity == "LoFi":
-            return 4096 * 1.35 / 1000
-        else:
-            assert False, f"Unknown math fidelity: {math_fidelity}"
-    elif arch == "N1":
-        if math_fidelity == "HiFi4":
-            return 4096 * 0.65 / 1000 / 4
-        elif math_fidelity == "HiFi2":
-            return 4096 * 0.65 / 1000 / 2
-        elif math_fidelity == "LoFi":
-            return 4096 * 0.65 / 1000
-        else:
-            assert False, f"Unknown math fidelity: {math_fidelity}"
-    else:
-        assert False, f"Unknown architecture: {arch}"
+# Register known architectures
+ArchitectureSpec.register(ArchitectureSpec(
+    name="wormhole",
+    worker_cores=64,  # N150 and N300 with ETH dispatch
+    dram_bandwidth_gb_s=288,
+    tflops_hifi4=74 / 72,
+    tflops_hifi2=148 / 72,
+    tflops_lofi=262 / 72,
+))
 
+ArchitectureSpec.register(ArchitectureSpec(
+    name="blackhole",
+    worker_cores=130,  # P150
+    dram_bandwidth_gb_s=512,
+    tflops_hifi4=4096 * 1.35 / 1000 / 4,
+    tflops_hifi2=4096 * 1.35 / 1000 / 2,
+    tflops_lofi=4096 * 1.35 / 1000,
+))
 
-def total_dram_bandwidth_gb_s(arch="wormhole"):
-    if arch == "wormhole":
-        return 288
-    elif arch == "blackhole":
-        return 512 # P150
-    elif arch == "bh20":
-        return 512
-    elif arch == "N1":
-        return 120 # input + output
-    else:
-        assert False, f"Unknown architecture: {arch}"
+ArchitectureSpec.register(ArchitectureSpec(
+    name="bh20",
+    worker_cores=20,   # N1-emu
+    dram_bandwidth_gb_s=512,
+    tflops_hifi4=4096 * 1.35 / 1000 / 4,
+    tflops_hifi2=4096 * 1.35 / 1000 / 2,
+    tflops_lofi=4096 * 1.35 / 1000,
+))
+
+ArchitectureSpec.register(ArchitectureSpec(
+    name="n1",
+    worker_cores=20,
+    dram_bandwidth_gb_s=120,
+    tflops_hifi4=4096 * 0.65 / 1000 / 4,
+    tflops_hifi2=4096 * 0.65 / 1000 / 2,
+    tflops_lofi=4096 * 0.65 / 1000,
+))
 
 
 class Cell:
@@ -361,7 +513,10 @@ def evaluate_fidelity(
         )
 
 
-def analyze_matmul(row, csv_format="v2", arch="wormhole"):
+def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None):
+    if arch_spec is None:
+        arch_spec = ArchitectureSpec.from_name("wormhole")
+    
     input_0_from_dram = "DRAM" in row["INPUT_0_MEMORY"]
     input_1_from_dram = "DRAM" in row["INPUT_1_MEMORY"]
 
@@ -407,7 +562,7 @@ def analyze_matmul(row, csv_format="v2", arch="wormhole"):
     if is_dram_sharded:
         core_count = 12
 
-    peak_flops_value = tflops_per_core(math_fidelity, arch) * 1e12 * core_count
+    peak_flops_value = arch_spec.tflops_per_core(math_fidelity) * 1e12 * core_count
 
     M, K, N = get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
     W, Z = get_value_physical_logical(row[get_column_name("INPUT_0_W", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
@@ -417,7 +572,7 @@ def analyze_matmul(row, csv_format="v2", arch="wormhole"):
     size = f"{M} x {K} x {N}"
     memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} @ {row['INPUT_1_DATATYPE']} {row['INPUT_1_MEMORY'].replace('DEV_0_', '')} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')})"
 
-    dram_percentage = (dram_speed_gb_s / total_dram_bandwidth_gb_s(arch)) * 100 if dram_speed_gb_s is not None else None
+    dram_percentage = (dram_speed_gb_s / arch_spec.dram_bandwidth_gb_s) * 100 if dram_speed_gb_s is not None else None
     flops_percentage = (flops / peak_flops_value) * 100
 
     return (
@@ -469,16 +624,19 @@ def analyze_halo(row):
 
     return config
 
-def analyze_conv(row, csv_format="v2", arch="wormhole"):
+def analyze_conv(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None):
+    if arch_spec is None:
+        arch_spec = ArchitectureSpec.from_name("wormhole")
+    
     duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
 
-    core_count = total_worker_cores_core(arch)
+    core_count = arch_spec.worker_cores
     math_fidelity = row["MATH FIDELITY"]
 
     # Check for DRAM-sharded program config
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
 
-    peak_flops_value = tflops_per_core(math_fidelity, arch) * 1e12 * core_count
+    peak_flops_value = arch_spec.tflops_per_core(math_fidelity) * 1e12 * core_count
 
     NHW = get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
     CH_IN = get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
@@ -530,7 +688,10 @@ def analyze_conv(row, csv_format="v2", arch="wormhole"):
     )
 
 
-def analyze_op(row, prev_row, csv_format="v2", arch="wormhole"):
+def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None):
+    if arch_spec is None:
+        arch_spec = ArchitectureSpec.from_name("wormhole")
+    
     op_code = Cell(row["OP CODE"])
     cores = Cell(int(row["CORE COUNT"]) if pd.notna(row["CORE COUNT"]) else None)
     device_time = Cell(
@@ -589,7 +750,7 @@ def analyze_op(row, prev_row, csv_format="v2", arch="wormhole"):
             math_fidelity,
             is_dram_sharded,
             adjusted_core_count,  # Get the potentially adjusted core count
-        ) = analyze_matmul(row, csv_format, arch)
+        ) = analyze_matmul(row, csv_format, arch_spec)
         op_code = Cell(f"{op_code.raw_value} {size}")
         dram_speed = Cell(dram_speed, unit="GB/s", decimals=0)
         dram_percentage = Cell(dram_percentage, unit="%", decimals=1)
@@ -610,7 +771,7 @@ def analyze_op(row, prev_row, csv_format="v2", arch="wormhole"):
             memory_info,
             math_fidelity,
             config,
-        ) = analyze_conv(row, csv_format, arch)
+        ) = analyze_conv(row, csv_format, arch_spec)
         op_code = Cell(f"{op_code.raw_value} {size} {config}")
         dram_speed = Cell(None, unit="GB/s", decimals=0)
         dram_percentage = Cell(None, unit="%", decimals=1)
@@ -1290,7 +1451,7 @@ def parse_args():
     parser.add_argument(
         "--id-range", type=str, help="Show only rows with IDs in the specified range (e.g., '5-10', '31-', or '-12')"
     )
-    parser.add_argument("--arch", type=str, help="Specify architecture (wormhole, blackhole, bh20, N1)", default="wormhole")
+    parser.add_argument("--arch", type=str, help="Specify architecture (wormhole, blackhole, bh20, N1); auto-detected on new op perf reports.", default=None)
     parser.add_argument("--color", action="store_true", help="Force colored output even when output is redirected")
     parser.add_argument("--no-color", action="store_true", help="Force output without color")
     parser.add_argument("--csv", type=str, help="Output filename for CSV format", metavar="OUTPUT_FILE")
@@ -1345,8 +1506,31 @@ def generate_perf_report(
     # Detect CSV format version
     csv_format = detect_csv_format(df)
 
-    if csv_format != "v2":
+    if csv_format == CsvFormat.V1:
         print(colored(f"Detected CSV format: v1 (legacy format)", "cyan"))
+    elif csv_format == CsvFormat.V2:
+        print(colored(f"Detected CSV format: v2", "cyan"))
+    elif csv_format == CsvFormat.V2_1:
+        print(colored(f"Detected CSV format: v2.1 (with device arch and worker core count)", "cyan"))
+        # Override arch parameter with value from CSV if not explicitly provided by user
+        # Check if arch was explicitly set by user (not default)
+        csv_arch = ArchitectureSpec._get_arch_name_from_df(df)
+
+        if arch is None:
+            arch = csv_arch
+            print(colored(f"Using architecture from CSV: {arch}", "cyan"))
+        else:
+            print(colored(f"Warning: Ignoring user-specified architecture: {arch}, CSV detected {csv_arch} architecture", "yellow"))
+    
+    # Create ArchitectureSpec early to pass through analysis functions
+    if csv_format == CsvFormat.V2_1:
+        # For v2.1, use the auto-detected architecture and core count
+        arch_spec = ArchitectureSpec.from_df(df)
+    else:
+        # For v1 and v2, use the arch parameter (either default or user-specified)
+        arch_spec = ArchitectureSpec.from_name(arch)
+    
+    print(colored(f"Architecture: {arch_spec.name}, Worker cores: {arch_spec.worker_cores}", "cyan"))
 
     # Add a column for original row numbers
     df["ORIGINAL_ROW"] = df.index + 2  # +2 to match Excel row numbers (1-based + header)
@@ -1376,7 +1560,7 @@ def generate_perf_report(
     host_ops = 0
     signpost_count = 0
     for _, row in df.iterrows():
-        op_data, current_gap = analyze_op(row, prev_non_signpost_row, csv_format, arch)
+        op_data, current_gap = analyze_op(row, prev_non_signpost_row, csv_format, arch_spec)
         op_data["ID"] = Cell(row["ORIGINAL_ROW"])  # Use the original row number
         op_data["Global Call Count"] = Cell(row["GLOBAL CALL COUNT"])
         if raw_op_codes:

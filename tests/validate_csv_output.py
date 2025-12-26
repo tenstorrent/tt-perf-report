@@ -9,7 +9,8 @@ import tempfile
 import re
 from io import StringIO
 import pytest
-from tt_perf_report.perf_report import generate_perf_report
+import pandas as pd
+from tt_perf_report.perf_report import generate_perf_report, detect_csv_format, CsvFormat, ArchitectureSpec
 
 # Shared test data (sample output from TT-NN)
 @pytest.fixture(scope="session")
@@ -72,6 +73,7 @@ def test_csv_headers_with_all_options(expected_headers, test_csv_content, mocker
                     print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
+                    arch="wormhole",
                     csv_output_file=output_file.name,
                     no_advice=False,
                     tracing_mode=False,
@@ -165,6 +167,7 @@ def test_csv_headers_with_start_signpost(test_csv_content, mocker):
                     print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
+                    arch="wormhole",
                     csv_output_file=output_file.name,
                     no_advice=False,
                     tracing_mode=False,
@@ -229,6 +232,7 @@ def test_csv_headers_with_end_signpost(test_csv_content, mocker):
                     print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
+                    arch="wormhole",
                     csv_output_file=output_file.name,
                     no_advice=False,
                     tracing_mode=False,
@@ -293,6 +297,7 @@ def test_csv_headers_with_both_signposts(test_csv_content, mocker):
                     print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
+                    arch="wormhole",
                     csv_output_file=output_file.name,
                     no_advice=False,
                     tracing_mode=False,
@@ -357,6 +362,7 @@ def test_csv_headers_with_both_signposts_same_name(test_csv_content, mocker):
                     print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
+                    arch="wormhole",
                     csv_output_file=output_file.name,
                     no_advice=False,
                     tracing_mode=False,
@@ -421,6 +427,7 @@ def test_csv_headers_with_print_signposts(test_csv_content, mocker):
                     print_signposts=True,
                     min_percentage=0.5,
                     id_range=None,
+                    arch="wormhole",
                     csv_output_file=output_file.name,
                     no_advice=False,
                     tracing_mode=False,
@@ -507,6 +514,7 @@ def test_stacked_csv_headers(expected_stacked_headers, test_csv_content, mocker)
                     print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
+                    arch="wormhole",
                     csv_output_file=None,
                     no_advice=False,
                     tracing_mode=False,
@@ -571,6 +579,7 @@ def test_stacked_csv_headers_with_input0_layout(expected_stacked_headers, test_c
                     print_signposts=False,
                     min_percentage=0.5,
                     id_range=None,
+                    arch="wormhole",
                     csv_output_file=None,
                     no_advice=False,
                     tracing_mode=False,
@@ -616,3 +625,31 @@ def test_stacked_csv_headers_with_input0_layout(expected_stacked_headers, test_c
                     os.unlink(stacked_csv_file)
                 except OSError:
                     pass
+
+@pytest.mark.parametrize("file_path,expected_csv_format,expected_arch,expected_worker_core_count", [
+    ("tests/data/ops_perf_results_2025_09_18_11_39_20.csv", CsvFormat.V2, "wormhole", 64),
+    ("tests/data/bh20_oft.csv", CsvFormat.V2_1, "blackhole", 20),
+    ("tests/data/bh_p100_dlv3.csv", CsvFormat.V2_1, "blackhole", 110),
+    ("tests/data/bh_64_clip_encoder_1.csv", CsvFormat.V2_1, "blackhole", 64),
+    ("tests/data/wh_clip_encoder_2.csv", CsvFormat.V2_1, "wormhole", 64),
+    ("tests/data/bh20_oft_integral_image_trace.csv", CsvFormat.V1, "wormhole", 64),  # V1 defaults to wormhole
+])
+def test_csv_format_arch_and_cores(file_path, expected_csv_format, expected_arch, expected_worker_core_count):
+    """Test that CSV format, architecture, and worker core count are correctly detected."""
+    # Load the CSV file
+    df = pd.read_csv(file_path, low_memory=False)
+    
+    # Test CSV format detection
+    detected_format = detect_csv_format(df)
+    assert detected_format == expected_csv_format, \
+        f"Expected CSV format {expected_csv_format}, but got {detected_format}"
+    
+    # Test architecture detection
+    detected_arch = ArchitectureSpec._get_arch_name_from_df(df)
+    assert detected_arch == expected_arch, \
+        f"Expected architecture '{expected_arch}', but got '{detected_arch}'"
+    
+    # Test worker core count detection
+    detected_cores = ArchitectureSpec._get_worker_core_count_from_df(df)
+    assert detected_cores == expected_worker_core_count, \
+        f"Expected {expected_worker_core_count} worker cores, but got {detected_cores}"
