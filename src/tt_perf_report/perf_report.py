@@ -299,6 +299,60 @@ ArchitectureSpec.register(ArchitectureSpec(
     tflops_lofi=4096 * 0.65 / 1000,
 ))
 
+# Operation category classification - single source of truth
+OPERATION_CATEGORIES = {
+    "Compute": {
+        "OptimizedConvNew", "Conv2d", "Matmul", "BinaryNg", "Binary",
+        "Unary", "Pool2D", "UpSample", "UpsampleOperation", "GroupNorm", "GridSample", "Accumulation", "LayerNorm", "ScaledDotProductAttention", "Reduce", "Softmax", "Embeddings", "MinimalMatmulOp", "IntImg", "GridSampleOperation"
+    },
+    "DM": {
+        "Move", "Copy", "InterleavedToSharded", 
+        "ShardedToInterleaved", "InterleavedToShardedPartial",
+        "ShardedToInterleavedPartial", "Halo", "Where", "CloneOperation", "Reshard",
+        "PaddedSlice", "SliceWrite",
+    },
+    "TM": {
+        "Reshape", "Transpose", "Permute", "Slice", "Concat", "Split",
+        "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "Typecast", 
+        "NLPConcatHeads", "NlpCreateHeads", "Ternary", "FillPad",
+    }
+}
+
+OPERATION_CATEGORIES_EXTENDED = None
+
+
+# Global set to track unclassified operations to avoid duplicate warnings
+_UNCLASSIFIED_OPS_WARNED = set()
+
+
+def classify_operation(op_code):
+    """Classify operations into categories based on their type"""
+    
+    global OPERATION_CATEGORIES_EXTENDED
+    
+    if OPERATION_CATEGORIES_EXTENDED is None:
+        OPERATION_CATEGORIES_EXTENDED = {}
+        for category, operations in OPERATION_CATEGORIES.items():
+            OPERATION_CATEGORIES_EXTENDED[category] = set(operations)
+            for operation in operations:
+                if operation is not None:
+                    OPERATION_CATEGORIES_EXTENDED[category].add(f"{operation}DeviceOperation")
+
+    # Extract the base operation name (before any spaces or configuration info)
+    base_op = op_code.split()[0] if isinstance(op_code, str) else str(op_code).split()[0]
+    
+    # Check each category for the operation
+    for category, operations in OPERATION_CATEGORIES_EXTENDED.items():
+        if base_op in operations:
+            return category
+    
+    # If not found in any category, warn about unclassified operation (only once per operation type)
+    if base_op not in _UNCLASSIFIED_OPS_WARNED:
+        print(colored(f"Warning: Unclassified operation '{base_op}' found. Please add to OPERATION_CATEGORIES for proper classification.", "yellow"))
+        _UNCLASSIFIED_OPS_WARNED.add(base_op)
+    
+    return "Other"
+
 
 class Cell:
     def __init__(self, value: Any, unit: Optional[str] = None, decimals=0, color=None):
@@ -314,6 +368,7 @@ class Cell:
         if isinstance(self.raw_value, str) and (
             "Matmul" in self.raw_value
             or "OptimizedConvNew" in self.raw_value
+            or "Conv2dDeviceOperation" in self.raw_value
             or "HaloDeviceOperation" in self.raw_value
         ):
             parts = self.raw_value.split(maxsplit=1)
@@ -1134,7 +1189,70 @@ def generate_matmul_advice(op_data):
     return advice
 
 
-def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool = False, no_merge_devices: bool = False):
+def has_utilization_data(flops_percentage):
+    """Check if an operation has utilization (FLOPS) data."""
+    return pd.notna(flops_percentage) and flops_percentage is not None
+
+
+def _get_category_color_palettes():
+    """Define color palettes for each operation category."""
+    import numpy as np
+    return {
+        "Compute": [plt.cm.Purples(i) for i in np.arange(1.0, 0.4, -0.05)],
+        "TM": [plt.cm.Greens(i) for i in np.arange(1.0, 0.4, -0.05)],
+        "DM": [plt.cm.Oranges(i) for i in np.arange(0.8, 0.2, -0.05)],
+        "Other": [plt.cm.Greys(i) for i in np.arange(1.0, 0.4, -0.05)],
+    }
+
+
+def _get_category_border_colors():
+    """Define border colors for each operation category."""
+    return {
+        "Compute": "black",
+        "TM": "black", 
+        "DM": "black",
+        "Other": "black"
+    }
+
+
+def _sort_dataframe_by_category(stacked_df: pd.DataFrame) -> pd.DataFrame:
+    """Sort DataFrame by category order when using category-based visualization."""
+    category_order = ["Compute", "TM", "DM", "Other"]
+    
+    # Create a categorical column with the desired order
+    stacked_df["category_sort"] = pd.Categorical(stacked_df["Op_Category"], categories=category_order, ordered=True)
+    
+    # Sort by category first, then by Device_Time_Sum_us descending within each category
+    stacked_df = stacked_df.sort_values(["category_sort", "Device_Time_Sum_us"], ascending=[True, False])
+    
+    # Drop the helper column
+    return stacked_df.drop("category_sort", axis=1)
+
+
+def _get_color_for_bar(i: int, row: pd.Series, stack_by_category: bool, use_category_colors: bool, 
+                      current_category: str, category_color_index: int, 
+                      category_color_palettes: dict, fallback_colors: list) -> tuple:
+    """
+    Determine the color for a bar based on the coloring scheme.
+    
+    Returns:
+        tuple: (color, updated_category_color_index)
+    """
+    if use_category_colors and not stack_by_category and "Op_Category" in row.index and current_category in category_color_palettes:
+        # Use category-specific colors
+        palette = category_color_palettes[current_category]
+        if category_color_index < len(palette):
+            color = palette[category_color_index]
+        else:
+            color = fallback_colors[(category_color_index - len(palette)) % len(fallback_colors)]
+        return color, category_color_index + 1
+    else:
+        # Use original tab20 color scheme
+        color = fallback_colors[i % len(fallback_colors)]
+        return color, category_color_index
+
+
+def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool = False, stack_by_category: bool = False, no_merge_devices: bool = False):
     # Ensure we filter out signpost rows before processing because they aren't useful in the stacked report
     filtered_rows = filter_signposts(rows)
 
@@ -1146,9 +1264,16 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
         visible_headers.append("Input 0 Memory")
 
     data = {header: [row[header].raw_value for row in filtered_rows] for header in visible_headers}
+    
+    # Always add Op Category column
+    data["Op Category"] = [classify_operation(row["OP Code"].raw_value) for row in filtered_rows]
+    
     df = pd.DataFrame(data)
 
-    if stack_by_input0_layout:
+    if stack_by_category:
+        # Use the already computed Op Category column
+        df["OP Code Joined"] = df["Op Category"]
+    elif stack_by_input0_layout:
         df["OP Code Joined"] = df["OP Code"].str.split().str[0] \
             + " (in0:" + df["Input 0 Memory"].str.split('_').str[-2].str.lower() + "_" + df["Input 0 Memory"].str.split('_').str[-1].str.lower() + ")"
     else:
@@ -1157,14 +1282,47 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
     grouping = ["OP Code Joined", "Device"] if no_merge_devices else ["OP Code Joined"]
 
     # Group by the joined OP Code and aggregate the data
-    stacked_df = df.groupby(grouping).agg(
-        Device_Time_Sum_us=("Device Time", "sum"),
-        Ops_Count=("Device Time", "size"),
-        Flops_min=("FLOPs %", "min"),
-        Flops_max=("FLOPs %", "max"),
-        Flops_mean=("FLOPs %", "mean"),
-        Flops_std=("FLOPs %", "std"),
-    ).reset_index()
+    if stack_by_category:
+        # For category stacking, don't include FLOPs stats as they're not meaningful across different op types
+        stacked_df = df.groupby(grouping).agg(
+            Device_Time_Sum_us=("Device Time", "sum"),
+            Ops_Count=("Device Time", "size"),
+        ).reset_index()
+    else:
+        # For regular stacking, include FLOPs statistics and Op Category
+        stacked_df = df.groupby(grouping).agg(
+            Device_Time_Sum_us=("Device Time", "sum"),
+            Ops_Count=("Device Time", "size"),
+            Op_Category=("Op Category", "first"),  # Take the first category (they should all be the same for the same op)
+            Flops_min=("FLOPs %", "min"),
+            Flops_max=("FLOPs %", "max"),
+            Flops_mean=("FLOPs %", "mean"),
+            Flops_std=("FLOPs %", "std"),
+        ).reset_index()
+        
+        # Calculate weighted mean FLOPS for operations that have utilization data
+        def calculate_weighted_mean_flops(group):
+            # Filter out rows with NaN FLOPS values
+            valid_rows = group.dropna(subset=["FLOPs %"])
+            if valid_rows.empty:
+                return float("nan")
+            
+            # Check if any rows in this group have utilization data
+            if not any(has_utilization_data(flops_val) for flops_val in valid_rows["FLOPs %"]):
+                return float("nan")
+            
+            # Calculate weighted mean: sum(flops_percentage * device_time) / total_device_time
+            numerator = (valid_rows["FLOPs %"] * valid_rows["Device Time"]).sum()
+            denominator = valid_rows["Device Time"].sum()
+            
+            if denominator == 0:
+                return float("nan")
+            
+            return numerator / denominator
+        
+        # Add the weighted mean column
+        weighted_means = df.groupby("OP Code Joined").apply(calculate_weighted_mean_flops)
+        stacked_df["Flops_weighted_mean"] = stacked_df["OP Code Joined"].map(weighted_means)
 
     # Ensure Device column stays as integer if it exists
     if "Device" in stacked_df.columns:
@@ -1201,12 +1359,31 @@ def dump_stacked_report(stacked_df: pd.DataFrame, output_file: str):
     stacked_df.to_csv(output_file, index=False, float_format="%.2f")
 
 
-def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: float = 0.02, no_merge_devices: bool = False):
+def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_category: bool = False, use_category_colors: bool = True, threshold: float = 0.02, no_merge_devices: bool = False):
     if not HAS_MATPLOTLIB:
         print(f"Skipping plot generation for {output_file} (matplotlib not available)")
         return
 
-    colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
+    import numpy as np
+    
+    # For stack_by_category, we need special handling since each bar represents a category
+    # Sort data appropriately based on stacking mode
+    if stack_by_category:
+        # When stacking by category, sort by predefined category order
+        category_order = ["Compute", "TM", "DM", "Other"]
+        if use_category_colors:
+            stacked_df["category_sort"] = pd.Categorical(stacked_df["OP Code Joined"], categories=category_order, ordered=True)
+            stacked_df = stacked_df.sort_values(["category_sort", "Device_Time_Sum_us"], ascending=[True, False])
+            stacked_df = stacked_df.drop("category_sort", axis=1)
+    else:
+        # For non-category stacking, use category-based sorting if enabled
+        if use_category_colors and "Op_Category" in stacked_df.columns:
+            stacked_df = _sort_dataframe_by_category(stacked_df)
+
+    # Get color schemes
+    category_color_palettes = _get_category_color_palettes()
+    category_border_colors = _get_category_border_colors()
+    fallback_colors = plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
     bar_width = 0.5
 
     if no_merge_devices:
@@ -1227,21 +1404,101 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, threshold: f
         threshold_total = total_sum if total_sum else group_data["Device_Time_Sum_us"].sum()
         bottom = 0
         
-        for j, (_, row) in enumerate(group_data.iterrows()):
-            color = colors[j % len(colors)]
+        # Track category boundaries for borders and color indexing
+        category_borders = []
+        current_category = None
+        category_start = 0
+        category_color_index = 0
+        previous_category_label = None  # Track previous category for label display
+
+        for i, (_, row) in enumerate(group_data.iterrows()):
+            if stack_by_category and use_category_colors:
+                # When stacking by category, use single color per category
+                category_name = row["OP Code Joined"]  # This IS the category name
+                if category_name in category_color_palettes:
+                    color = category_color_palettes[category_name][0]  # Use first color from palette
+                else:
+                    color = fallback_colors[i % len(fallback_colors)]
+            else:
+                # Check if we're starting a new category (only for non-category stacking with category colors)
+                if use_category_colors and not stack_by_category and "Op_Category" in row:
+                    if row["Op_Category"] != current_category:
+                        # Save the previous category boundary
+                        if current_category is not None:
+                            category_borders.append((current_category, category_start, bottom))
+                        current_category = row["Op_Category"]
+                        category_start = bottom
+                        category_color_index = 0  # Reset color index for new category
+                
+                # Get color for this bar
+                color, category_color_index = _get_color_for_bar(
+                    i, row, stack_by_category, use_category_colors, 
+                    current_category, category_color_index, 
+                    category_color_palettes, fallback_colors
+                )
+
             bar = ax.bar(x_pos, row["Device_Time_Sum_us"], bar_width, bottom=bottom, color=color)
-            
+
             if row["Device_Time_Sum_us"] >= threshold_total * threshold:
                 if no_merge_devices:
                     text = f"{row['%']:.1f}%\n{row['OP Code Joined']}\n{row['Device_Time_Sum_us']:.0f} μs"
                 else:
-                    text = f"({row['%']:.1f}%) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f} μs; {row['Ops_Count']} ops"
-                    if not pd.isna(row["Flops_mean"]):
-                        text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
+                    text = f"({row['%']:.1f}%) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f}us; {row['Ops_Count']} ops"
+                    if "Flops_mean" in row.index and not pd.isna(row["Flops_mean"]):
+                        # Use weighted mean if available, otherwise fall back to regular mean
+                        if "Flops_weighted_mean" in row.index and not pd.isna(row["Flops_weighted_mean"]):
+                            text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] weighted_mean={row['Flops_weighted_mean']:.1f}% (mean={row['Flops_mean']:.1f} ± {row['Flops_std']:.1f}%)"
+                        else:
+                            text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
                 
                 ax.text(bar[0].get_x() + bar[0].get_width() / 2, bottom + row["Device_Time_Sum_us"] / 2,
                        text, ha="center", va="center", fontsize=6, color="white")
+
+            # Add category labels (vertical, outside the bar) unless using classic colors
+            # Only show label for the first operation in each category
+            if use_category_colors:
+                # Always show category name, regardless of grouping mode
+                if stack_by_category:
+                    category_label = row["OP Code Joined"]  # When grouping by category, this IS the category
+                    # For category grouping, we can get percentage directly from the row
+                    category_percentage = row["%"]
+                elif "Op_Category" in row:
+                    category_label = row["Op_Category"]  # When grouping by op/memory, get the category
+                    # For op/memory grouping, calculate category percentage by summing all ops in that category
+                    category_total_time = group_data[group_data["Op_Category"] == category_label]["Device_Time_Sum_us"].sum()
+                    category_percentage = (category_total_time / threshold_total) * 100
+                else:
+                    category_label = "Other"  # Fallback
+                    category_percentage = 0
+                
+                # Only add label if this is a new category (first occurrence)
+                if category_label != previous_category_label:
+                    label_text = f"{category_label}({category_percentage:.1f}%)"
+                    ax.text(
+                        bar[0].get_x() - 0.02,  # Position to the left of the bar
+                        bottom + threshold_total * category_percentage/200, # Centered vertically on the bar
+                        label_text,  # Category name with percentage
+                        ha="left",
+                        va="center",
+                        fontsize=6,
+                        fontweight="bold",
+                        color="black",
+                        rotation=90  # Vertical text
+                    )
+                    previous_category_label = category_label
+            
             bottom += row["Device_Time_Sum_us"]
+        
+        # Add the final category boundary (only for non-category stacking)
+        if use_category_colors and not stack_by_category and "Op_Category" in group_data.columns and current_category is not None:
+            category_borders.append((current_category, category_start, bottom))
+        
+        # Draw transparent borders around each category (only for non-category stacking)
+        if use_category_colors and not stack_by_category and category_borders:
+            for category, start, end in category_borders:
+                border_color = category_border_colors.get(category, "gray")
+                ax.bar(x_pos, end - start, bar_width, bottom=start, 
+                       fill=False, edgecolor=border_color, linewidth=2, alpha=0.8)
 
     if no_merge_devices:
         ax.set_xticks(range(len(devices)))
@@ -1427,6 +1684,10 @@ def main():
         args.tracing_mode,
         args.raw_op_codes,
         args.no_host_ops,
+        args.no_summary,
+        args.group_by,
+        args.classic_colors,
+        args.summary_file,
         args.no_stacked_report,
         args.no_stack_by_in0,
         args.stacked_csv,
@@ -1459,12 +1720,20 @@ def parse_args():
     parser.add_argument("--tracing-mode", action="store_true", help="Do not sort when in tracing mode")
     parser.add_argument("--raw-op-codes", action="store_true", help="Include raw op codes in output")
     parser.add_argument("--no-host-ops", action="store_true", help="Do not include host ops in output")
-    parser.add_argument("--no-stacked-report", action="store_true", help="Do not generate a stacked report")
+    parser.add_argument("--no-summary", action="store_true", help="Skip generating the operation summary report")
+    parser.add_argument("--group-by", choices=["op", "memory", "category"], 
+        default="memory", 
+        help="Group summary by: 'op' (operation name), 'memory' (input0 layout), 'category' (compute/data/tensor)")
+    parser.add_argument("--classic-colors", action="store_true",
+        help="Use classic tab20 colors instead of category-themed colors")
+    parser.add_argument("--summary-file", type=str, metavar="FILE",
+        help="Output file for summary report (CSV and PNG)")
+    parser.add_argument("--no-stacked-report", action="store_true", help="Do not generate a stacked report (deprecated, use --no-summary)")
     parser.add_argument("--no-stack-by-in0", action="store_true",
-        help="Do not group the stacked report by the layout of Input 0 (extracted from the Input 0 Memory column)"
+        help="Do not group the stacked report by the layout of Input 0 (deprecated, use --group-by=op)"
         )
     parser.add_argument("--stacked-csv", type=str, 
-                help="Output filename for the stacked report CSV; Defaults to OUTPUT_FILE_stacked.csv", metavar="STACKED_FILE")
+                help="Output filename for the stacked report CSV (deprecated, use --summary-file)", metavar="STACKED_FILE")
     parser.add_argument("--no-merge-devices", action="store_true", help="Don't merge rows from multiple devices")
 
     args = parser.parse_args()
@@ -1496,11 +1765,30 @@ def generate_perf_report(
     tracing_mode,
     raw_op_codes,
     no_host_ops,
+    no_summary,
+    group_by,
+    classic_colors,
+    summary_file,
     no_stacked_report,
     no_stack_by_in0,
-    stacked_report_file,
+    stacked_csv,
     no_merge_devices,
 ):
+    # Handle backward compatibility and convert new arguments to internal logic
+    # Priority: new arguments > legacy arguments
+    if no_summary:
+        no_stacked_report = True
+    
+    stack_by_in0 = (group_by == 'memory') if group_by else (not no_stack_by_in0)
+    stack_by_category = (group_by == 'category')
+    use_simple_colors = classic_colors
+    
+    # Prefer summary_file over stacked_csv
+    if summary_file:
+        stacked_report_file = summary_file
+    else:
+        stacked_report_file = stacked_csv
+    
     df = merge_perf_traces(csv_files)
 
     # Detect CSV format version
@@ -1661,7 +1949,7 @@ def generate_perf_report(
 
     # handle stacked report generation
     if not(no_stacked_report) and rows:
-        stacked_report = generate_stacked_report(rows, visible_headers, not(no_stack_by_in0), no_merge_devices)
+        stacked_report = generate_stacked_report(rows, visible_headers, stack_by_in0, stack_by_category, no_merge_devices)
 
         if stacked_report.empty:
             print(colored("No data available for stacked report generation.", "yellow"))
@@ -1674,7 +1962,7 @@ def generate_perf_report(
             print(colored(f"Writing CSV stacked report to {base}.csv", "cyan"))
             dump_stacked_report(stacked_report, f"{base}.csv")
             print(colored(f"Plotting PNG stacked report to {base}.png", "cyan"))
-            plot_stacked_report(stacked_report, f"{base}.png", no_merge_devices=no_merge_devices)
+            plot_stacked_report(stacked_report, f"{base}.png", stack_by_category, not use_simple_colors, no_merge_devices=no_merge_devices)
 
 
 def is_host_op(op_data):
