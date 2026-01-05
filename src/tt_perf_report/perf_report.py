@@ -4,7 +4,6 @@
 # SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
 import argparse
 import csv
-from numbers import Number
 import os
 import re
 import sys
@@ -1058,8 +1057,7 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
             # Apply coloring to Op Code column
             if header == "Op Code":
                 op_color = get_op_color(cell_value)
-                if op_color:
-                    cell_value = colored(cell_value, op_color)
+                cell_value = colored(cell_value, op_color)
             align = "left" if header == "Op Code" else "right"
             formatted_cells.append(pad_string(cell_value, col_widths[i], align=align))
         print("  ".join(formatted_cells))
