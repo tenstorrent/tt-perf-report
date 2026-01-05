@@ -29,7 +29,6 @@ class CsvFormat(Enum):
 # Global variable to store color preference
 color_output = None  # None means auto-detect, True forces color, False forces no color
 
-# Define colors for different operation types
 op_colors = {
     "(torch)": "red",
     "Matmul": "magenta",
@@ -910,7 +909,8 @@ def print_row(row, col_widths, headers):
         # Avoid thousand separators for ID column
         text = colored(str(cell.raw_value), cell.color) if header == "ID" else str(cell)
     
-        # Add signpost emoji for OP Code if it contains "(signpost)"
+        # Add signpost emoji for OP Code if it contains "(signpost)" 
+        # --> 🪧 I'm a signpost
         if header == "OP Code" and "(signpost)" in text:
             text = text.replace("(signpost)", "").strip()
             text = "🪧 " + text
