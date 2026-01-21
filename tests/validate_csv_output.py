@@ -79,9 +79,13 @@ def test_csv_headers_with_all_options(expected_headers, test_csv_content, mocker
                     tracing_mode=False,
                     raw_op_codes=True,
                     no_host_ops=False,
+                    no_summary=True,
+                    group_by="op",
+                    classic_colors=False,
+                    summary_file=None,
                     no_stacked_report=True,
                     no_stack_by_in0=True,
-                    stacked_report_file=None,
+                    stacked_csv=None,
                     no_merge_devices=False,
                 )
 
@@ -173,9 +177,13 @@ def test_csv_headers_with_start_signpost(test_csv_content, mocker):
                     tracing_mode=False,
                     raw_op_codes=True,
                     no_host_ops=False,
+                    no_summary=True,
+                    group_by="op",
+                    classic_colors=False,
+                    summary_file=None,
                     no_stacked_report=True,
                     no_stack_by_in0=True,
-                    stacked_report_file=None,
+                    stacked_csv=None,
                     no_merge_devices=False,
                 )
 
@@ -238,9 +246,13 @@ def test_csv_headers_with_end_signpost(test_csv_content, mocker):
                     tracing_mode=False,
                     raw_op_codes=True,
                     no_host_ops=False,
+                    no_summary=True,
+                    group_by="op",
+                    classic_colors=False,
+                    summary_file=None,
                     no_stacked_report=True,
                     no_stack_by_in0=True,
-                    stacked_report_file=None,
+                    stacked_csv=None,
                     no_merge_devices=False,
                 )
 
@@ -303,9 +315,13 @@ def test_csv_headers_with_both_signposts(test_csv_content, mocker):
                     tracing_mode=False,
                     raw_op_codes=True,
                     no_host_ops=False,
+                    no_summary=True,
+                    group_by="op",
+                    classic_colors=False,
+                    summary_file=None,
                     no_stacked_report=True,
                     no_stack_by_in0=True,
-                    stacked_report_file=None,
+                    stacked_csv=None,
                     no_merge_devices=False,
                 )
 
@@ -368,9 +384,13 @@ def test_csv_headers_with_both_signposts_same_name(test_csv_content, mocker):
                     tracing_mode=False,
                     raw_op_codes=True,
                     no_host_ops=False,
+                    no_summary=True,
+                    group_by="op",
+                    classic_colors=False,
+                    summary_file=None,
                     no_stacked_report=True,
                     no_stack_by_in0=True,
-                    stacked_report_file=None,
+                    stacked_csv=None,
                     no_merge_devices=False,
                 )
 
@@ -433,9 +453,13 @@ def test_csv_headers_with_print_signposts(test_csv_content, mocker):
                     tracing_mode=False,
                     raw_op_codes=True,
                     no_host_ops=False,
+                    no_summary=True,
+                    group_by="op",
+                    classic_colors=False,
+                    summary_file=None,
                     no_stacked_report=True,
                     no_stack_by_in0=True,
-                    stacked_report_file=None,
+                    stacked_csv=None,
                     no_merge_devices=False,
                 )
 
@@ -486,10 +510,12 @@ def expected_stacked_headers():
         "OP Code Joined",
         "Device_Time_Sum_us",
         "Ops_Count",
+        "Op_Category",
         "Flops_min",
         "Flops_max",
         "Flops_mean",
         "Flops_std",
+        "Flops_weighted_mean",
     ]
 
 def test_stacked_csv_headers(expected_stacked_headers, test_csv_content, mocker):
@@ -520,9 +546,13 @@ def test_stacked_csv_headers(expected_stacked_headers, test_csv_content, mocker)
                     tracing_mode=False,
                     raw_op_codes=False,
                     no_host_ops=False,
+                    no_summary=False,
+                    group_by="op",
+                    classic_colors=False,
+                    summary_file=output_file.name,
                     no_stacked_report=False,
                     no_stack_by_in0=True,
-                    stacked_report_file=output_file.name,
+                    stacked_csv=None,
                     no_merge_devices=False,
                 )
 
@@ -585,9 +615,13 @@ def test_stacked_csv_headers_with_input0_layout(expected_stacked_headers, test_c
                     tracing_mode=False,
                     raw_op_codes=False,
                     no_host_ops=False,
+                    no_summary=False,
+                    group_by="memory",
+                    classic_colors=False,
+                    summary_file=output_file.name,
                     no_stacked_report=False,
                     no_stack_by_in0=False,
-                    stacked_report_file=output_file.name,
+                    stacked_csv=None,
                     no_merge_devices=False,
                 )
 
