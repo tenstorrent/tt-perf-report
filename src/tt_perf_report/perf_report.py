@@ -1342,7 +1342,8 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
         
         # Add the weighted mean column
         weighted_means = df.groupby("OP Code Joined").apply(calculate_weighted_mean_flops)
-        stacked_df["Flops_weighted_mean"] = stacked_df["OP Code Joined"].map(weighted_means)
+        if not weighted_means.empty:
+            stacked_df["Flops_weighted_mean"] = stacked_df["OP Code Joined"].map(weighted_means)
 
     # Ensure Device column stays as integer if it exists
     if "Device" in stacked_df.columns:
@@ -1443,7 +1444,7 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_cat
         return
 
     import numpy as np
-    
+
     # For stack_by_category, we need special handling since each bar represents a category
     # Sort data appropriately based on stacking mode
     if stack_by_category:
