@@ -319,16 +319,21 @@ ArchitectureSpec.register(ArchitectureSpec(
 # Operation category classification - single source of truth
 OPERATION_CATEGORIES = {
     "Compute": {
+        "AllGatherMatmul", "ScaledDotProductAttentionDecode", "RotaryEmbeddingLlama", "SDPAOperation",
         "OptimizedConvNew", "Conv2d", "Matmul", "BinaryNg", "Binary",
         "Unary", "Pool2D", "UpSample", "UpsampleOperation", "GroupNorm", "GridSample", "Accumulation", "LayerNorm", "ScaledDotProductAttention", "Reduce", "Softmax", "Embeddings", "MinimalMatmulOp", "IntImg", "GridSampleOperation"
     },
+    # Data Movement
     "DM": {
+        "PagedUpdateCacheDeviceOperation",
         "Move", "Copy", "InterleavedToSharded", 
         "ShardedToInterleaved", "InterleavedToShardedPartial",
         "ShardedToInterleavedPartial", "Halo", "Where", "CloneOperation", "Reshard",
         "PaddedSlice", "SliceWrite",
     },
+    # Tensor Manipulation
     "TM": {
+        "NLPCreateHeadsDecodeDeviceOperation", "NLPConcatHeadsDecodeDeviceOperation", "Fold", "CreateQKVHeadsDeviceOperation", "ConcatenateHeads",
         "Reshape", "Transpose", "Permute", "Slice", "Concat", "Split",
         "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "Typecast", 
         "NLPConcatHeads", "NlpCreateHeads", "Ternary", "FillPad",
