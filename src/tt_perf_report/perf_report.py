@@ -329,14 +329,18 @@ OPERATION_CATEGORIES = {
         "Move", "Copy", "InterleavedToSharded", 
         "ShardedToInterleaved", "InterleavedToShardedPartial",
         "ShardedToInterleavedPartial", "Halo", "Where", "CloneOperation", "Reshard",
-        "PaddedSlice", "SliceWrite",
+        "PaddedSlice", "SliceWrite", "ReduceScatter",
     },
     # Tensor Manipulation
     "TM": {
         "NLPCreateHeadsDecodeDeviceOperation", "NLPConcatHeadsDecodeDeviceOperation", "Fold", "CreateQKVHeadsDeviceOperation", "ConcatenateHeads",
         "Reshape", "Transpose", "Permute", "Slice", "Concat", "Split",
         "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "Typecast", 
-        "NLPConcatHeads", "NlpCreateHeads", "Ternary", "FillPad",
+        "NLPConcatHeads", "NlpCreateHeads", "Ternary", "FillPad", "PadDeviceOperation"
+    },
+
+    "Host": {
+        "(torch)"
     }
 }
 
