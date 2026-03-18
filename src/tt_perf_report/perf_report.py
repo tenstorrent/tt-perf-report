@@ -1347,8 +1347,13 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
         
         # Add the weighted mean column
         weighted_means = df.groupby("OP Code Joined").apply(calculate_weighted_mean_flops)
+        if isinstance(weighted_means, pd.DataFrame):
+            weighted_means = pd.Series(dtype="float64")
+
         if not weighted_means.empty:
             stacked_df["Flops_weighted_mean"] = stacked_df["OP Code Joined"].map(weighted_means)
+        else:
+            stacked_df["Flops_weighted_mean"] = pd.NA
 
     # Ensure Device column stays as integer if it exists
     if "Device" in stacked_df.columns:
