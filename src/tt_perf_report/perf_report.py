@@ -652,7 +652,10 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     peak_flops_value = arch_spec.tflops_per_core(math_fidelity) * 1e12 * core_count
 
     M, K, N = get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
-    W, Z = get_value_physical_logical(row[get_column_name("INPUT_0_W", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
+    W = max(get_value_physical_logical(row[get_column_name("INPUT_0_W", csv_format)]),
+          get_value_physical_logical(row[get_column_name("INPUT_1_W", csv_format)]))
+    Z = max(get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)]),
+            get_value_physical_logical(row[get_column_name("INPUT_1_Z", csv_format)]))
 
     flops = (M * K * N * W * Z * 2) / duration_s
 
