@@ -667,7 +667,7 @@ def test_stacked_csv_headers_with_input0_layout(expected_stacked_headers, test_c
     ("tests/data/bh_64_clip_encoder_1.csv", CsvFormat.V2_1, "blackhole", 64),
     ("tests/data/wh_clip_encoder_2.csv", CsvFormat.V2_1, "wormhole", 64),
     ("tests/data/bh20_oft_integral_image_trace.csv", CsvFormat.V1, "wormhole", 64),  # V1 defaults to wormhole
-    ("tests/data/bh_8xp150_mla.csv", CsvFormat.V2_1, "blackhole", 110)
+    ("tests/data/bh_8xp150_deepseek_v3_d_p.csv", CsvFormat.V2_1, "blackhole", 110)
 ])
 def test_csv_format_arch_and_cores(file_path, expected_csv_format, expected_arch, expected_worker_core_count):
     """Test that CSV format, architecture, and worker core count are correctly detected."""
