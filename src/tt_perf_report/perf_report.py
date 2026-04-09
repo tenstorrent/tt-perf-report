@@ -659,7 +659,8 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
 
     flops = (M * K * N * W * Z * 2) / duration_s
 
-    size = f"{M} x {K} x {N}"
+    batch = W * Z
+    size = f"b={{{batch}}} x {M} x {K} x {N}" if batch > 1 else f"{M} x {K} x {N}"
     memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} @ {row['INPUT_1_DATATYPE']} {row['INPUT_1_MEMORY'].replace('DEV_0_', '')} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')})"
 
     dram_percentage = (dram_speed_gb_s / arch_spec.dram_bandwidth_gb_s) * 100 if dram_speed_gb_s is not None else None
