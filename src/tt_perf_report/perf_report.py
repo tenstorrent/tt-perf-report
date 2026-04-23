@@ -693,19 +693,6 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
     # Parse attributes
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
 
-    # Parse ring_size from attributes
-    ring_size = None
-    try:
-        if "ring_size" in attributes:
-            ring_size_str = attributes.split("'ring_size': '")[1].split("'")[0]
-            ring_size = int(ring_size_str)
-    except (IndexError, ValueError, AttributeError):
-        pass
-
-    # Default ring_size if not found
-    if ring_size is None:
-        ring_size = 4
-
     # Parse num_links from attributes
     num_links = None
     try:
@@ -728,6 +715,14 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
     except (IndexError, ValueError, AttributeError):
         pass
 
+    dispatch_group_size = None
+    try:
+        if "dispatch_group_size" in attributes:
+            dispatch_group_size_str = attributes.split("'dispatch_group_size': '")[1].split("'")[0]
+            dispatch_group_size = int(dispatch_group_size_str)
+    except (IndexError, ValueError, AttributeError):
+        pass
+
     # Calculate tensor sizes for input_0
     input_0_size = (
         get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
@@ -735,20 +730,6 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
         * get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
         * get_datatype_size(row["INPUT_0_DATATYPE"])
     )
-
-    # Calculate tensor sizes for input_1 (if exists)
-    input_1_size = 0
-    input_1_col = get_column_name("INPUT_1_Z", csv_format)
-    if input_1_col in row.index and pd.notna(row[input_1_col]) and pd.notna(row.get("INPUT_1_DATATYPE")):
-        try:
-            input_1_size = (
-                get_value_physical_logical(row[get_column_name("INPUT_1_Z", csv_format)])
-                * get_value_physical_logical(row[get_column_name("INPUT_1_Y", csv_format)])
-                * get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
-                * get_datatype_size(row["INPUT_1_DATATYPE"])
-            )
-        except (KeyError, ValueError, TypeError):
-            input_1_size = 0
 
     # Calculate tensor sizes for output_0
     output_0_size = (
@@ -758,37 +739,43 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
         * get_datatype_size(row["OUTPUT_0_DATATYPE"])
     )
 
-    # Calculate tensor sizes for output_1 (if exists)
-    output_1_size = 0
-    output_1_col = get_column_name("OUTPUT_1_Z", csv_format)
-    if output_1_col in row.index and pd.notna(row[output_1_col]) and pd.notna(row.get("OUTPUT_1_DATATYPE")):
-        try:
-            output_1_size = (
-                get_value_physical_logical(row[get_column_name("OUTPUT_1_Z", csv_format)])
-                * get_value_physical_logical(row[get_column_name("OUTPUT_1_Y", csv_format)])
-                * get_value_physical_logical(row[get_column_name("OUTPUT_1_X", csv_format)])
-                * get_datatype_size(row["OUTPUT_1_DATATYPE"])
-            )
-        except (KeyError, ValueError, TypeError):
-            output_1_size = 0
+    # Calculate ring_size from tensor dimensions
+    ring_size = None
+    if "AllGather" in op_code and input_0_size > 0:
+        # AllGather: output is ring_size times larger than input
+        ring_size = output_0_size // input_0_size
+    elif "ReduceScatter" in op_code and output_0_size > 0:
+        # ReduceScatter: input is ring_size times larger than output
+        ring_size = input_0_size // output_0_size
 
     # Select tensor size (M) based on operation type
     if "ReduceScatter" in op_code:
         tensor_size = input_0_size
     elif "AllGather" in op_code:
         tensor_size = output_0_size
+    elif "Dispatch" in op_code:
+        tensor_size = input_0_size
+    elif "Combine" in op_code:
+        tensor_size = output_0_size
+        tensor_size /= get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
     else:
-        tensor_size = max(input_0_size, input_1_size, output_0_size, output_1_size)
+        tensor_size = max(input_0_size, output_0_size)
 
     # Calculate effective data transferred per node (Algorithm Bus Bandwidth model)
-    if ring_size > 1:
-        # Standard Ring algorithm data volume per node: M * (P-1) / P
+    if ring_size is not None and ring_size > 1:
+        # All-Gather & Reduce-Scatter logic: Bottleneck scales flatly with (P-1)/P
         effective_data_moved_bytes = tensor_size * (ring_size - 1) / ring_size
-        
-        # Apply the 2x congestion penalty for Linear topology
         if topology == "Topology::Linear":
             effective_data_moved_bytes *= 2
+    elif dispatch_group_size is not None and dispatch_group_size > 1:
+        if topology == "Topology::Linear":
+            # Line topology: effective size = M * P^2 / 4
+            effective_data_moved_bytes = tensor_size * (dispatch_group_size ** 2) / 4
+        else:
+            # Ring topology: effective size = M * P^2 / 8
+            effective_data_moved_bytes = tensor_size * (dispatch_group_size ** 2) / 8
     else:
+        # Default fallback
         effective_data_moved_bytes = tensor_size
 
     # Calculate speed (Throughput per node) and utilization
@@ -988,7 +975,7 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
             if math_fidelity
             else None
         )
-    elif any(x in op_code.raw_value for x in ["AllGather", "ReduceScatter", "AllReduce"]) and "LayerNorm" not in op_code.raw_value:
+    elif any(x in op_code.raw_value for x in ["AllGather", "ReduceScatter", "AllReduce", "Dispatch", "Combine"]) and "LayerNorm" not in op_code.raw_value:
         # Analyze CCL operations
         (
             ccl_speed,
