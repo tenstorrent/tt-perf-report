@@ -133,6 +133,7 @@ class ArchitectureSpec:
     name: str
     worker_cores: int
     dram_bandwidth_gb_s: float
+    eth_bandwidth_gb_s: float
     tflops_hifi4: float
     tflops_hifi2: float
     tflops_lofi: float
@@ -168,6 +169,7 @@ class ArchitectureSpec:
                 name=spec.name,
                 worker_cores=worker_cores,
                 dram_bandwidth_gb_s=spec.dram_bandwidth_gb_s,
+                eth_bandwidth_gb_s=spec.eth_bandwidth_gb_s,
                 tflops_hifi4=spec.tflops_hifi4,
                 tflops_hifi2=spec.tflops_hifi2,
                 tflops_lofi=spec.tflops_lofi,
@@ -284,6 +286,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     name="wormhole",
     worker_cores=64,  # N150 and N300 with ETH dispatch
     dram_bandwidth_gb_s=288,
+    eth_bandwidth_gb_s=50,  # 50 GB/s per link
     tflops_hifi4=74 / 72,
     tflops_hifi2=148 / 72,
     tflops_lofi=262 / 72,
@@ -293,6 +296,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     name="blackhole",
     worker_cores=130,  # P150
     dram_bandwidth_gb_s=512,
+    eth_bandwidth_gb_s=50,  # 50 GB/s per link
     tflops_hifi4=4096 * 1.35 / 1000 / 4,
     tflops_hifi2=4096 * 1.35 / 1000 / 2,
     tflops_lofi=4096 * 1.35 / 1000,
@@ -302,6 +306,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     name="bh20",
     worker_cores=20,   # N1-emu
     dram_bandwidth_gb_s=512,
+    eth_bandwidth_gb_s=50,  # 50 GB/s per link
     tflops_hifi4=4096 * 1.35 / 1000 / 4,
     tflops_hifi2=4096 * 1.35 / 1000 / 2,
     tflops_lofi=4096 * 1.35 / 1000,
@@ -311,6 +316,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     name="n1",
     worker_cores=20,
     dram_bandwidth_gb_s=120,
+    eth_bandwidth_gb_s=50,  # 50 GB/s per link
     tflops_hifi4=4096 * 0.65 / 1000 / 4,
     tflops_hifi2=4096 * 0.65 / 1000 / 2,
     tflops_lofi=4096 * 0.65 / 1000,
@@ -679,6 +685,124 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     )
 
 
+def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None, op_code: str = ""):
+    """
+    Analyze CCL (Collective Communications Library) operations.
+
+    Formula: data = tensor_size * (ring_size - 1) / ring_size
+    Utilization = (data / duration) / peak_bandwidth
+    """
+    if arch_spec is None:
+        arch_spec = ArchitectureSpec.from_name("wormhole")
+
+    # Parse attributes
+    attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
+
+    # Parse ring_size from attributes
+    ring_size = None
+    try:
+        if "ring_size" in attributes:
+            ring_size_str = attributes.split("'ring_size': '")[1].split("'")[0]
+            ring_size = int(ring_size_str)
+    except (IndexError, ValueError, AttributeError):
+        pass
+
+    # Default ring_size if not found
+    if ring_size is None:
+        ring_size = 4
+
+    # Parse num_links from attributes
+    num_links = None
+    try:
+        if "num_links" in attributes:
+            num_links_str = attributes.split("'num_links': '")[1].split("'")[0]
+            num_links = int(num_links_str)
+    except (IndexError, ValueError, AttributeError):
+        pass
+
+    # Default num_links based on architecture if not found
+    if num_links is None:
+        num_links = 2 if arch_spec.name == "blackhole" else 1
+
+    # Parse topology from attributes
+    topology = None
+    try:
+        if "topology" in attributes:
+            topology_str = attributes.split("'topology': '")[1].split("'")[0]
+            topology = topology_str  # e.g., "Topology::Linear" or "Topology::Ring"
+    except (IndexError, ValueError, AttributeError):
+        pass
+
+    # Calculate tensor sizes for input_0
+    input_0_size = (
+        get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
+        * get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)])
+        * get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
+        * get_datatype_size(row["INPUT_0_DATATYPE"])
+    )
+
+    # Calculate tensor sizes for input_1 (if exists)
+    input_1_size = 0
+    input_1_col = get_column_name("INPUT_1_Z", csv_format)
+    if input_1_col in row.index and pd.notna(row[input_1_col]) and pd.notna(row.get("INPUT_1_DATATYPE")):
+        try:
+            input_1_size = (
+                get_value_physical_logical(row[get_column_name("INPUT_1_Z", csv_format)])
+                * get_value_physical_logical(row[get_column_name("INPUT_1_Y", csv_format)])
+                * get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
+                * get_datatype_size(row["INPUT_1_DATATYPE"])
+            )
+        except (KeyError, ValueError, TypeError):
+            input_1_size = 0
+
+    # Calculate tensor sizes for output_0
+    output_0_size = (
+        get_value_physical_logical(row[get_column_name("OUTPUT_0_Z", csv_format)])
+        * get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
+        * get_value_physical_logical(row[get_column_name("OUTPUT_0_X", csv_format)])
+        * get_datatype_size(row["OUTPUT_0_DATATYPE"])
+    )
+
+    # Calculate tensor sizes for output_1 (if exists)
+    output_1_size = 0
+    output_1_col = get_column_name("OUTPUT_1_Z", csv_format)
+    if output_1_col in row.index and pd.notna(row[output_1_col]) and pd.notna(row.get("OUTPUT_1_DATATYPE")):
+        try:
+            output_1_size = (
+                get_value_physical_logical(row[get_column_name("OUTPUT_1_Z", csv_format)])
+                * get_value_physical_logical(row[get_column_name("OUTPUT_1_Y", csv_format)])
+                * get_value_physical_logical(row[get_column_name("OUTPUT_1_X", csv_format)])
+                * get_datatype_size(row["OUTPUT_1_DATATYPE"])
+            )
+        except (KeyError, ValueError, TypeError):
+            output_1_size = 0
+
+    # Select tensor size based on operation type
+    if "ReduceScatter" in op_code:
+        tensor_size = input_0_size
+    elif "AllGather" in op_code:
+        tensor_size = output_0_size
+    else:
+        tensor_size = max(input_0_size, input_1_size, output_0_size, output_1_size)
+
+    # Calculate data transferred: (ring_size - 1) * tensor_size
+    if ring_size > 1:
+        ccl_data_transferred_bytes = tensor_size * (ring_size - 1)
+        ccl_data_transferred_bytes *= 2 if topology == "Topology::Linear" else 1
+    else:
+        ccl_data_transferred_bytes = tensor_size
+
+    # Calculate speed and utilization
+    duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
+    ccl_speed_gb_s = (ccl_data_transferred_bytes / duration_s) / 1e9 if ccl_data_transferred_bytes > 0 and duration_s > 0 else None
+
+    # Peak bandwidth = eth_bandwidth × num_links
+    peak_ccl_bandwidth = arch_spec.eth_bandwidth_gb_s * num_links * ring_size
+    ccl_percentage = (ccl_speed_gb_s / peak_ccl_bandwidth) * 100 if ccl_speed_gb_s is not None else None
+
+    return (ccl_speed_gb_s, ccl_percentage)
+
+
 def analyze_halo(row):
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
 
@@ -821,6 +945,8 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     dram_percentage = Cell(None, unit="%", decimals=1)
     flops = Cell(None, unit="TFLOPs", decimals=1)
     flops_percentage = Cell(None, unit="%", decimals=1)
+    ccl_speed = Cell(None, unit="GB/s", decimals=0)
+    ccl_percentage = Cell(None, unit="%", decimals=1)
 
     math_fidelity = ""
     math_fidelity += f"{short_name(input_0_datatype)}" if pd.notna(input_0_datatype) else ""
@@ -854,6 +980,14 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
             if math_fidelity
             else None
         )
+    elif any(x in op_code.raw_value for x in ["AllGather", "ReduceScatter", "AllReduce"]) and "LayerNorm" not in op_code.raw_value:
+        # Analyze CCL operations
+        (
+            ccl_speed,
+            ccl_percentage,
+        ) = analyze_ccl(row, csv_format, arch_spec, op_code.raw_value)
+        ccl_speed = Cell(ccl_speed, unit="GB/s", decimals=0)
+        ccl_percentage = Cell(ccl_percentage, unit="%", decimals=1)
     elif any(x in op_code.raw_value for x in ["OptimizedConvNew", "Conv2d"]):
         (
             flops,
@@ -897,6 +1031,8 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         "DRAM %": dram_percentage,
         "FLOPs": flops,
         "FLOPs %": flops_percentage,
+        "CCL": ccl_speed,
+        "CCL %": ccl_percentage,
         "Math Fidelity": math_fidelity_cell,
         "Output Datatype": output_datatype_cell,
         "Input 0 Datatype": input_0_datatype_cell,
@@ -1997,6 +2133,8 @@ def generate_perf_report(
         "DRAM %",
         "FLOPs",
         "FLOPs %",
+        "CCL",
+        "CCL %",
         "Math Fidelity",
     ]
 
