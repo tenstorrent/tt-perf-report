@@ -10,6 +10,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, ClassVar, Dict, List, Optional, Union
+import pandas as pd
 
 try:
     import matplotlib.pyplot as plt
@@ -686,12 +687,6 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
 
 
 def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None, op_code: str = ""):
-    """
-    Analyze CCL (Collective Communications Library) operations.
-
-    Formula: data = tensor_size * (ring_size - 1) / ring_size
-    Utilization = (data / duration) / peak_bandwidth
-    """
     if arch_spec is None:
         arch_spec = ArchitectureSpec.from_name("wormhole")
 
@@ -777,7 +772,7 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
         except (KeyError, ValueError, TypeError):
             output_1_size = 0
 
-    # Select tensor size based on operation type
+    # Select tensor size (M) based on operation type
     if "ReduceScatter" in op_code:
         tensor_size = input_0_size
     elif "AllGather" in op_code:
@@ -785,21 +780,34 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
     else:
         tensor_size = max(input_0_size, input_1_size, output_0_size, output_1_size)
 
-    # Calculate data transferred: (ring_size - 1) * tensor_size
+    # Calculate effective data transferred per node (Algorithm Bus Bandwidth model)
     if ring_size > 1:
-        ccl_data_transferred_bytes = tensor_size * (ring_size - 1)
-        ccl_data_transferred_bytes *= 2 if topology == "Topology::Linear" else 1
+        # Standard Ring algorithm data volume per node: M * (P-1) / P
+        effective_data_moved_bytes = tensor_size * (ring_size - 1) / ring_size
+        
+        # Apply the 2x congestion penalty for Linear topology
+        if topology == "Topology::Linear":
+            effective_data_moved_bytes *= 2
     else:
-        ccl_data_transferred_bytes = tensor_size
+        effective_data_moved_bytes = tensor_size
 
-    # Calculate speed and utilization
+    # Calculate speed (Throughput per node) and utilization
     duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
-    ccl_speed_gb_s = (ccl_data_transferred_bytes / duration_s) / 1e9 if ccl_data_transferred_bytes > 0 and duration_s > 0 else None
+    
+    if effective_data_moved_bytes > 0 and duration_s > 0:
+        ccl_speed_gb_s = (effective_data_moved_bytes / duration_s) / 1e9
+    else:
+        ccl_speed_gb_s = None
 
-    # Peak bandwidth = eth_bandwidth × num_links
-    peak_ccl_bandwidth = arch_spec.eth_bandwidth_gb_s * num_links * ring_size
-    ccl_percentage = (ccl_speed_gb_s / peak_ccl_bandwidth) * 100 if ccl_speed_gb_s is not None else None
+    # Peak bandwidth per node = eth_bandwidth × num_links
+    peak_per_node_gb_s = arch_spec.eth_bandwidth_gb_s * num_links
+    
+    if ccl_speed_gb_s is not None:
+        ccl_percentage = (ccl_speed_gb_s / peak_per_node_gb_s) * 100 
+    else:
+        ccl_percentage = None
 
+    # Return the per-node algorithm throughput and the utilization percentage
     return (ccl_speed_gb_s, ccl_percentage)
 
 
