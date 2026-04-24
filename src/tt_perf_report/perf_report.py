@@ -995,7 +995,7 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
             if math_fidelity
             else None
         )
-    elif any(x in op_code.raw_value for x in ["AllGather", "ReduceScatter", "AllReduce", "DispatchDeviceOperation", "CombineDeviceOperation"]) and "LayerNorm" not in op_code.raw_value:
+    elif any(x in op_code.raw_value for x in ["AllGatherDeviceOperation", "AllGatherAsyncDeviceOperation", "ReduceScatterDeviceOperation", "ReduceScatterMinimalAsyncDeviceOperation", "DispatchDeviceOperation", "CombineDeviceOperation"]) and "LayerNorm" not in op_code.raw_value:
         # Analyze CCL operations
         (
             ccl_speed,
