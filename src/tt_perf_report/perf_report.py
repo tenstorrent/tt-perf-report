@@ -1285,13 +1285,23 @@ def _get_color_for_bar(i: int, row: pd.Series, stack_by_category: bool, use_cate
         return color, category_color_index
 
 
-def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool = False, stack_by_category: bool = False, no_merge_devices: bool = False):
+def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool = False, stack_by_category: bool = False, no_merge_devices: bool = False, no_host_ops: bool = False) -> pd.DataFrame:
     # Ensure we filter out signpost rows before processing because they aren't useful in the stacked report
     filtered_rows = filter_signposts(rows)
+    
+    # Filter out host ops if requested
+    if no_host_ops:
+        filtered_rows = filter_host_ops(filtered_rows)
+    else:
+        # Ensure host ops have Device Time = 0 so they appear in the stacked report
+        for row in filtered_rows:
+            if is_host_op(row):
+                row["Device Time"] = Cell(0, unit="μs", decimals=0) 
+
 
     # Return an empty DataFrame if there are no rows to process
     if len(filtered_rows) == 0:
-        return pd.DataFrame() 
+        return pd.DataFrame()
 
     if stack_by_input0_layout:
         visible_headers.append("Input 0 Memory")
@@ -1307,10 +1317,20 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
         # Use the already computed Op Category column
         df["OP Code Joined"] = df["Op Category"]
     elif stack_by_input0_layout:
-        df["OP Code Joined"] = df["OP Code"].str.split().str[0] \
-            + " (in0:" + df["Input 0 Memory"].str.split('_').str[-2].str.lower() + "_" + df["Input 0 Memory"].str.split('_').str[-1].str.lower() + ")"
+        # Extract operation name
+        op_name = df["OP Code"].str.split().str[0]
+        df["OP Code Joined"] = op_name.copy()
+        
+        # Add layout info only for rows with valid Input 0 Memory
+        has_in0_memory = df["Input 0 Memory"].notna()
+        if has_in0_memory.any():
+            layout_info = " (in0:" + df.loc[has_in0_memory, "Input 0 Memory"].str.split('_').str[-2].str.lower() + "_" + df.loc[has_in0_memory, "Input 0 Memory"].str.split('_').str[-1].str.lower() + ")"
+            df.loc[has_in0_memory, "OP Code Joined"] = op_name[has_in0_memory] + layout_info
+        
+        append_torch_markers(df)
     else:
         df["OP Code Joined"] = df["OP Code"].str.split().str[0]
+        append_torch_markers(df)
 
     grouping = ["OP Code Joined", "Device"] if no_merge_devices else ["OP Code Joined"]
 
@@ -2046,7 +2066,7 @@ def generate_perf_report(
 
     # handle stacked report generation
     if not(no_stacked_report) and rows:
-        stacked_report = generate_stacked_report(rows, visible_headers, stack_by_in0, stack_by_category, no_merge_devices)
+        stacked_report = generate_stacked_report(rows, visible_headers, stack_by_in0, stack_by_category, no_merge_devices, no_host_ops)
 
         if stacked_report.empty:
             print(colored("No data available for stacked report generation.", "yellow"))
@@ -2068,6 +2088,13 @@ def is_host_op(op_data):
 
 def is_signpost_op(op_data):
     return "signpost" in op_data["OP Code"].raw_value
+
+def append_torch_markers(df):
+    host_ops_mask = df["OP Code"].str.contains(r"\(torch\)", na=False)
+    needs_marker = host_ops_mask & ~df["OP Code Joined"].str.contains(r"\(torch\)", na=False)
+    if needs_marker.any():
+        df.loc[needs_marker, "OP Code Joined"] = df.loc[needs_marker, "OP Code Joined"] + " (torch)"
+
 
 
 if __name__ == "__main__":
