@@ -1330,7 +1330,6 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
         append_torch_markers(df)
     else:
         df["OP Code Joined"] = df["OP Code"].str.split().str[0]
-        append_torch_markers(df)
 
     grouping = ["OP Code Joined", "Device"] if no_merge_devices else ["OP Code Joined"]
 
