@@ -723,6 +723,24 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
     except (IndexError, ValueError, AttributeError):
         pass
 
+    experts_per_chip = None
+    try:
+        if "experts_per_chip" in attributes:
+            experts_per_chip_str = attributes.split("'experts_per_chip': '")[1].split("'")[0]
+            experts_per_chip = int(experts_per_chip_str)
+    except (IndexError, ValueError, AttributeError):
+        pass
+
+    num_experts_per_tok = None
+    try:
+        if "num_experts_per_tok" in attributes:
+            num_experts_per_tok_str = attributes.split("'num_experts_per_tok': '")[1].split("'")[0]
+            num_experts_per_tok = int(num_experts_per_tok_str)
+    except (IndexError, ValueError, AttributeError):
+        pass
+
+    total_experts = 256
+
     # Calculate tensor sizes for input_0
     input_0_size = (
         get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
@@ -753,11 +771,12 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
         tensor_size = input_0_size
     elif "AllGather" in op_code:
         tensor_size = output_0_size
-    elif "Dispatch" in op_code:
-        tensor_size = input_0_size
-    elif "Combine" in op_code:
+    elif "DispatchDeviceOperation" in op_code:
+        tensor_size = input_0_size * experts_per_chip * num_experts_per_tok / total_experts
+    elif "CombineDeviceOperation" in op_code:
         tensor_size = output_0_size
         tensor_size /= get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
+        tensor_size *= experts_per_chip * num_experts_per_tok / total_experts
     else:
         tensor_size = max(input_0_size, output_0_size)
 
@@ -975,7 +994,7 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
             if math_fidelity
             else None
         )
-    elif any(x in op_code.raw_value for x in ["AllGather", "ReduceScatter", "AllReduce", "Dispatch", "Combine"]) and "LayerNorm" not in op_code.raw_value:
+    elif any(x in op_code.raw_value for x in ["AllGather", "ReduceScatter", "AllReduce", "DispatchDeviceOperation", "CombineDeviceOperation"]) and "LayerNorm" not in op_code.raw_value:
         # Analyze CCL operations
         (
             ccl_speed,
