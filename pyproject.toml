@@ -23,3 +23,6 @@ Repository = "https://github.com/tenstorrent/tt-perf-report"
 [tool.setuptools]
 packages = ["tt_perf_report"]
 package-dir = {"" = "src"}
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
