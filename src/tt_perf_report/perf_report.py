@@ -1372,7 +1372,7 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
             return numerator / denominator
         
         # Add the weighted mean column
-        weighted_means = df.groupby("OP Code Joined").apply(calculate_weighted_mean_flops)
+        weighted_means = df.groupby("OP Code Joined").apply(calculate_weighted_mean_flops, include_groups=False)
         if isinstance(weighted_means, pd.DataFrame):
             weighted_means = pd.Series(dtype="float64")
 
