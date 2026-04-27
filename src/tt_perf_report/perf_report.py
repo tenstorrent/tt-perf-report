@@ -693,7 +693,6 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
     # Parse attributes
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
 
-    # Parse num_links from attributes
     num_links = None
     try:
         if "num_links" in attributes:
@@ -706,12 +705,11 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
     if num_links is None:
         num_links = 2 if arch_spec.name == "blackhole" else 1
 
-    # Parse topology from attributes
     topology = None
     try:
         if "topology" in attributes:
             topology_str = attributes.split("'topology': '")[1].split("'")[0]
-            topology = topology_str  # e.g., "Topology::Linear" or "Topology::Ring"
+            topology = topology_str  # "Topology::Linear" or "Topology::Ring"
     except (IndexError, ValueError, AttributeError):
         pass
 
@@ -739,6 +737,7 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
     except (IndexError, ValueError, AttributeError):
         pass
 
+    # Default num_routed_experts in case of DispatchDeviceOperation and CombineDeviceOperation
     if num_routed_experts is None:
         num_routed_experts = 256
 
@@ -773,7 +772,7 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
     elif "ReduceScatter" in op_code and output_0_size > 0:
         ring_size = input_0_size // output_0_size
 
-    # Select tensor size (M) based on operation type
+    # Select tensor size that is used when calculating utilization based on operation type
     if "ReduceScatter" in op_code:
         tensor_size = input_0_size
     elif "AllGather" in op_code:
@@ -783,19 +782,20 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
     elif "CombineDeviceOperation" in op_code:
         tensor_size = output_0_size
         y_dim = get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
-        if y_dim > 0: # Added safety check against zero division
-            tensor_size /= y_dim
+        if y_dim > 0:
+            tensor_size /= y_dim   # tensor size is y_dim times larger than expected, scale down by y_dim
         tensor_size *= dispatch_group_size * num_experts_per_tok / num_routed_experts
     else:
         tensor_size = max(input_0_size, output_0_size)
 
-    # Calculate effective data transferred per node (Algorithm Bus Bandwidth model)
+    # Calculate effective data transferred per node
     if ring_size is not None and ring_size > 1:
         # All-Gather & Reduce-Scatter logic
         effective_data_moved_bytes = tensor_size * (ring_size - 1) / ring_size
         if topology == "Topology::Linear":
             effective_data_moved_bytes *= 2
     elif dispatch_group_size is not None and dispatch_group_size > 1:
+        # DispatchDeviceOperation & CombineDeviceOperation logic
         if topology == "Topology::Linear":
             effective_data_moved_bytes = tensor_size * (dispatch_group_size ** 2) / 4
         else:
@@ -803,7 +803,7 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
     else:
         effective_data_moved_bytes = tensor_size
 
-    # Calculate speed (Throughput per node) and utilization
+    # Calculate utilization based on effective data transferred per node and duration
     duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
     
     if effective_data_moved_bytes > 0 and duration_s > 0:
