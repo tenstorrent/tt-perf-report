@@ -287,7 +287,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     name="wormhole",
     worker_cores=64,  # N150 and N300 with ETH dispatch
     dram_bandwidth_gb_s=288,
-    eth_bandwidth_gb_s=50,  # 50 GB/s per link
+    eth_bandwidth_gb_s=25,  # 25 GB/s bidirectional per link
     tflops_hifi4=74 / 72,
     tflops_hifi2=148 / 72,
     tflops_lofi=262 / 72,
@@ -297,7 +297,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     name="blackhole",
     worker_cores=130,  # P150
     dram_bandwidth_gb_s=512,
-    eth_bandwidth_gb_s=50,  # 50 GB/s per link
+    eth_bandwidth_gb_s=50,  # 50 GB/s bidirectional per link
     tflops_hifi4=4096 * 1.35 / 1000 / 4,
     tflops_hifi2=4096 * 1.35 / 1000 / 2,
     tflops_lofi=4096 * 1.35 / 1000,
@@ -307,7 +307,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     name="bh20",
     worker_cores=20,   # N1-emu
     dram_bandwidth_gb_s=512,
-    eth_bandwidth_gb_s=50,  # 50 GB/s per link
+    eth_bandwidth_gb_s=25,  # 25 GB/s bidirectional per link
     tflops_hifi4=4096 * 1.35 / 1000 / 4,
     tflops_hifi2=4096 * 1.35 / 1000 / 2,
     tflops_lofi=4096 * 1.35 / 1000,
@@ -317,7 +317,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     name="n1",
     worker_cores=20,
     dram_bandwidth_gb_s=120,
-    eth_bandwidth_gb_s=50,  # 50 GB/s per link
+    eth_bandwidth_gb_s=25,  # 25 GB/s bidirectional per link
     tflops_hifi4=4096 * 0.65 / 1000 / 4,
     tflops_hifi2=4096 * 0.65 / 1000 / 2,
     tflops_lofi=4096 * 0.65 / 1000,
