@@ -506,16 +506,16 @@ def test_csv_headers_with_print_signposts(test_csv_content, mocker):
 @pytest.fixture
 def expected_stacked_headers():
     return [
-        "%",
-        "OP Code Joined",
-        "Device_Time_Sum_us",
-        "Ops_Count",
-        "Op_Category",
-        "Flops_min",
-        "Flops_max",
-        "Flops_mean",
-        "Flops_std",
-        "Flops_weighted_mean",
+        "Total % [%]",
+        "Op Code",
+        "Device Time Sum [μs]",
+        "Op Count",
+        "Op Category",
+        "Min FLOPs [%]",
+        "Max FLOPs [%]",
+        "Mean FLOPs [%]",
+        "Std FLOPs [%]",
+        "Weighted Mean FLOPs [%]",
     ]
 
 def test_stacked_csv_headers(expected_stacked_headers, test_csv_content, mocker):
