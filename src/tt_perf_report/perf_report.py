@@ -1296,6 +1296,7 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
         # Ensure host ops have Device Time = 0 so they appear in the stacked report
         for row in filtered_rows:
             if is_host_op(row):
+                # TODO: Refactor to avoid mutating the original row data
                 row["Device Time"] = Cell(0, unit="μs", decimals=0) 
 
 
