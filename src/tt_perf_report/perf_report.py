@@ -743,28 +743,34 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
         num_routed_experts = 256
 
     # Calculate tensor sizes for input_0
-    input_0_size = (
-        get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
-        * get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)])
-        * get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
-        * get_datatype_size(row["INPUT_0_DATATYPE"])
-    )
+    input_0_size = 0
+    try:
+        input_0_size = (
+            get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
+            * get_datatype_size(row["INPUT_0_DATATYPE"])
+        )
+    except (KeyError, ValueError, TypeError):
+        pass
 
     # Calculate tensor sizes for output_0
-    output_0_size = (
-        get_value_physical_logical(row[get_column_name("OUTPUT_0_Z", csv_format)])
-        * get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
-        * get_value_physical_logical(row[get_column_name("OUTPUT_0_X", csv_format)])
-        * get_datatype_size(row["OUTPUT_0_DATATYPE"])
-    )
+    output_0_size = 0
+    try:
+        output_0_size = (
+            get_value_physical_logical(row[get_column_name("OUTPUT_0_Z", csv_format)])
+            * get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
+            * get_value_physical_logical(row[get_column_name("OUTPUT_0_X", csv_format)])
+            * get_datatype_size(row["OUTPUT_0_DATATYPE"])
+        )
+    except (KeyError, ValueError, TypeError):
+        pass
 
     # Calculate ring_size from tensor dimensions
     ring_size = None
     if "AllGather" in op_code and input_0_size > 0:
-        # AllGather: output is ring_size times larger than input
         ring_size = output_0_size // input_0_size
     elif "ReduceScatter" in op_code and output_0_size > 0:
-        # ReduceScatter: input is ring_size times larger than output
         ring_size = input_0_size // output_0_size
 
     # Select tensor size (M) based on operation type
@@ -776,26 +782,25 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
         tensor_size = input_0_size * dispatch_group_size * num_experts_per_tok / num_routed_experts
     elif "CombineDeviceOperation" in op_code:
         tensor_size = output_0_size
-        tensor_size /= get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
+        y_dim = get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
+        if y_dim > 0: # Added safety check against zero division
+            tensor_size /= y_dim
         tensor_size *= dispatch_group_size * num_experts_per_tok / num_routed_experts
     else:
         tensor_size = max(input_0_size, output_0_size)
 
     # Calculate effective data transferred per node (Algorithm Bus Bandwidth model)
     if ring_size is not None and ring_size > 1:
-        # All-Gather & Reduce-Scatter logic: Bottleneck scales flatly with (P-1)/P
+        # All-Gather & Reduce-Scatter logic
         effective_data_moved_bytes = tensor_size * (ring_size - 1) / ring_size
         if topology == "Topology::Linear":
             effective_data_moved_bytes *= 2
     elif dispatch_group_size is not None and dispatch_group_size > 1:
         if topology == "Topology::Linear":
-            # Line topology: effective size = M * P^2 / 4
             effective_data_moved_bytes = tensor_size * (dispatch_group_size ** 2) / 4
         else:
-            # Ring topology: effective size = M * P^2 / 8
             effective_data_moved_bytes = tensor_size * (dispatch_group_size ** 2) / 8
     else:
-        # Default fallback
         effective_data_moved_bytes = tensor_size
 
     # Calculate speed (Throughput per node) and utilization
@@ -814,7 +819,6 @@ def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None
     else:
         ccl_percentage = None
 
-    # Return the per-node algorithm throughput and the utilization percentage
     return (ccl_speed_gb_s, ccl_percentage)
 
 
