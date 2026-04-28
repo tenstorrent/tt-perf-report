@@ -47,6 +47,29 @@ op_colors = {
 default_cell_color = "white"
 muted_cell_color = "grey"
 
+stacked_report_column_labels = {
+    "%": "Total %",
+    "OP Code Joined": "Op Code",
+    "Device_Time_Sum_us": "Device Time Sum",
+    "Ops_Count": "Op Count",
+    "Op_Category": "Op Category",
+    "Flops_min": "Min FLOPs",
+    "Flops_max": "Max FLOPs",
+    "Flops_mean": "Mean FLOPs",
+    "Flops_std": "Std FLOPs",
+    "Flops_weighted_mean": "Weighted Mean FLOPs",
+}
+
+stacked_report_csv_column_labels = {
+    **stacked_report_column_labels,
+    "%": "Total % [%]",
+    "Device_Time_Sum_us": "Device Time Sum [μs]",
+    "Flops_min": "Min FLOPs [%]",
+    "Flops_max": "Max FLOPs [%]",
+    "Flops_mean": "Mean FLOPs [%]",
+    "Flops_std": "Std FLOPs [%]",
+    "Flops_weighted_mean": "Weighted Mean FLOPs [%]",
+}
 
 def get_value_physical_logical(input, is_physical: bool = True):
     # Handle numeric inputs (old format)
@@ -1440,13 +1463,24 @@ def _get_color_for_bar(i: int, row: pd.Series, stack_by_category: bool, use_cate
         return color, category_color_index
 
 
-def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool = False, stack_by_category: bool = False, no_merge_devices: bool = False):
+def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool = False, stack_by_category: bool = False, no_merge_devices: bool = False, no_host_ops: bool = False) -> pd.DataFrame:
     # Ensure we filter out signpost rows before processing because they aren't useful in the stacked report
     filtered_rows = filter_signposts(rows)
+    
+    # Filter out host ops if requested
+    if no_host_ops:
+        filtered_rows = filter_host_ops(filtered_rows)
+    else:
+        # Ensure host ops have Device Time = 0 so they appear in the stacked report
+        for row in filtered_rows:
+            if is_host_op(row):
+                # TODO: Refactor to avoid mutating the original row data
+                row["Device Time"] = Cell(0, unit="μs", decimals=0) 
+
 
     # Return an empty DataFrame if there are no rows to process
     if len(filtered_rows) == 0:
-        return pd.DataFrame() 
+        return pd.DataFrame()
 
     if stack_by_input0_layout:
         visible_headers.append("Input 0 Memory")
@@ -1462,8 +1496,15 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
         # Use the already computed Op Category column
         df["OP Code Joined"] = df["Op Category"]
     elif stack_by_input0_layout:
-        df["OP Code Joined"] = df["OP Code"].str.split().str[0] \
-            + " (in0:" + df["Input 0 Memory"].str.split('_').str[-2].str.lower() + "_" + df["Input 0 Memory"].str.split('_').str[-1].str.lower() + ")"
+        # Extract operation name
+        op_name = df["OP Code"].str.split().str[0]
+        df["OP Code Joined"] = op_name.copy()
+        
+        # Add layout info only for rows with valid Input 0 Memory
+        has_in0_memory = df["Input 0 Memory"].notna()
+        if has_in0_memory.any():
+            layout_info = " (in0:" + df.loc[has_in0_memory, "Input 0 Memory"].str.split('_').str[-2].str.lower() + "_" + df.loc[has_in0_memory, "Input 0 Memory"].str.split('_').str[-1].str.lower() + ")"
+            df.loc[has_in0_memory, "OP Code Joined"] = op_name[has_in0_memory] + layout_info
     else:
         df["OP Code Joined"] = df["OP Code"].str.split().str[0]
 
@@ -1509,7 +1550,7 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
             return numerator / denominator
         
         # Add the weighted mean column
-        weighted_means = df.groupby("OP Code Joined").apply(calculate_weighted_mean_flops)
+        weighted_means = df.groupby("OP Code Joined").apply(calculate_weighted_mean_flops, include_groups=False)
         if isinstance(weighted_means, pd.DataFrame):
             weighted_means = pd.Series(dtype="float64")
 
@@ -1538,37 +1579,23 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
     return stacked_df
 
 
+def format_stacked_report_df(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    flops_columns = ["Flops_min", "Flops_max", "Flops_mean", "Flops_std", "Flops_weighted_mean"]
+    for col in flops_columns:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda x: "" if pd.isna(x) else f"{x:,.2f} %")
+    if "%" in df.columns:
+        df["%"] = df["%"].apply(lambda x: f"{x:,.2f} %")
+    if "Device_Time_Sum_us" in df.columns:
+        df["Device_Time_Sum_us"] = df["Device_Time_Sum_us"].apply(lambda x: f"{x:,.2f} μs")
+    return df.rename(columns=stacked_report_column_labels)
+
+
 def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = False):
     print("\n📊 Stacked report 📊\n====================\n")
 
-    display_df = stacked_df.copy()
-    
-    # Replace NaN values with empty string for display
-    flops_columns = ["Flops_min", "Flops_max", "Flops_mean", "Flops_std", "Flops_weighted_mean"]
-    for col in flops_columns:
-        if col in display_df.columns:
-            display_df[col] = display_df[col].apply(lambda x: "" if pd.isna(x) else f"{x:,.2f} %")
-    
-    # Format other numeric columns with comma separators
-    if "%" in display_df.columns:
-        display_df["%"] = display_df["%"].apply(lambda x: f"{x:,.2f} %")
-    if "Device_Time_Sum_us" in display_df.columns:
-        display_df["Device_Time_Sum_us"] = display_df["Device_Time_Sum_us"].apply(lambda x: f"{x:,.2f} μs")
-
-    # Rename columns for better readability
-    formatted_header_labels = {
-        "%": "Total %",
-        "OP Code Joined": "Op Code",
-        "Device_Time_Sum_us": "Device Time Sum",
-        "Ops_Count": "Op Count",
-        "Op_Category": "Op Category",
-        "Flops_min": "Min FLOPs",
-        "Flops_max": "Max FLOPs",
-        "Flops_mean": "Mean FLOPs",
-        "Flops_std": "Std FLOPs",
-        "Flops_weighted_mean": "Weighted Mean FLOPs",
-    }
-    display_df = display_df.rename(columns=formatted_header_labels)
+    display_df = format_stacked_report_df(stacked_df)
 
     if no_merge_devices:
         columns = ["Total %", "Op Code", "Device", "Device Time Sum", "Op Count", "Op Category", "Min FLOPs", "Max FLOPs", "Mean FLOPs", "Std FLOPs", "Weighted Mean FLOPs"]
@@ -1608,7 +1635,7 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
 
 
 def dump_stacked_report(stacked_df: pd.DataFrame, output_file: str):
-    stacked_df.to_csv(output_file, index=False, float_format="%.2f")
+    stacked_df.rename(columns=stacked_report_csv_column_labels).to_csv(output_file, index=False, float_format="%.2f")
 
 
 def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_category: bool = False, use_category_colors: bool = True, threshold: float = 0.02, no_merge_devices: bool = False):
@@ -2203,7 +2230,7 @@ def generate_perf_report(
 
     # handle stacked report generation
     if not(no_stacked_report) and rows:
-        stacked_report = generate_stacked_report(rows, visible_headers, stack_by_in0, stack_by_category, no_merge_devices)
+        stacked_report = generate_stacked_report(rows, visible_headers, stack_by_in0, stack_by_category, no_merge_devices, no_host_ops)
 
         if stacked_report.empty:
             print(colored("No data available for stacked report generation.", "yellow"))
@@ -2225,7 +2252,6 @@ def is_host_op(op_data):
 
 def is_signpost_op(op_data):
     return "signpost" in op_data["OP Code"].raw_value
-
 
 if __name__ == "__main__":
     main()

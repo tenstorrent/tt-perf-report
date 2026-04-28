@@ -23,5 +23,5 @@ jobs:
         pip install ".[test]"
 
     - name: Run tests
-      run: python -m pytest tests/validate_csv_output.py -v
+      run: python -m pytest -v
     
