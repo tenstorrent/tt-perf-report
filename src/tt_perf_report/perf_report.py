@@ -10,6 +10,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, ClassVar, Dict, List, Optional, Union
+import pandas as pd
 
 try:
     import matplotlib.pyplot as plt
@@ -156,6 +157,7 @@ class ArchitectureSpec:
     name: str
     worker_cores: int
     dram_bandwidth_gb_s: float
+    eth_bandwidth_gb_s: float
     tflops_hifi4: float
     tflops_hifi2: float
     tflops_lofi: float
@@ -191,6 +193,7 @@ class ArchitectureSpec:
                 name=spec.name,
                 worker_cores=worker_cores,
                 dram_bandwidth_gb_s=spec.dram_bandwidth_gb_s,
+                eth_bandwidth_gb_s=spec.eth_bandwidth_gb_s,
                 tflops_hifi4=spec.tflops_hifi4,
                 tflops_hifi2=spec.tflops_hifi2,
                 tflops_lofi=spec.tflops_lofi,
@@ -307,6 +310,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     name="wormhole",
     worker_cores=64,  # N150 and N300 with ETH dispatch
     dram_bandwidth_gb_s=288,
+    eth_bandwidth_gb_s=25,  # 25 GB/s bidirectional per link
     tflops_hifi4=74 / 72,
     tflops_hifi2=148 / 72,
     tflops_lofi=262 / 72,
@@ -316,6 +320,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     name="blackhole",
     worker_cores=130,  # P150
     dram_bandwidth_gb_s=512,
+    eth_bandwidth_gb_s=50,  # 50 GB/s bidirectional per link
     tflops_hifi4=4096 * 1.35 / 1000 / 4,
     tflops_hifi2=4096 * 1.35 / 1000 / 2,
     tflops_lofi=4096 * 1.35 / 1000,
@@ -325,6 +330,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     name="bh20",
     worker_cores=20,   # N1-emu
     dram_bandwidth_gb_s=512,
+    eth_bandwidth_gb_s=25,  # 25 GB/s bidirectional per link
     tflops_hifi4=4096 * 1.35 / 1000 / 4,
     tflops_hifi2=4096 * 1.35 / 1000 / 2,
     tflops_lofi=4096 * 1.35 / 1000,
@@ -334,6 +340,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     name="n1",
     worker_cores=20,
     dram_bandwidth_gb_s=120,
+    eth_bandwidth_gb_s=25,  # 25 GB/s bidirectional per link
     tflops_hifi4=4096 * 0.65 / 1000 / 4,
     tflops_hifi2=4096 * 0.65 / 1000 / 2,
     tflops_lofi=4096 * 0.65 / 1000,
@@ -702,6 +709,142 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     )
 
 
+def analyze_ccl(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None, op_code: str = ""):
+    if arch_spec is None:
+        arch_spec = ArchitectureSpec.from_name("wormhole")
+
+    # Parse attributes
+    attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
+
+    num_links = None
+    try:
+        if "num_links" in attributes:
+            num_links_str = attributes.split("'num_links': '")[1].split("'")[0]
+            num_links = int(num_links_str)
+    except (IndexError, ValueError, AttributeError):
+        pass
+
+    # Default num_links based on architecture if not found
+    if num_links is None:
+        num_links = 2 if arch_spec.name == "blackhole" else 1
+
+    topology = None
+    try:
+        if "topology" in attributes:
+            topology_str = attributes.split("'topology': '")[1].split("'")[0]
+            topology = topology_str  # "Topology::Linear" or "Topology::Ring"
+    except (IndexError, ValueError, AttributeError):
+        pass
+
+    dispatch_group_size = None
+    try:
+        if "dispatch_group_size" in attributes:
+            dispatch_group_size_str = attributes.split("'dispatch_group_size': '")[1].split("'")[0]
+            dispatch_group_size = int(dispatch_group_size_str)
+    except (IndexError, ValueError, AttributeError):
+        pass
+
+    num_experts_per_tok = None
+    try:
+        if "num_experts_per_tok" in attributes:
+            num_experts_per_tok_str = attributes.split("'num_experts_per_tok': '")[1].split("'")[0]
+            num_experts_per_tok = int(num_experts_per_tok_str)
+    except (IndexError, ValueError, AttributeError):
+        pass
+
+    num_routed_experts = None
+    try:
+        if "num_routed_experts" in attributes:
+            num_routed_experts_str = attributes.split("'num_routed_experts': '")[1].split("'")[0]
+            num_routed_experts = int(num_routed_experts_str)
+    except (IndexError, ValueError, AttributeError):
+        pass
+
+    # Default num_routed_experts in case of DispatchDeviceOperation and CombineDeviceOperation
+    if num_routed_experts is None:
+        num_routed_experts = 256
+
+    # Calculate tensor sizes for input_0
+    input_0_size = 0
+    try:
+        input_0_size = (
+            get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
+            * get_datatype_size(row["INPUT_0_DATATYPE"])
+        )
+    except (KeyError, ValueError, TypeError):
+        pass
+
+    # Calculate tensor sizes for output_0
+    output_0_size = 0
+    try:
+        output_0_size = (
+            get_value_physical_logical(row[get_column_name("OUTPUT_0_Z", csv_format)])
+            * get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
+            * get_value_physical_logical(row[get_column_name("OUTPUT_0_X", csv_format)])
+            * get_datatype_size(row["OUTPUT_0_DATATYPE"])
+        )
+    except (KeyError, ValueError, TypeError):
+        pass
+
+    # Calculate ring_size from tensor dimensions
+    ring_size = None
+    if "AllGather" in op_code and input_0_size > 0:
+        ring_size = output_0_size // input_0_size
+    elif "ReduceScatter" in op_code and output_0_size > 0:
+        ring_size = input_0_size // output_0_size
+
+    # Select tensor size that is used when calculating utilization based on operation type
+    if "ReduceScatter" in op_code:
+        tensor_size = input_0_size
+    elif "AllGather" in op_code:
+        tensor_size = output_0_size
+    elif "DispatchDeviceOperation" in op_code:
+        tensor_size = input_0_size * dispatch_group_size * num_experts_per_tok / num_routed_experts
+    elif "CombineDeviceOperation" in op_code:
+        tensor_size = output_0_size
+        y_dim = get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
+        if y_dim > 0:
+            tensor_size /= y_dim   # tensor size is y_dim times larger than expected, scale down by y_dim
+        tensor_size *= dispatch_group_size * num_experts_per_tok / num_routed_experts
+    else:
+        tensor_size = max(input_0_size, output_0_size)
+
+    # Calculate effective data transferred per node
+    if ring_size is not None and ring_size > 1:
+        # All-Gather & Reduce-Scatter logic
+        effective_data_moved_bytes = tensor_size * (ring_size - 1) / ring_size
+        if topology == "Topology::Linear":
+            effective_data_moved_bytes *= 2
+    elif dispatch_group_size is not None and dispatch_group_size > 1:
+        # DispatchDeviceOperation & CombineDeviceOperation logic
+        if topology == "Topology::Linear":
+            effective_data_moved_bytes = tensor_size * (dispatch_group_size ** 2) / 4
+        else:
+            effective_data_moved_bytes = tensor_size * (dispatch_group_size ** 2) / 8
+    else:
+        effective_data_moved_bytes = tensor_size
+
+    # Calculate utilization based on effective data transferred per node and duration
+    duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
+    
+    if effective_data_moved_bytes > 0 and duration_s > 0:
+        ccl_speed_gb_s = (effective_data_moved_bytes / duration_s) / 1e9
+    else:
+        ccl_speed_gb_s = None
+
+    # Peak bandwidth per node = eth_bandwidth × num_links
+    peak_per_node_gb_s = arch_spec.eth_bandwidth_gb_s * num_links
+    
+    if ccl_speed_gb_s is not None:
+        ccl_percentage = (ccl_speed_gb_s / peak_per_node_gb_s) * 100 
+    else:
+        ccl_percentage = None
+
+    return (ccl_speed_gb_s, ccl_percentage)
+
+
 def analyze_halo(row):
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
 
@@ -844,6 +987,8 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     dram_percentage = Cell(None, unit="%", decimals=1)
     flops = Cell(None, unit="TFLOPs", decimals=1)
     flops_percentage = Cell(None, unit="%", decimals=1)
+    ccl_speed = Cell(None, unit="GB/s", decimals=0)
+    ccl_percentage = Cell(None, unit="%", decimals=1)
 
     math_fidelity = ""
     math_fidelity += f"{short_name(input_0_datatype)}" if pd.notna(input_0_datatype) else ""
@@ -877,6 +1022,14 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
             if math_fidelity
             else None
         )
+    elif any(x in op_code.raw_value for x in ["AllGatherDeviceOperation", "AllGatherAsyncDeviceOperation", "ReduceScatterDeviceOperation", "ReduceScatterMinimalAsyncDeviceOperation", "DispatchDeviceOperation", "CombineDeviceOperation"]) and "LayerNorm" not in op_code.raw_value:
+        # Analyze CCL operations
+        (
+            ccl_speed,
+            ccl_percentage,
+        ) = analyze_ccl(row, csv_format, arch_spec, op_code.raw_value)
+        ccl_speed = Cell(ccl_speed, unit="GB/s", decimals=0)
+        ccl_percentage = Cell(ccl_percentage, unit="%", decimals=1)
     elif any(x in op_code.raw_value for x in ["OptimizedConvNew", "Conv2d"]):
         (
             flops,
@@ -920,6 +1073,8 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         "DRAM %": dram_percentage,
         "FLOPs": flops,
         "FLOPs %": flops_percentage,
+        "CCL": ccl_speed,
+        "CCL %": ccl_percentage,
         "Math Fidelity": math_fidelity_cell,
         "Output Datatype": output_datatype_cell,
         "Input 0 Datatype": input_0_datatype_cell,
@@ -2024,6 +2179,8 @@ def generate_perf_report(
         "DRAM %",
         "FLOPs",
         "FLOPs %",
+        "CCL",
+        "CCL %",
         "Math Fidelity",
     ]
 
