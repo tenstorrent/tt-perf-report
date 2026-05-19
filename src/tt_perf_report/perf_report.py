@@ -702,6 +702,48 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     )
 
 
+def analyze_ccl(row, csv_format=CsvFormat.V2, op_code: str = ""):
+    input_0_size = 0
+    try:
+        input_0_size = (
+            get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)])
+            * get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
+            * get_datatype_size(row["INPUT_0_DATATYPE"])
+        )
+    except (KeyError, ValueError, TypeError):
+        pass
+
+    output_0_size = 0
+    try:
+        output_0_size = (
+            get_value_physical_logical(row[get_column_name("OUTPUT_0_Z", csv_format)])
+            * get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
+            * get_value_physical_logical(row[get_column_name("OUTPUT_0_X", csv_format)])
+            * get_datatype_size(row["OUTPUT_0_DATATYPE"])
+        )
+    except (KeyError, ValueError, TypeError):
+        pass
+
+    tensor_size = input_0_size if "ReduceScatter" in op_code else output_0_size
+
+    duration_ns = row["DEVICE KERNEL DURATION [ns]"]
+    duration_s = duration_ns * 1e-9 if pd.notna(duration_ns) else 0
+
+    if tensor_size > 0 and duration_s > 0:
+        ccl_speed_gb_s = (tensor_size / duration_s) / 1e9
+    else:
+        ccl_speed_gb_s = None
+
+    ccl_percentage = None
+    if "PM IDEAL [ns]" in row.index:
+        pm_ideal_ns = row["PM IDEAL [ns]"]
+        if pd.notna(pm_ideal_ns) and pm_ideal_ns > 0 and pd.notna(duration_ns) and duration_ns > 0:
+            ccl_percentage = (pm_ideal_ns / duration_ns) * 100
+
+    return (ccl_speed_gb_s, ccl_percentage)
+
+
 def analyze_halo(row):
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
 
@@ -844,6 +886,8 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     dram_percentage = Cell(None, unit="%", decimals=1)
     flops = Cell(None, unit="TFLOPs", decimals=1)
     flops_percentage = Cell(None, unit="%", decimals=1)
+    ccl_speed = Cell(None, unit="GB/s", decimals=0)
+    ccl_percentage = Cell(None, unit="%", decimals=1)
 
     math_fidelity = ""
     math_fidelity += f"{short_name(input_0_datatype)}" if pd.notna(input_0_datatype) else ""
@@ -877,6 +921,13 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
             if math_fidelity
             else None
         )
+    elif any(x in op_code.raw_value for x in ["AllGatherDeviceOperation", "AllGatherAsyncDeviceOperation", "ReduceScatterDeviceOperation", "ReduceScatterMinimalAsyncDeviceOperation", "AllReduceAsyncDeviceOperation"]) and "LayerNorm" not in op_code.raw_value:
+        (
+            ccl_speed,
+            ccl_percentage,
+        ) = analyze_ccl(row, csv_format, op_code.raw_value)
+        ccl_speed = Cell(ccl_speed, unit="GB/s", decimals=0)
+        ccl_percentage = Cell(ccl_percentage, unit="%", decimals=1)
     elif any(x in op_code.raw_value for x in ["OptimizedConvNew", "Conv2d"]):
         (
             flops,
@@ -920,6 +971,8 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         "DRAM %": dram_percentage,
         "FLOPs": flops,
         "FLOPs %": flops_percentage,
+        "CCL": ccl_speed,
+        "CCL %": ccl_percentage,
         "Math Fidelity": math_fidelity_cell,
         "Output Datatype": output_datatype_cell,
         "Input 0 Datatype": input_0_datatype_cell,
@@ -2024,6 +2077,8 @@ def generate_perf_report(
         "DRAM %",
         "FLOPs",
         "FLOPs %",
+        "CCL",
+        "CCL %",
         "Math Fidelity",
     ]
 

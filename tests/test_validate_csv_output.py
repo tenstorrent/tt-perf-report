@@ -38,6 +38,8 @@ def expected_headers():
         "DRAM %",
         "FLOPs",
         "FLOPs %",
+        "CCL",
+        "CCL %",
         "Math Fidelity",
         "Output Datatype",
         "Input 0 Datatype",
