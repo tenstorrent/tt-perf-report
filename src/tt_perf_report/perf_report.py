@@ -294,6 +294,7 @@ class ArchitectureSpec:
         """Get TFLOPs per core for given math fidelity."""
         fidelity_map = {
             "HiFi4": self.tflops_hifi4,
+            "HiFi3": self.tflops_lofi / 3,
             "HiFi2": self.tflops_hifi2,
             "LoFi": self.tflops_lofi,
         }
@@ -532,6 +533,12 @@ def pad_string(string, length, align="left"):
 def evaluate_fidelity(
     input_0_datatype, input_1_datatype, output_datatype, math_fidelity
 ):
+    if math_fidelity == "HiFi3":
+        return (
+            "unknown",
+            "HiFi3 is supported for throughput analysis, but fidelity advice is not yet defined.",
+        )
+
     integer_types = {"UINT8", "UINT16", "INT32", "UINT32"}
 
     if (
