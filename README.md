@@ -107,6 +107,7 @@ The performance report provides several key metrics for analyzing operation perf
 
 - **Math Fidelity**: Precision configuration used for matrix operations:
   - `HiFi4`: Highest precision (74 TFLOPs/core)
+  - `HiFi3`: Higher precision than HiFi2; throughput is modeled as one third of LoFi peak
   - `HiFi2`: Medium precision (148 TFLOPs/core)
   - `LoFi`: Lowest precision (262 TFLOPs/core)
 
