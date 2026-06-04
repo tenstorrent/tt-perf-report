@@ -10,7 +10,13 @@ import re
 from io import StringIO
 import pytest
 import pandas as pd
-from tt_perf_report.perf_report import generate_perf_report, detect_csv_format, CsvFormat, ArchitectureSpec
+from tt_perf_report.perf_report import (
+    generate_perf_report,
+    detect_csv_format,
+    CsvFormat,
+    ArchitectureSpec,
+    evaluate_fidelity,
+)
 
 # Shared test data (sample output from TT-NN)
 @pytest.fixture(scope="session")
@@ -51,6 +57,26 @@ def expected_headers():
         "Advice",
         "Raw OP Code",
     ]
+
+
+def test_hifi3_is_supported_for_throughput_and_advice_paths():
+    arch = ArchitectureSpec.from_name("wormhole", 64)
+
+    assert arch.tflops_per_core("HiFi3") == pytest.approx(
+        arch.tflops_per_core("LoFi") / 3
+    )
+    assert evaluate_fidelity("BFLOAT16", "BFLOAT16", "BFLOAT16", "HiFi3") == (
+        "unknown",
+        "HiFi3 is supported for throughput analysis, but fidelity advice is not yet defined.",
+    )
+
+
+def test_hifi3_integer_datatypes_keep_not_applicable_advice():
+    assert evaluate_fidelity("UINT8", "BFLOAT16", "BFLOAT16", "HiFi3") == (
+        "not_applicable",
+        "Fidelity evaluation is not applicable for integer datatypes (UINT8, UINT16, INT32, UINT32).",
+    )
+
 
 # TT-NN Visualizer default request
 def test_csv_headers_with_all_options(expected_headers, test_csv_content, mocker):

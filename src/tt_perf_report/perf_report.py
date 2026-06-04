@@ -294,6 +294,7 @@ class ArchitectureSpec:
         """Get TFLOPs per core for given math fidelity."""
         fidelity_map = {
             "HiFi4": self.tflops_hifi4,
+            "HiFi3": self.tflops_lofi / 3,
             "HiFi2": self.tflops_hifi2,
             "LoFi": self.tflops_lofi,
         }
@@ -542,6 +543,12 @@ def evaluate_fidelity(
         return (
             "not_applicable",
             "Fidelity evaluation is not applicable for integer datatypes (UINT8, UINT16, INT32, UINT32).",
+        )
+
+    if math_fidelity == "HiFi3":
+        return (
+            "unknown",
+            "HiFi3 is supported for throughput analysis, but fidelity advice is not yet defined.",
         )
 
     mantissa_bits = {"FLOAT32": 23, "BFLOAT16": 8, "BFLOAT8_B": 7, "BFLOAT4_B": 3}
