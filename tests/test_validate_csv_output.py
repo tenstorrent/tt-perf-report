@@ -70,6 +70,14 @@ def test_hifi3_is_supported_for_throughput_and_advice_paths():
         "HiFi3 is supported for throughput analysis, but fidelity advice is not yet defined.",
     )
 
+
+def test_hifi3_integer_datatypes_keep_not_applicable_advice():
+    assert evaluate_fidelity("UINT8", "BFLOAT16", "BFLOAT16", "HiFi3") == (
+        "not_applicable",
+        "Fidelity evaluation is not applicable for integer datatypes (UINT8, UINT16, INT32, UINT32).",
+    )
+
+
 # TT-NN Visualizer default request
 def test_csv_headers_with_all_options(expected_headers, test_csv_content, mocker):
     with tempfile.NamedTemporaryFile(
