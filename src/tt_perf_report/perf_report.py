@@ -1154,7 +1154,7 @@ def print_op_to_op_gap_advice(rows, headers, col_widths):
             f"\nThese ops have a >6 μs gap since the previous operation. Running with tracing could save {max_gap_overhead:.0f} μs ({percentage_saved:.1f}% of overall time)"
         )
         print(
-            "Alternatively ensure device is not waiting for the host and use device.enable_async(True). Experts can try moving runtime args in the kernels to compile-time args.\n"
+            "Alternatively ensure device is not waiting for the host. Experts can try moving runtime args in the kernels to compile-time args.\n"
         )
 
 
