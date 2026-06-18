@@ -345,7 +345,7 @@ OPERATION_CATEGORIES = {
     "Compute": {
         "AllGatherMatmul", "ScaledDotProductAttentionDecode", "RotaryEmbeddingLlama", "SDPAOperation",
         "OptimizedConvNew", "Conv2d", "Matmul", "BinaryNg", "Binary",
-        "Unary", "Pool2D", "UpSample", "UpsampleOperation", "GroupNorm", "GridSample", "Accumulation", "LayerNorm", "ScaledDotProductAttention", "Reduce", "Softmax", "Embeddings", "MinimalMatmulOp", "IntImg", "GridSampleOperation"
+        "Unary", "Pool2D", "UpSample", "UpsampleOperation", "GroupNorm", "GridSample", "Accumulation", "LayerNorm", "ScaledDotProductAttention", "Reduce", "Softmax", "Embeddings", "MinimalMatmulOp", "SparseMatmul", "IntImg", "GridSampleOperation"
     },
     # Data Movement
     "DM": {
@@ -520,6 +520,79 @@ def get_datatype_size(datatype):
     return int(match.group()) / 8 if match else 4
 
 
+def get_attribute_value(attributes, name):
+    if not attributes:
+        return None
+
+    quoted_match = re.search(rf"['\"]{re.escape(name)}['\"]\s*:\s*['\"]([^'\"]+)['\"]", attributes)
+    if quoted_match:
+        return quoted_match.group(1)
+
+    unquoted_match = re.search(rf"['\"]{re.escape(name)}['\"]\s*:\s*([^;,\}}\s]+)", attributes)
+    if unquoted_match:
+        return unquoted_match.group(1)
+
+    return None
+
+
+def get_optional_int_attribute(attributes, name):
+    value = get_attribute_value(attributes, name)
+    if value is None or value == "std::nullopt":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def get_bool_attribute(attributes, name, default=False):
+    value = get_attribute_value(attributes, name)
+    if value is None:
+        return default
+    return value.lower() == "true"
+
+
+def get_tensor_dim(row, tensor_prefix, dim_name, csv_format):
+    return get_value_physical_logical(row[get_column_name(f"{tensor_prefix}_{dim_name}", csv_format)])
+
+
+def get_tensor_batch_size(row, tensor_prefix, csv_format):
+    return get_tensor_dim(row, tensor_prefix, "W", csv_format) * get_tensor_dim(row, tensor_prefix, "Z", csv_format)
+
+
+def get_sparse_matmul_batch_info(row, csv_format, attributes, active_experts):
+    """
+    Return (active_batches, dense_sparse_batches, source).
+
+    sparse_matmul's runtime work is the number of non-zero sparsity entries, not the dense expert batch.
+    Numeric `nnz` in the CSV is already that exact count. When it is absent, `active_experts` is interpreted
+    as the number of active experts per input-A batch group.
+    """
+    input_0_batch = get_tensor_batch_size(row, "INPUT_0", csv_format)
+    input_1_batch = get_tensor_batch_size(row, "INPUT_1", csv_format)
+    is_input_a_sparse = get_bool_attribute(attributes, "is_input_a_sparse", default=False)
+    is_input_b_sparse = get_bool_attribute(attributes, "is_input_b_sparse", default=True)
+
+    if is_input_a_sparse and is_input_b_sparse:
+        input_a_batch_groups = 1
+        dense_sparse_batches = input_1_batch
+    elif is_input_a_sparse:
+        input_a_batch_groups = max(1, input_0_batch // input_1_batch) if input_1_batch else input_0_batch
+        dense_sparse_batches = input_a_batch_groups * input_1_batch
+    else:
+        input_a_batch_groups = input_0_batch
+        dense_sparse_batches = input_a_batch_groups * input_1_batch if is_input_b_sparse else max(input_0_batch, input_1_batch)
+
+    nnz = get_optional_int_attribute(attributes, "nnz")
+    if nnz is not None:
+        return nnz, dense_sparse_batches, "csv_nnz"
+
+    if active_experts is None:
+        return None, dense_sparse_batches, "missing"
+
+    return active_experts * input_a_batch_groups, dense_sparse_batches, "active_experts"
+
+
 def visible_length(s):
     return len(re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", s))
 
@@ -630,43 +703,14 @@ def evaluate_fidelity(
         )
 
 
-def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None):
+def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None, active_experts: Optional[int] = None):
     if arch_spec is None:
         arch_spec = ArchitectureSpec.from_name("wormhole")
     
     input_0_from_dram = "DRAM" in row["INPUT_0_MEMORY"]
     input_1_from_dram = "DRAM" in row["INPUT_1_MEMORY"]
 
-    total_data_size_bytes = 0
-    if input_0_from_dram:
-        total_data_size_bytes += (
-            get_value_physical_logical(row[get_column_name("INPUT_0_W", csv_format)])
-            * get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)])
-            * get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)])
-            * get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
-            * get_datatype_size(row["INPUT_0_DATATYPE"])
-        )
-    if input_1_from_dram:
-        total_data_size_bytes += (
-            get_value_physical_logical(row[get_column_name("INPUT_1_W", csv_format)])
-            * get_value_physical_logical(row[get_column_name("INPUT_1_Y", csv_format)])
-            * get_value_physical_logical(row[get_column_name("INPUT_1_Z", csv_format)])
-            * get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
-            * get_datatype_size(row["INPUT_1_DATATYPE"])
-        )
-
-    # Always include output if it's written to DRAM
-    if "DRAM" in row["OUTPUT_0_MEMORY"]:
-        total_data_size_bytes += (
-            get_value_physical_logical(row[get_column_name("OUTPUT_0_W", csv_format)])
-            * get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
-            * get_value_physical_logical(row[get_column_name("OUTPUT_0_Z", csv_format)])
-            * get_value_physical_logical(row[get_column_name("OUTPUT_0_X", csv_format)])
-            * get_datatype_size(row["OUTPUT_0_DATATYPE"])
-        )
-
     duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
-    dram_speed_gb_s = (total_data_size_bytes / duration_s) / 1e9 if total_data_size_bytes > 0 else None
 
     core_count = row["CORE COUNT"]
     math_fidelity = row["MATH FIDELITY"]
@@ -674,6 +718,7 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     # Check for DRAM-sharded program config
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
     is_dram_sharded = "MatmulMultiCoreReuseMultiCastDRAMShardedProgramConfig" in attributes
+    is_sparse_matmul = "SparseMatmul" in row["OP CODE"]
 
     # Override core count for DRAM-sharded matmuls
     if is_dram_sharded:
@@ -681,20 +726,76 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
 
     peak_flops_value = arch_spec.tflops_per_core(math_fidelity) * 1e12 * core_count
 
-    M, K, N = get_value_physical_logical(row[get_column_name("INPUT_0_Y", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)]), get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
-    W = max(get_value_physical_logical(row[get_column_name("INPUT_0_W", csv_format)]),
-          get_value_physical_logical(row[get_column_name("INPUT_1_W", csv_format)]))
-    Z = max(get_value_physical_logical(row[get_column_name("INPUT_0_Z", csv_format)]),
-            get_value_physical_logical(row[get_column_name("INPUT_1_Z", csv_format)]))
+    input_0_w = get_tensor_dim(row, "INPUT_0", "W", csv_format)
+    input_0_z = get_tensor_dim(row, "INPUT_0", "Z", csv_format)
+    input_0_y = get_tensor_dim(row, "INPUT_0", "Y", csv_format)
+    input_0_x = get_tensor_dim(row, "INPUT_0", "X", csv_format)
+    input_1_w = get_tensor_dim(row, "INPUT_1", "W", csv_format)
+    input_1_z = get_tensor_dim(row, "INPUT_1", "Z", csv_format)
+    input_1_y = get_tensor_dim(row, "INPUT_1", "Y", csv_format)
+    input_1_x = get_tensor_dim(row, "INPUT_1", "X", csv_format)
+    output_0_w = get_tensor_dim(row, "OUTPUT_0", "W", csv_format)
+    output_0_z = get_tensor_dim(row, "OUTPUT_0", "Z", csv_format)
+    output_0_y = get_tensor_dim(row, "OUTPUT_0", "Y", csv_format)
+    output_0_x = get_tensor_dim(row, "OUTPUT_0", "X", csv_format)
 
-    flops = (M * K * N * W * Z * 2) / duration_s
+    M, K, N = input_0_y, input_0_x, input_1_x
+    W = max(input_0_w, input_1_w)
+    Z = max(input_0_z, input_1_z)
+
+    total_data_size_bytes = 0
+    sparse_active_batches_missing = False
+    sparse_active_source = None
+    sparse_active_batches = None
+    sparse_dense_batches = None
+
+    if is_sparse_matmul:
+        sparse_active_batches, sparse_dense_batches, sparse_active_source = get_sparse_matmul_batch_info(
+            row, csv_format, attributes, active_experts
+        )
+        if sparse_active_batches is None:
+            sparse_active_batches_missing = True
+            total_data_size_bytes = None
+            flops = None
+        else:
+            total_data_size_bytes = 0
+            if input_0_from_dram:
+                total_data_size_bytes += M * K * get_datatype_size(row["INPUT_0_DATATYPE"]) * sparse_active_batches
+            if input_1_from_dram:
+                total_data_size_bytes += K * N * get_datatype_size(row["INPUT_1_DATATYPE"]) * sparse_active_batches
+            if "DRAM" in row["OUTPUT_0_MEMORY"]:
+                total_data_size_bytes += M * N * get_datatype_size(row["OUTPUT_0_DATATYPE"]) * sparse_active_batches
+            flops = (M * K * N * sparse_active_batches * 2) / duration_s
+    else:
+        if input_0_from_dram:
+            total_data_size_bytes += input_0_w * input_0_y * input_0_z * input_0_x * get_datatype_size(row["INPUT_0_DATATYPE"])
+        if input_1_from_dram:
+            total_data_size_bytes += input_1_w * input_1_y * input_1_z * input_1_x * get_datatype_size(row["INPUT_1_DATATYPE"])
+
+        # Always include output if it's written to DRAM
+        if "DRAM" in row["OUTPUT_0_MEMORY"]:
+            total_data_size_bytes += output_0_w * output_0_y * output_0_z * output_0_x * get_datatype_size(row["OUTPUT_0_DATATYPE"])
+
+        flops = (M * K * N * W * Z * 2) / duration_s
+
+    dram_speed_gb_s = (
+        (total_data_size_bytes / duration_s) / 1e9
+        if total_data_size_bytes is not None and total_data_size_bytes > 0
+        else None
+    )
 
     batch = W * Z
-    size = f"b={{{batch}}} x {M} x {K} x {N}" if batch > 1 else f"{M} x {K} x {N}"
+    if is_sparse_matmul:
+        if sparse_active_batches is None:
+            size = f"active=?/{sparse_dense_batches} x {M} x {K} x {N}"
+        else:
+            size = f"active={sparse_active_batches}/{sparse_dense_batches} x {M} x {K} x {N}"
+    else:
+        size = f"b={{{batch}}} x {M} x {K} x {N}" if batch > 1 else f"{M} x {K} x {N}"
     memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} @ {row['INPUT_1_DATATYPE']} {row['INPUT_1_MEMORY'].replace('DEV_0_', '')} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')})"
 
     dram_percentage = (dram_speed_gb_s / arch_spec.dram_bandwidth_gb_s) * 100 if dram_speed_gb_s is not None else None
-    flops_percentage = (flops / peak_flops_value) * 100
+    flops_percentage = (flops / peak_flops_value) * 100 if flops is not None else None
 
     return (
         dram_speed_gb_s,
@@ -706,6 +807,10 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
         math_fidelity,
         is_dram_sharded,
         core_count,  # Return the potentially adjusted core count
+        total_data_size_bytes,
+        is_sparse_matmul,
+        sparse_active_batches_missing,
+        sparse_active_source,
     )
 
 
@@ -809,7 +914,7 @@ def analyze_conv(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = Non
     )
 
 
-def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None):
+def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None, active_experts: Optional[int] = None):
     if arch_spec is None:
         arch_spec = ArchitectureSpec.from_name("wormhole")
     
@@ -851,6 +956,10 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     dram_percentage = Cell(None, unit="%", decimals=1)
     flops = Cell(None, unit="TFLOPs", decimals=1)
     flops_percentage = Cell(None, unit="%", decimals=1)
+    dram_bytes = Cell(None)
+    is_sparse_matmul = False
+    sparse_active_batches_missing = False
+    sparse_active_source = None
 
     math_fidelity = ""
     math_fidelity += f"{short_name(input_0_datatype)}" if pd.notna(input_0_datatype) else ""
@@ -871,12 +980,17 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
             math_fidelity,
             is_dram_sharded,
             adjusted_core_count,  # Get the potentially adjusted core count
-        ) = analyze_matmul(row, csv_format, arch_spec)
+            total_data_size_bytes,
+            is_sparse_matmul,
+            sparse_active_batches_missing,
+            sparse_active_source,
+        ) = analyze_matmul(row, csv_format, arch_spec, active_experts)
         op_code = Cell(f"{op_code.raw_value} {size}")
         dram_speed = Cell(dram_speed, unit="GB/s", decimals=0)
         dram_percentage = Cell(dram_percentage, unit="%", decimals=1)
-        flops = Cell(flops / 1e12 if pd.notna(flops) else None, unit="TFLOPs", decimals=1)
+        flops = Cell(flops / 1e12 if flops is not None and pd.notna(flops) else None, unit="TFLOPs", decimals=1)
         flops_percentage = Cell(flops_percentage, unit="%", decimals=1)
+        dram_bytes = Cell(total_data_size_bytes)
         cores.raw_value = adjusted_core_count
 
         math_fidelity_cell = Cell(
@@ -932,6 +1046,10 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         "Input 0 Datatype": input_0_datatype_cell,
         "Input 1 Datatype": input_1_datatype_cell,
         "DRAM Sharded": Cell(is_dram_sharded),
+        "DRAM Bytes": dram_bytes,
+        "Sparse Matmul": Cell(is_sparse_matmul),
+        "Sparse Active Batches Missing": Cell(sparse_active_batches_missing),
+        "Sparse Active Source": Cell(sparse_active_source),
     }
 
     input_0_memory = Cell(row["INPUT_0_MEMORY"] if pd.notna(row["INPUT_0_MEMORY"]) else None)
@@ -992,6 +1110,56 @@ def add_derived_columns(rows):
         elif "(torch)" in op_data["OP Code"].raw_value:
             op_data["Bound"] = Cell("HOST")
             op_data["Device Time"] = Cell(None)
+
+
+def calculate_overall_dram_roofline(rows):
+    total_device_time_us = sum(
+        op_data["Device Time"].raw_value
+        for op_data in rows
+        if op_data["Device Time"].raw_value is not None
+        and pd.notna(op_data["Device Time"].raw_value)
+        and not is_signpost_op(op_data)
+    )
+    if total_device_time_us == 0:
+        return None, None
+
+    total_dram_bytes = sum(
+        op_data.get("DRAM Bytes", Cell(None)).raw_value
+        for op_data in rows
+        if op_data.get("DRAM Bytes", Cell(None)).raw_value is not None
+        and pd.notna(op_data.get("DRAM Bytes", Cell(None)).raw_value)
+    )
+    weighted_dram_percentage = sum(
+        op_data["DRAM %"].raw_value * op_data["Device Time"].raw_value
+        for op_data in rows
+        if op_data["DRAM %"].raw_value is not None
+        and pd.notna(op_data["DRAM %"].raw_value)
+        and op_data["Device Time"].raw_value is not None
+        and pd.notna(op_data["Device Time"].raw_value)
+    )
+
+    if total_dram_bytes == 0:
+        return None, None
+
+    overall_dram_speed = (total_dram_bytes / (total_device_time_us * 1e-6)) / 1e9
+    overall_dram_percentage = weighted_dram_percentage / total_device_time_us
+    return overall_dram_speed, overall_dram_percentage
+
+
+def has_missing_sparse_active_batches(rows):
+    return any(
+        op_data.get("Sparse Active Batches Missing", Cell(False)).raw_value
+        for op_data in rows
+    )
+
+
+def print_sparse_matmul_active_experts_warning(rows):
+    if has_missing_sparse_active_batches(rows):
+        print(colored(
+            "Warning: SparseMatmulDeviceOperation rows without numeric nnz were found. "
+            "Their DRAM/FLOP utilization is omitted; pass --active-experts K to model K active experts per input batch group.",
+            "yellow",
+        ))
 
 
 def get_op_color(op_code):
@@ -1099,6 +1267,7 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
     total_visible_gap = sum(
         op_data["Op-to-Op Gap"].raw_value for op_data in rows if op_data["Op-to-Op Gap"].raw_value is not None
     )
+    overall_dram_speed, overall_dram_percentage = calculate_overall_dram_roofline(rows)
     total_row = {
         "ID": Cell(""),
         "Total %": Cell(100.0, unit="%", decimals=1),
@@ -1106,6 +1275,8 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
         "OP Code": Cell(f"{device_ops} device ops, {host_ops} host ops, {signpost_count} signposts"),
         "Device Time": Cell(total_device_time, unit="μs", decimals=0),
         "Op-to-Op Gap": Cell(total_visible_gap, unit="μs", decimals=0),
+        "DRAM": Cell(overall_dram_speed, unit="GB/s", decimals=0),
+        "DRAM %": Cell(overall_dram_percentage, unit="%", decimals=1),
     }
     for header in headers:
         if header not in total_row:
@@ -1162,6 +1333,10 @@ def is_matmul_op(op_data):
     return "Matmul" in op_data["OP Code"].raw_value
 
 
+def is_sparse_matmul_op(op_data):
+    return op_data.get("Sparse Matmul", Cell(False)).raw_value or "SparseMatmul" in op_data["OP Code"].raw_value
+
+
 def print_matmul_advice(rows, headers, col_widths):
     matmul_ops = [op_data for op_data in rows if is_matmul_op(op_data)]
 
@@ -1183,6 +1358,11 @@ def print_matmul_advice(rows, headers, col_widths):
 def generate_matmul_advice(op_data):
     advice = []
 
+    if op_data.get("Sparse Active Batches Missing", Cell(False)).raw_value:
+        return [
+            "Sparse matmul utilization is omitted because the CSV row has nnz=std::nullopt; pass --active-experts K to model K active experts per input batch group"
+        ]
+
     math_fidelity = (
         op_data["Math Fidelity"].raw_value.split()[0] if op_data["Math Fidelity"].raw_value else None
     )
@@ -1195,7 +1375,7 @@ def generate_matmul_advice(op_data):
     )
 
     if op_data["Bound"].raw_value in ["DRAM", "BOTH"]:
-        if not op_data["DRAM Sharded"].raw_value:
+        if not op_data["DRAM Sharded"].raw_value and not is_sparse_matmul_op(op_data):
             advice.append(
                 "Try a DRAM-sharded program config (MatmulMultiCoreReuseMultiCastDRAMShardedProgramConfig) to improve throughput further"
             )
@@ -1823,6 +2003,7 @@ def main():
         args.no_stack_by_in0,
         args.stacked_csv,
         args.no_merge_devices,
+        args.active_experts,
     )
 
 
@@ -1866,6 +2047,12 @@ def parse_args():
     parser.add_argument("--stacked-csv", type=str, 
                 help="Output filename for the stacked report CSV (deprecated, use --summary-file)", metavar="STACKED_FILE")
     parser.add_argument("--no-merge-devices", action="store_true", help="Don't merge rows from multiple devices")
+    parser.add_argument(
+        "--active-experts",
+        type=int,
+        default=None,
+        help="Active experts per input batch group for SparseMatmul rows whose CSV attributes do not include numeric nnz",
+    )
 
     args = parser.parse_args()
 
@@ -1877,6 +2064,10 @@ def parse_args():
         id_range = parse_id_range(args.id_range)
     except ValueError:
         print(colored("Invalid --id-range format. Please use 'START-END', 'START-', or '-END'.", "red"))
+        exit(1)
+
+    if args.active_experts is not None and args.active_experts <= 0:
+        print(colored("Invalid --active-experts value. Please provide a positive integer.", "red"))
         exit(1)
 
     return args, id_range
@@ -1904,6 +2095,7 @@ def generate_perf_report(
     no_stack_by_in0,
     stacked_csv,
     no_merge_devices,
+    active_experts=None,
 ):
     # Handle backward compatibility and convert new arguments to internal logic
     # Priority: new arguments > legacy arguments
@@ -1979,7 +2171,7 @@ def generate_perf_report(
     host_ops = 0
     signpost_count = 0
     for _, row in df.iterrows():
-        op_data, current_gap = analyze_op(row, prev_non_signpost_row, csv_format, arch_spec)
+        op_data, current_gap = analyze_op(row, prev_non_signpost_row, csv_format, arch_spec, active_experts)
         op_data["ID"] = Cell(row["ORIGINAL_ROW"])  # Use the original row number
         op_data["Global Call Count"] = Cell(row["GLOBAL CALL COUNT"])
         if raw_op_codes:
@@ -2017,6 +2209,7 @@ def generate_perf_report(
     add_derived_columns(rows)
 
     rows = [color_row(op_data, op_data["Total %"].raw_value, min_percentage) for op_data in rows]
+    print_sparse_matmul_active_experts_warning(rows)
 
     visible_headers = [
         "ID",
@@ -2062,6 +2255,12 @@ def generate_perf_report(
                     advice = generate_matmul_advice(op_data) if is_matmul_op(op_data) else ""
                     row["Advice"] = " • ".join(advice)
                 csv_writer.writerow(row)
+        overall_dram_speed, overall_dram_percentage = calculate_overall_dram_roofline(rows)
+        if overall_dram_percentage is not None:
+            print(colored(
+                f"Overall DRAM roofline (modeled ops): {overall_dram_percentage:.1f}% ({overall_dram_speed:.0f} GB/s)",
+                "cyan",
+            ))
     else:
         if not rows:
             print(colored("No operations to display after applying filters.", "yellow"))

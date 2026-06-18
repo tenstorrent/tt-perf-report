@@ -78,6 +78,7 @@ This is particularly useful for:
 - `--color/--no-color`: Force colored/plain output
 - `--csv FILENAME`: Output the table to CSV format for further analysis or inclusion into automated reporting pipelines
 - `--no-advice`: Show only performance table, skip optimization advice
+- `--active-experts K`: Use K active experts per input batch group for `ttnn.sparse_matmul` rows whose CSV attributes do not include numeric `nnz`
 
 ## Understanding the Performance Report
 
@@ -94,6 +95,7 @@ The performance report provides several key metrics for analyzing operation perf
 
 - **DRAM**: Memory bandwidth achieved (in GB/s)
 - **DRAM %**: Percentage of theoretical peak DRAM bandwidth (288 GB/s on Wormhole)
+- **Overall DRAM roofline**: The total row reports modeled DRAM bandwidth and DRAM % across the visible report window
 - **FLOPs**: Compute throughput achieved (in TFLOPs)
 - **FLOPs %**: Percentage of theoretical peak compute for the given math fidelity
 - **Bound**: Performance classification of the operation:
