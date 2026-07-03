@@ -154,3 +154,4 @@ Export the table of ops and columns as a CSV file:
 ```bash
 tt-perf-report trace.csv --csv my_report.csv
 ```
+
