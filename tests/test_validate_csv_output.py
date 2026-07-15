@@ -10,7 +10,15 @@ import re
 from io import StringIO
 import pytest
 import pandas as pd
-from tt_perf_report.perf_report import generate_perf_report, detect_csv_format, CsvFormat, ArchitectureSpec
+from tt_perf_report.perf_report import (
+    generate_perf_report,
+    detect_csv_format,
+    CsvFormat,
+    ArchitectureSpec,
+    evaluate_fidelity,
+    calculate_overall_dram_roofline,
+    Cell,
+)
 
 # Shared test data (sample output from TT-NN)
 @pytest.fixture(scope="session")
@@ -51,6 +59,26 @@ def expected_headers():
         "Advice",
         "Raw OP Code",
     ]
+
+
+def test_hifi3_is_supported_for_throughput_and_advice_paths():
+    arch = ArchitectureSpec.from_name("wormhole", 64)
+
+    assert arch.tflops_per_core("HiFi3") == pytest.approx(
+        arch.tflops_per_core("LoFi") / 3
+    )
+    assert evaluate_fidelity("BFLOAT16", "BFLOAT16", "BFLOAT16", "HiFi3") == (
+        "unknown",
+        "HiFi3 is supported for throughput analysis, but fidelity advice is not yet defined.",
+    )
+
+
+def test_hifi3_integer_datatypes_keep_not_applicable_advice():
+    assert evaluate_fidelity("UINT8", "BFLOAT16", "BFLOAT16", "HiFi3") == (
+        "not_applicable",
+        "Fidelity evaluation is not applicable for integer datatypes (UINT8, UINT16, INT32, UINT32).",
+    )
+
 
 # TT-NN Visualizer default request
 def test_csv_headers_with_all_options(expected_headers, test_csv_content, mocker):
@@ -688,3 +716,207 @@ def test_csv_format_arch_and_cores(file_path, expected_csv_format, expected_arch
     detected_cores = ArchitectureSpec._get_worker_core_count_from_df(df)
     assert detected_cores == expected_worker_core_count, \
         f"Expected {expected_worker_core_count} worker cores, but got {detected_cores}"
+
+
+def _sparse_matmul_csv_content(nnz_value):
+    fields = [
+        "OP CODE",
+        "OP TYPE",
+        "GLOBAL CALL COUNT",
+        "DEVICE ID",
+        "DEVICE ARCH",
+        "ATTRIBUTES",
+        "MATH FIDELITY",
+        "CORE COUNT",
+        "AVAILABLE WORKER CORE COUNT",
+        "HOST START TS",
+        "OP TO OP LATENCY [ns]",
+        "DEVICE KERNEL DURATION [ns]",
+        "INPUT_0_W_PAD[LOGICAL]",
+        "INPUT_0_Z_PAD[LOGICAL]",
+        "INPUT_0_Y_PAD[LOGICAL]",
+        "INPUT_0_X_PAD[LOGICAL]",
+        "INPUT_0_LAYOUT",
+        "INPUT_0_DATATYPE",
+        "INPUT_0_MEMORY",
+        "INPUT_1_W_PAD[LOGICAL]",
+        "INPUT_1_Z_PAD[LOGICAL]",
+        "INPUT_1_Y_PAD[LOGICAL]",
+        "INPUT_1_X_PAD[LOGICAL]",
+        "INPUT_1_LAYOUT",
+        "INPUT_1_DATATYPE",
+        "INPUT_1_MEMORY",
+        "INPUT_2_W_PAD[LOGICAL]",
+        "INPUT_2_Z_PAD[LOGICAL]",
+        "INPUT_2_Y_PAD[LOGICAL]",
+        "INPUT_2_X_PAD[LOGICAL]",
+        "INPUT_2_LAYOUT",
+        "INPUT_2_DATATYPE",
+        "INPUT_2_MEMORY",
+        "OUTPUT_0_W_PAD[LOGICAL]",
+        "OUTPUT_0_Z_PAD[LOGICAL]",
+        "OUTPUT_0_Y_PAD[LOGICAL]",
+        "OUTPUT_0_X_PAD[LOGICAL]",
+        "OUTPUT_0_LAYOUT",
+        "OUTPUT_0_DATATYPE",
+        "OUTPUT_0_MEMORY",
+    ]
+    attributes = (
+        "{'compute_kernel_config': 'ComputeKernelConfig(math_fidelity=HiFi2;math_approx_mode=0;"
+        "fp32_dest_acc_en=0;packer_l1_acc=1;dst_full_sync_en=0;throttle_level=ThrottleLevel::NO_THROTTLE)'; "
+        "'global_cb': 'std::nullopt'; 'is_input_a_sparse': 'false'; 'is_input_b_sparse': 'true'; "
+        f"'nnz': '{nnz_value}'; 'output_dtype': 'DataType::BFLOAT16'; "
+        "'output_mem_config': 'MemoryConfig(memory_layout=TensorMemoryLayout::INTERLEAVED;buffer_type=BufferType::L1)'; "
+        "'program_config': 'MatmulMultiCoreReuseMultiCast1DProgramConfig(compute_with_storage_grid_size=3-1;"
+        "in0_block_w=8;out_subblock_h=1;out_subblock_w=1;out_block_h=1;out_block_w=1;per_core_M=1;"
+        "per_core_N=1;fuse_batch=0;mcast_in0=1)'}"
+    )
+    row = {
+        "OP CODE": "SparseMatmulDeviceOperation",
+        "OP TYPE": "tt_dnn_device",
+        "GLOBAL CALL COUNT": "1",
+        "DEVICE ID": "0",
+        "DEVICE ARCH": "wormhole_b0",
+        "ATTRIBUTES": attributes,
+        "MATH FIDELITY": "HiFi2",
+        "CORE COUNT": "3",
+        "AVAILABLE WORKER CORE COUNT": "64",
+        "HOST START TS": "1000",
+        "OP TO OP LATENCY [ns]": "0",
+        "DEVICE KERNEL DURATION [ns]": "126268",
+        "INPUT_0_W_PAD[LOGICAL]": "1[1]",
+        "INPUT_0_Z_PAD[LOGICAL]": "1[1]",
+        "INPUT_0_Y_PAD[LOGICAL]": "32[1]",
+        "INPUT_0_X_PAD[LOGICAL]": "2816[2816]",
+        "INPUT_0_LAYOUT": "TILE",
+        "INPUT_0_DATATYPE": "BFLOAT16",
+        "INPUT_0_MEMORY": "DEV_0_L1_WIDTH_SHARDED",
+        "INPUT_1_W_PAD[LOGICAL]": "1[1]",
+        "INPUT_1_Z_PAD[LOGICAL]": "128[128]",
+        "INPUT_1_Y_PAD[LOGICAL]": "2816[2816]",
+        "INPUT_1_X_PAD[LOGICAL]": "96[96]",
+        "INPUT_1_LAYOUT": "TILE",
+        "INPUT_1_DATATYPE": "BFLOAT8_B",
+        "INPUT_1_MEMORY": "DEV_0_DRAM_INTERLEAVED",
+        "INPUT_2_W_PAD[LOGICAL]": "1[1]",
+        "INPUT_2_Z_PAD[LOGICAL]": "1[1]",
+        "INPUT_2_Y_PAD[LOGICAL]": "1[1]",
+        "INPUT_2_X_PAD[LOGICAL]": "128[128]",
+        "INPUT_2_LAYOUT": "ROW_MAJOR",
+        "INPUT_2_DATATYPE": "BFLOAT16",
+        "INPUT_2_MEMORY": "DEV_0_DRAM_INTERLEAVED",
+        "OUTPUT_0_W_PAD[LOGICAL]": "1[1]",
+        "OUTPUT_0_Z_PAD[LOGICAL]": "128[128]",
+        "OUTPUT_0_Y_PAD[LOGICAL]": "32[1]",
+        "OUTPUT_0_X_PAD[LOGICAL]": "96[96]",
+        "OUTPUT_0_LAYOUT": "TILE",
+        "OUTPUT_0_DATATYPE": "BFLOAT16",
+        "OUTPUT_0_MEMORY": "DEV_0_L1_INTERLEAVED",
+    }
+
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=fields)
+    writer.writeheader()
+    writer.writerow(row)
+    return output.getvalue()
+
+
+def _run_sparse_matmul_report(csv_content, mocker, active_experts=None):
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as input_file:
+        input_file.write(csv_content)
+        input_file.flush()
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as output_file:
+            try:
+                stdout = StringIO()
+                mocker.patch("sys.stdout", stdout)
+                generate_perf_report(
+                    csv_files=[input_file.name],
+                    start_signpost=None,
+                    end_signpost=None,
+                    ignore_signposts=True,
+                    print_signposts=False,
+                    min_percentage=0.0,
+                    id_range=None,
+                    arch=None,
+                    csv_output_file=output_file.name,
+                    no_advice=False,
+                    tracing_mode=False,
+                    raw_op_codes=False,
+                    no_host_ops=False,
+                    no_summary=True,
+                    group_by="op",
+                    classic_colors=False,
+                    summary_file=None,
+                    no_stacked_report=True,
+                    no_stack_by_in0=True,
+                    stacked_csv=None,
+                    no_merge_devices=False,
+                    active_experts=active_experts,
+                )
+
+                with open(output_file.name, "r") as f:
+                    rows = list(csv.DictReader(f))
+                return rows[0], stdout.getvalue()
+            finally:
+                try:
+                    os.unlink(input_file.name)
+                    os.unlink(output_file.name)
+                except OSError:
+                    pass
+
+
+def test_sparse_matmul_uses_numeric_nnz_for_utilization(mocker):
+    row, stdout = _run_sparse_matmul_report(_sparse_matmul_csv_content("8"), mocker)
+
+    assert "active=8/128" in row["OP Code"]
+    assert row["DRAM %"] != ""
+    assert row["FLOPs %"] != ""
+    assert float(row["FLOPs %"]) < 30
+    assert "--active-experts" not in row["Advice"]
+    assert "Overall DRAM roofline" in stdout
+
+
+def test_sparse_matmul_without_nnz_omits_utilization_and_warns(mocker):
+    row, stdout = _run_sparse_matmul_report(_sparse_matmul_csv_content("std::nullopt"), mocker)
+
+    assert "active=?/128" in row["OP Code"]
+    assert row["DRAM"] == ""
+    assert row["DRAM %"] == ""
+    assert row["FLOPs"] == ""
+    assert row["FLOPs %"] == ""
+    assert "--active-experts K" in row["Advice"]
+    assert "pass --active-experts K" in stdout
+
+
+def test_sparse_matmul_active_experts_flag_fills_missing_nnz(mocker):
+    row, _ = _run_sparse_matmul_report(_sparse_matmul_csv_content("std::nullopt"), mocker, active_experts=8)
+
+    assert "active=8/128" in row["OP Code"]
+    assert row["DRAM %"] != ""
+    assert row["FLOPs %"] != ""
+    assert "--active-experts" not in row["Advice"]
+
+
+def test_overall_dram_roofline_weights_modeled_bytes_over_visible_device_time():
+    rows = [
+        {
+            "OP Code": Cell("MatmulDeviceOperation"),
+            "Device Time": Cell(10.0),
+            "DRAM": Cell(100.0),
+            "DRAM %": Cell(50.0),
+            "DRAM Bytes": Cell(1_000_000),
+        },
+        {
+            "OP Code": Cell("UnaryDeviceOperation"),
+            "Device Time": Cell(10.0),
+            "DRAM": Cell(None),
+            "DRAM %": Cell(None),
+            "DRAM Bytes": Cell(None),
+        },
+    ]
+
+    dram_speed, dram_percentage = calculate_overall_dram_roofline(rows)
+
+    assert dram_speed == pytest.approx(50.0)
+    assert dram_percentage == pytest.approx(25.0)

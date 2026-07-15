@@ -78,6 +78,7 @@ This is particularly useful for:
 - `--color/--no-color`: Force colored/plain output
 - `--csv FILENAME`: Output the table to CSV format for further analysis or inclusion into automated reporting pipelines
 - `--no-advice`: Show only performance table, skip optimization advice
+- `--active-experts K`: Use K active experts per input batch group for `ttnn.sparse_matmul` rows whose CSV attributes do not include numeric `nnz`
 
 ## Understanding the Performance Report
 
@@ -94,6 +95,7 @@ The performance report provides several key metrics for analyzing operation perf
 
 - **DRAM**: Memory bandwidth achieved (in GB/s)
 - **DRAM %**: Percentage of theoretical peak DRAM bandwidth (288 GB/s on Wormhole)
+- **Overall DRAM roofline**: The total row reports modeled DRAM bandwidth and DRAM % across the visible report window
 - **FLOPs**: Compute throughput achieved (in TFLOPs)
 - **FLOPs %**: Percentage of theoretical peak compute for the given math fidelity
 - **Bound**: Performance classification of the operation:
@@ -106,10 +108,10 @@ The performance report provides several key metrics for analyzing operation perf
 ### Additional Fields
 
 - **Math Fidelity**: Precision configuration used for matrix operations. Peak TFLOPs scale with fidelity phases (HiFi4=/4, HiFi3=/3, HiFi2=/2, LoFi=/1):
-  - `HiFi4`: Highest precision — Wormhole 74 TFLOPs, Blackhole (P150) ~180 TFLOPs
-  - `HiFi3`: High precision — Wormhole ~98.7 TFLOPs, Blackhole (P150) ~240 TFLOPs
-  - `HiFi2`: Medium precision — Wormhole 148 TFLOPs, Blackhole (P150) ~359 TFLOPs
-  - `LoFi`: Lowest precision — Wormhole 262 TFLOPs, Blackhole (P150) ~719 TFLOPs
+  - `HiFi4`: Highest precision — Wormhole 74 TFLOPs/core, Blackhole (P150) ~180 TFLOPs/core
+  - `HiFi3`: High precision — Wormhole ~98.7 TFLOPs/core, Blackhole (P150) ~240 TFLOPs/core
+  - `HiFi2`: Medium precision — Wormhole 148 TFLOPs/core, Blackhole (P150) ~359 TFLOPs/core
+  - `LoFi`: Lowest precision — Wormhole 262 TFLOPs/core, Blackhole (P150) ~719 TFLOPs/core
 
 The tool automatically highlights potential optimization opportunities:
 - Red op-to-op times indicate high host or kernel launch overhead (>6.5μs)
@@ -152,3 +154,4 @@ Export the table of ops and columns as a CSV file:
 ```bash
 tt-perf-report trace.csv --csv my_report.csv
 ```
+
