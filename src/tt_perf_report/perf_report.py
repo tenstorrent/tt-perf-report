@@ -343,24 +343,27 @@ ArchitectureSpec.register(ArchitectureSpec(
 # Operation category classification - single source of truth
 OPERATION_CATEGORIES = {
     "Compute": {
-        "AllGatherMatmul", "ScaledDotProductAttentionDecode", "RotaryEmbeddingLlama", "SDPAOperation",
+        "AllGatherMatmul", "RMSAllGather", "ScaledDotProductAttentionDecode", "SdpaDecode",
+        "RotaryEmbeddingLlama", "RotaryEmbedding", "SDPAOperation",
         "OptimizedConvNew", "Conv2d", "Matmul", "BinaryNg", "Binary",
-        "Unary", "Pool2D", "UpSample", "UpsampleOperation", "GroupNorm", "GridSample", "Accumulation", "LayerNorm", "ScaledDotProductAttention", "Reduce", "Softmax", "Embeddings", "MinimalMatmulOp", "SparseMatmul", "IntImg", "GridSampleOperation"
+        "Unary", "Pool2D", "UpSample", "UpsampleOperation", "GroupNorm", "GridSample", "Accumulation",
+        "LayerNorm", "ScaledDotProductAttention", "Reduce", "FastReduceNC", "ArgMax", "Softmax",
+        "Embeddings", "MinimalMatmulOp", "SparseMatmul", "IntImg", "GridSampleOperation",
     },
     # Data Movement
     "DM": {
         "PagedUpdateCacheDeviceOperation",
-        "Move", "Copy", "InterleavedToSharded", 
+        "Move", "Copy", "InterleavedToSharded",
         "ShardedToInterleaved", "InterleavedToShardedPartial",
         "ShardedToInterleavedPartial", "Halo", "Where", "CloneOperation", "Reshard",
-        "PaddedSlice", "SliceWrite", "ReduceScatter",
+        "PaddedSlice", "SliceWrite", "ReduceScatter", "AllGather",
     },
     # Tensor Manipulation
     "TM": {
         "NLPCreateHeadsDecodeDeviceOperation", "NLPConcatHeadsDecodeDeviceOperation", "Fold", "CreateQKVHeadsDeviceOperation", "ConcatenateHeads",
-        "Reshape", "Transpose", "Permute", "Slice", "Concat", "Split",
-        "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "Typecast", 
-        "NLPConcatHeads", "NlpCreateHeads", "Ternary", "FillPad", "PadDeviceOperation"
+        "Reshape", "ReshapeView", "Transpose", "Permute", "Slice", "Concat", "Split", "Repeat",
+        "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "Typecast",
+        "NLPConcatHeads", "NlpCreateHeads", "Ternary", "FillPad", "PadDeviceOperation",
     },
 
     "Host": {
