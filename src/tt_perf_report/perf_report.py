@@ -308,12 +308,13 @@ class ArchitectureSpec:
 # Register known architectures.
 # Blackhole-family peaks use phase divisors (HiFi4=/4, HiFi3=/3, HiFi2=/2, LoFi=/1).
 # Wormhole uses published chip peaks; HiFi3 is derived as HiFi4 × 4/3 (LoFi is empirical).
+_wormhole_tflops_hifi4 = 74 / 72
 ArchitectureSpec.register(ArchitectureSpec(
     name="wormhole",
     worker_cores=64,  # N150 and N300 with ETH dispatch
     dram_bandwidth_gb_s=288,
-    tflops_hifi4=74 / 72,
-    tflops_hifi3=(74 * 4 / 3) / 72,
+    tflops_hifi4=_wormhole_tflops_hifi4,
+    tflops_hifi3=_wormhole_tflops_hifi4 * 4 / 3,
     tflops_hifi2=148 / 72,
     tflops_lofi=262 / 72,
 ))
@@ -653,7 +654,7 @@ def evaluate_fidelity(
         if math_fidelity == "HiFi4":
             return (
                 "too_high",
-                "HiFi2 is very likely to work for BFP8 output; it discards the lowest bit of the activations and has 2x the throughput of HiFi4",
+                "HiFi2 is very likely to work for BFP4 output; it discards the lowest bit of the activations and has 2x the throughput of HiFi4",
             )
         elif math_fidelity == "HiFi3":
             return (
