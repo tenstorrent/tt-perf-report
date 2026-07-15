@@ -313,8 +313,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     worker_cores=64,  # N150 and N300 with ETH dispatch
     dram_bandwidth_gb_s=288,
     tflops_hifi4=74 / 72,
-    
-  =(74 * 4 / 3) / 72,
+    tflops_hifi3=(74 * 4 / 3) / 72,
     tflops_hifi2=148 / 72,
     tflops_lofi=262 / 72,
 ))
