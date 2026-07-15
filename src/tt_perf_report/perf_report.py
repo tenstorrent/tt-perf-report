@@ -626,12 +626,6 @@ def evaluate_fidelity(
             "Fidelity evaluation is not applicable for integer datatypes (UINT8, UINT16, INT32, UINT32).",
         )
 
-    if math_fidelity == "HiFi3":
-        return (
-            "unknown",
-            "HiFi3 is supported for throughput analysis, but fidelity advice is not yet defined.",
-        )
-
     mantissa_bits = {"FLOAT32": 23, "BFLOAT16": 8, "BFLOAT8_B": 7, "BFLOAT4_B": 3}
     try:
         in0_bits = mantissa_bits[input_0_datatype]  # activations -> srcB (7 bits)

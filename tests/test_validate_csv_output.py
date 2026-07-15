@@ -64,13 +64,10 @@ def expected_headers():
 def test_hifi3_is_supported_for_throughput_and_advice_paths():
     arch = ArchitectureSpec.from_name("wormhole", 64)
 
-    assert arch.tflops_per_core("HiFi3") == pytest.approx(
-        arch.tflops_per_core("LoFi") / 3
-    )
-    assert evaluate_fidelity("BFLOAT16", "BFLOAT16", "BFLOAT16", "HiFi3") == (
-        "unknown",
-        "HiFi3 is supported for throughput analysis, but fidelity advice is not yet defined.",
-    )
+    assert arch.tflops_per_core("HiFi3") == pytest.approx((74 * 4 / 3) / 72)
+    status, advice = evaluate_fidelity("BFLOAT16", "BFLOAT16", "BFLOAT16", "HiFi3")
+    assert status == "too_low"
+    assert "HiFi4" in advice
 
 
 def test_hifi3_integer_datatypes_keep_not_applicable_advice():

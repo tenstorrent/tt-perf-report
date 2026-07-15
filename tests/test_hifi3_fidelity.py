@@ -126,13 +126,23 @@ def test_analyze_matmul_uses_hifi3_peak():
             "DEVICE KERNEL DURATION [ns]": duration_ns,
             "CORE COUNT": core_count,
             "MATH FIDELITY": "HiFi3",
+            "OP CODE": "Matmul",
             "ATTRIBUTES": "",
         }
     )
 
-    _, _, flops, flops_percentage, _, _, math_fidelity, _, _ = analyze_matmul(
-        row, CsvFormat.V2, arch_spec
-    )
+    (
+        _,
+        _,
+        flops,
+        flops_percentage,
+        _,
+        _,
+        math_fidelity,
+        _,
+        _,
+        *_,
+    ) = analyze_matmul(row, CsvFormat.V2, arch_spec)
 
     assert math_fidelity == "HiFi3"
     peak_flops = arch_spec.tflops_per_core("HiFi3") * 1e12 * core_count
