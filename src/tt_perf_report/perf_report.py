@@ -157,6 +157,7 @@ class ArchitectureSpec:
     worker_cores: int
     dram_bandwidth_gb_s: float
     tflops_hifi4: float
+    tflops_hifi3: float
     tflops_hifi2: float
     tflops_lofi: float
     
@@ -192,6 +193,7 @@ class ArchitectureSpec:
                 worker_cores=worker_cores,
                 dram_bandwidth_gb_s=spec.dram_bandwidth_gb_s,
                 tflops_hifi4=spec.tflops_hifi4,
+                tflops_hifi3=spec.tflops_hifi3,
                 tflops_hifi2=spec.tflops_hifi2,
                 tflops_lofi=spec.tflops_lofi,
             )
@@ -294,6 +296,7 @@ class ArchitectureSpec:
         """Get TFLOPs per core for given math fidelity."""
         fidelity_map = {
             "HiFi4": self.tflops_hifi4,
+            "HiFi3": self.tflops_hifi3,
             "HiFi2": self.tflops_hifi2,
             "LoFi": self.tflops_lofi,
         }
@@ -302,12 +305,15 @@ class ArchitectureSpec:
         return fidelity_map[math_fidelity]
 
 
-# Register known architectures
+# Register known architectures.
+# Blackhole-family peaks use phase divisors (HiFi4=/4, HiFi3=/3, HiFi2=/2, LoFi=/1).
+# Wormhole uses published chip peaks; HiFi3 is derived as HiFi4 × 4/3 (LoFi is empirical).
 ArchitectureSpec.register(ArchitectureSpec(
     name="wormhole",
     worker_cores=64,  # N150 and N300 with ETH dispatch
     dram_bandwidth_gb_s=288,
     tflops_hifi4=74 / 72,
+    tflops_hifi3=(74 * 4 / 3) / 72,
     tflops_hifi2=148 / 72,
     tflops_lofi=262 / 72,
 ))
@@ -317,6 +323,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     worker_cores=130,  # P150
     dram_bandwidth_gb_s=512,
     tflops_hifi4=4096 * 1.35 / 1000 / 4,
+    tflops_hifi3=4096 * 1.35 / 1000 / 3,
     tflops_hifi2=4096 * 1.35 / 1000 / 2,
     tflops_lofi=4096 * 1.35 / 1000,
 ))
@@ -326,6 +333,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     worker_cores=20,   # N1-emu
     dram_bandwidth_gb_s=512,
     tflops_hifi4=4096 * 1.35 / 1000 / 4,
+    tflops_hifi3=4096 * 1.35 / 1000 / 3,
     tflops_hifi2=4096 * 1.35 / 1000 / 2,
     tflops_lofi=4096 * 1.35 / 1000,
 ))
@@ -335,6 +343,7 @@ ArchitectureSpec.register(ArchitectureSpec(
     worker_cores=20,
     dram_bandwidth_gb_s=120,
     tflops_hifi4=4096 * 0.65 / 1000 / 4,
+    tflops_hifi3=4096 * 0.65 / 1000 / 3,
     tflops_hifi2=4096 * 0.65 / 1000 / 2,
     tflops_lofi=4096 * 0.65 / 1000,
 ))
@@ -561,7 +570,7 @@ def evaluate_fidelity(
                 "sufficient",
                 "HiFi2 may also work, it discards the lowest bit of the activations and has 2x the throughput of HiFi4",
             )
-        elif math_fidelity == "HiFi2":
+        elif math_fidelity in ("HiFi3", "HiFi2"):
             return "too_low", "If your matmuls are not FLOP-bound use HiFi4 with BF16 activations for full accuracy"
         elif math_fidelity == "LoFi":
             return "too_low", "Use HiFi2 or HiFi4 with BF16 activations for improved accuracy"
@@ -572,6 +581,11 @@ def evaluate_fidelity(
             return (
                 "too_high",
                 "HiFi2 is very likely to work for BFP8 output; it discards the lowest bit of the activations and has 2x the throughput of HiFi4",
+            )
+        elif math_fidelity == "HiFi3":
+            return (
+                "too_high",
+                "HiFi2 is very likely to work for BFP4 output and has higher throughput than HiFi3",
             )
         elif math_fidelity == "HiFi2":
             return (
@@ -588,6 +602,8 @@ def evaluate_fidelity(
     elif in1_bits >= 7 and out_bits >= 7:
         if math_fidelity == "HiFi4":
             return "too_high", "HiFi2 is sufficient for BFP8 multiplication and has 2x the throughput of HiFi4"
+        elif math_fidelity == "HiFi3":
+            return "too_high", "HiFi2 is sufficient for BFP8 multiplication and has higher throughput than HiFi3"
         elif math_fidelity == "HiFi2":
             return "sufficient", None
         elif math_fidelity == "LoFi":
@@ -597,6 +613,8 @@ def evaluate_fidelity(
     elif in1_bits >= 7 and out_bits == 3:
         if math_fidelity == "HiFi4":
             return "too_high", "HiFi2 is sufficient for BFP8 multiplication and has 2x the throughput of HiFi4"
+        elif math_fidelity == "HiFi3":
+            return "too_high", "HiFi2 is sufficient for BFP8 multiplication and has higher throughput than HiFi3"
         elif math_fidelity == "HiFi2":
             return (
                 "sufficient",
