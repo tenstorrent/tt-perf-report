@@ -107,11 +107,11 @@ The performance report provides several key metrics for analyzing operation perf
 
 ### Additional Fields
 
-- **Math Fidelity**: Precision configuration used for matrix operations:
-  - `HiFi4`: Highest precision (74 TFLOPs/core)
-  - `HiFi3`: Higher precision than HiFi2; throughput is modeled as one third of LoFi peak
-  - `HiFi2`: Medium precision (148 TFLOPs/core)
-  - `LoFi`: Lowest precision (262 TFLOPs/core)
+- **Math Fidelity**: Precision configuration used for matrix operations (chip peak TFLOPs). Blackhole-family peaks use phase divisors (HiFi4=/4, HiFi3=/3, HiFi2=/2, LoFi=/1). Wormhole uses published chip peaks; HiFi3 is HiFi4×4/3 (LoFi is empirical):
+  - `HiFi4`: Highest precision — Wormhole 74 TFLOPs, Blackhole (P150) ~180 TFLOPs
+  - `HiFi3`: High precision — Wormhole ~98.7 TFLOPs, Blackhole (P150) ~240 TFLOPs
+  - `HiFi2`: Medium precision — Wormhole 148 TFLOPs, Blackhole (P150) ~359 TFLOPs
+  - `LoFi`: Lowest precision — Wormhole 262 TFLOPs, Blackhole (P150) ~719 TFLOPs
 
 The tool automatically highlights potential optimization opportunities:
 - Red op-to-op times indicate high host or kernel launch overhead (>6.5μs)
