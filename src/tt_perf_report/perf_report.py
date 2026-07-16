@@ -356,12 +356,14 @@ OPERATION_CATEGORIES = {
         "Move", "Copy", "InterleavedToSharded",
         "ShardedToInterleaved", "InterleavedToShardedPartial",
         "ShardedToInterleavedPartial", "Halo", "Where", "CloneOperation", "Reshard",
-        "PaddedSlice", "SliceWrite", "ReduceScatter", "AllGather",
+        # TODO: move AllGather / ReduceScatter to a CCL category when one exists
+        "ReduceScatter", "AllGather",
     },
     # Tensor Manipulation
     "TM": {
         "NLPCreateHeadsDecodeDeviceOperation", "NLPConcatHeadsDecodeDeviceOperation", "Fold", "CreateQKVHeadsDeviceOperation", "ConcatenateHeads",
-        "Reshape", "ReshapeView", "Transpose", "Permute", "Slice", "Concat", "Split", "Repeat",
+        "Reshape", "ReshapeView", "Transpose", "Permute", "Slice", "PaddedSlice", "SliceWrite",
+        "Concat", "Split", "Repeat",
         "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "Typecast",
         "NLPConcatHeads", "NlpCreateHeads", "Ternary", "FillPad", "PadDeviceOperation",
     },

@@ -19,6 +19,8 @@ NEWLY_CLASSIFIED_OPS = [
     ("AllGather", "DM"),
     ("ReshapeView", "TM"),
     ("Repeat", "TM"),
+    ("PaddedSlice", "TM"),
+    ("SliceWrite", "TM"),
 ]
 
 
