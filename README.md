@@ -79,6 +79,7 @@ This is particularly useful for:
 - `--csv FILENAME`: Output the table to CSV format for further analysis or inclusion into automated reporting pipelines
 - `--no-advice`: Show only performance table, skip optimization advice
 - `--active-experts K`: Use K active experts per input batch group for `ttnn.sparse_matmul` rows whose CSV attributes do not include numeric `nnz`
+- `--arch ARCH`: Override architecture/SKU detection. Use `p100` for Blackhole P100 traces because profiler CSVs identify the chip family but not the card SKU.
 
 ## Understanding the Performance Report
 
@@ -89,12 +90,13 @@ The performance report provides several key metrics for analyzing operation perf
 - **Device Time**: Time spent executing the operation on device (in microseconds)
 - **Op-to-op Gap**: Time between operations, including host overhead and kernel dispatch (in microseconds)
 - **Total %**: Percentage of total execution time spent on this operation
-- **Cores**: Number of cores used by the operation (max 64 on Wormhole)
+- **Cores**: Number of compute cores used by the operation. The available-worker ceiling is read from newer profiler CSVs.
+  DRAM-sharded matmuls use the architecture's DRAM-interface workers: 12 on Wormhole, 8 on Blackhole P150, and 7 on Blackhole P100.
 
 ### Performance Metrics
 
 - **DRAM**: Memory bandwidth achieved (in GB/s)
-- **DRAM %**: Percentage of theoretical peak DRAM bandwidth (288 GB/s on Wormhole)
+- **DRAM %**: Percentage of theoretical peak DRAM bandwidth (288 GB/s on Wormhole, 512 GB/s on Blackhole P150, or 448 GB/s on Blackhole P100)
 - **Overall DRAM roofline**: The total row reports modeled DRAM bandwidth and DRAM % across the visible report window
 - **FLOPs**: Compute throughput achieved (in TFLOPs)
 - **FLOPs %**: Percentage of theoretical peak compute for the given math fidelity
@@ -107,16 +109,16 @@ The performance report provides several key metrics for analyzing operation perf
 
 ### Additional Fields
 
-- **Math Fidelity**: Precision configuration used for matrix operations (chip peak TFLOPs). Blackhole-family peaks use phase divisors (HiFi4=/4, HiFi3=/3, HiFi2=/2, LoFi=/1). Wormhole uses published chip peaks; HiFi3 is HiFi4×4/3 (LoFi is empirical):
-  - `HiFi4`: Highest precision — Wormhole 74 TFLOPs, Blackhole (P150) ~180 TFLOPs
-  - `HiFi3`: High precision — Wormhole ~98.7 TFLOPs, Blackhole (P150) ~240 TFLOPs
-  - `HiFi2`: Medium precision — Wormhole 148 TFLOPs, Blackhole (P150) ~359 TFLOPs
-  - `LoFi`: Lowest precision — Wormhole 262 TFLOPs, Blackhole (P150) ~719 TFLOPs
+- **Math Fidelity**: Precision configuration used for matrix operations. Utilization is based on the operation's actual core count. Blackhole-family per-core peaks use phase divisors (HiFi4=/4, HiFi3=/3, HiFi2=/2, LoFi=/1). Wormhole uses published chip peaks; HiFi3 is HiFi4×4/3 (LoFi is empirical). Full-chip reference peaks are:
+  - `HiFi4`: Highest precision — Wormhole 74 TFLOPs, Blackhole ~166 TFLOPs
+  - `HiFi3`: High precision — Wormhole ~98.7 TFLOPs, Blackhole ~221 TFLOPs
+  - `HiFi2`: Medium precision — Wormhole 148 TFLOPs, Blackhole ~332 TFLOPs
+  - `LoFi`: Lowest precision — Wormhole 262 TFLOPs, Blackhole ~664 TFLOPs
 
 The tool automatically highlights potential optimization opportunities:
 - Red op-to-op times indicate high host or kernel launch overhead (>6.5μs)
-- Red core counts indicate underutilization (<10 cores)
-- Green metrics indicate good utilization of available resources
+- Red core counts indicate underutilization (<10 cores), excluding architecture-standard DRAM-sharded matmuls
+- Green core counts indicate either all available workers or the expected DRAM-sharded worker count
 - Yellow metrics indicate room for optimization
 
 ## Examples
@@ -154,4 +156,3 @@ Export the table of ops and columns as a CSV file:
 ```bash
 tt-perf-report trace.csv --csv my_report.csv
 ```
-

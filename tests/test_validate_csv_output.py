@@ -77,6 +77,77 @@ def test_hifi3_integer_datatypes_keep_not_applicable_advice():
     )
 
 
+def test_blackhole_trace_invalid_device_durations_are_omitted(mocker):
+    csv_file_path = os.path.join(os.path.dirname(__file__), "data", "bh_invalid_trace_decode_window.csv")
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as output_file:
+        try:
+            stdout = StringIO()
+            mocker.patch("sys.stdout", stdout)
+            generate_perf_report(
+                csv_files=[csv_file_path],
+                start_signpost="PERF_DECODE",
+                end_signpost="PERF_DECODE_END",
+                ignore_signposts=False,
+                print_signposts=False,
+                min_percentage=0.5,
+                id_range=None,
+                arch=None,
+                csv_output_file=output_file.name,
+                no_advice=True,
+                tracing_mode=True,
+                raw_op_codes=True,
+                no_host_ops=False,
+                no_summary=True,
+                group_by="op",
+                classic_colors=False,
+                summary_file=None,
+                no_stacked_report=True,
+                no_stack_by_in0=True,
+                stacked_csv=None,
+                no_merge_devices=False,
+            )
+
+            report_stdout = stdout.getvalue()
+            assert "invalid device durations" in report_stdout
+            assert "performance-model durations" not in report_stdout
+            assert "Overall DRAM roofline" not in report_stdout
+
+            with open(output_file.name, "r") as f:
+                rows = list(csv.DictReader(f))
+
+            device_times_us = [
+                float(row["Device Time"])
+                for row in rows
+                if row["Device Time"]
+            ]
+            assert max(device_times_us) < 200
+
+            op_to_op_gaps_us = [
+                float(row["Op-to-Op Gap"])
+                for row in rows
+                if row["Op-to-Op Gap"]
+            ]
+            assert all(gap >= 0 for gap in op_to_op_gaps_us)
+            assert max(op_to_op_gaps_us) < 10
+
+            matmul_rows = [
+                row
+                for row in rows
+                if row["OP Code"].startswith("MatmulDeviceOperation")
+            ]
+            assert len(matmul_rows) == 5
+            assert all(row["Cores"] == "8" for row in matmul_rows)
+            assert all(row["Device Time"] == "" for row in matmul_rows)
+            assert all(row["DRAM %"] == "" for row in matmul_rows)
+
+        finally:
+            try:
+                os.unlink(output_file.name)
+            except OSError:
+                pass
+
+
 # TT-NN Visualizer default request
 def test_csv_headers_with_all_options(expected_headers, test_csv_content, mocker):
     with tempfile.NamedTemporaryFile(
