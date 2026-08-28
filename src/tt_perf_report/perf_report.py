@@ -20,6 +20,13 @@ except ImportError:
 import pandas as pd
 from enum import Enum
 
+from tt_perf_report.sub_device import (
+    AVAILABLE_WORKER_CORE_COUNT_COLUMN,
+    count_sub_devices,
+    get_op_available_cores,
+    get_op_sub_device_id,
+)
+
 # CSV format versions
 class CsvFormat(Enum):
     V1 = 1  # Original format
@@ -240,35 +247,41 @@ class ArchitectureSpec:
     @staticmethod
     def _get_worker_core_count_from_df(df) -> int:
         """
-        Get available worker core count from CSV if available (v2.1+).
-        Returns the first non-zero value from AVAILABLE WORKER CORE COUNT column.
+        Get the file-wide available worker core count from CSV if available (v2.1+).
+        Returns the largest non-zero value from AVAILABLE WORKER CORE COUNT column,
+        which is the full worker grid; ops confined to a subdevice report a smaller
+        budget and are measured against their own value, not this one.
         Defaults to 64 if not available or all values are zero.
         """
         csv_format = detect_csv_format(df)
-        
-        if csv_format != CsvFormat.V2_1 or "AVAILABLE WORKER CORE COUNT" not in df.columns:
+
+        if csv_format != CsvFormat.V2_1 or AVAILABLE_WORKER_CORE_COUNT_COLUMN not in df.columns:
             print(colored("AVAILABLE WORKER CORE COUNT column not found. Defaulting to 64 cores.", "yellow"))
             return 64
-        
+
         # Get all non-zero, non-null values
-        core_counts = df["AVAILABLE WORKER CORE COUNT"].dropna()
+        core_counts = df[AVAILABLE_WORKER_CORE_COUNT_COLUMN].dropna()
         core_counts = core_counts[core_counts != 0]
-        
+
         if core_counts.empty:
             print(colored("No non-zero AVAILABLE WORKER CORE COUNT values found. Defaulting to 64 cores.", "yellow"))
             return 64
-        
-        first_count = int(core_counts.iloc[0])
-        
-        # Check if all values are consistent
-        unique_counts = core_counts.unique()
+
+        # The full grid is the largest budget in the file. Taking a positional
+        # value instead would depend on which op happened to be logged first.
+        full_grid_count = int(core_counts.max())
+
+        # Multiple budgets mean the run partitioned the grid into subdevices. That
+        # is expected, not a problem: utilisation uses each op's own budget.
+        unique_counts = sorted({int(count) for count in core_counts.unique()}, reverse=True)
         if len(unique_counts) > 1:
             print(colored(
-                f"Warning: Multiple AVAILABLE WORKER CORE COUNT values found: {list(unique_counts)}. Using first value: {first_count}.",
-                "yellow"
+                f"Detected multiple worker core budgets {unique_counts} - using per-op values for utilisation; "
+                f"full grid is {full_grid_count}.",
+                "cyan"
             ))
-        
-        return first_count
+
+        return full_grid_count
 
     @classmethod
     def from_df(cls, df) -> 'ArchitectureSpec':
@@ -723,7 +736,7 @@ def evaluate_fidelity(
 def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None, active_experts: Optional[int] = None):
     if arch_spec is None:
         arch_spec = ArchitectureSpec.from_name("wormhole")
-    
+
     input_0_from_dram = "DRAM" in row["INPUT_0_MEMORY"]
     input_1_from_dram = "DRAM" in row["INPUT_1_MEMORY"]
 
@@ -873,7 +886,9 @@ def analyze_conv(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = Non
     
     duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
 
-    core_count = arch_spec.worker_cores
+    # Conv is modelled as using the whole grid available to it, which on a
+    # subdevice run is that subdevice's budget rather than the full chip.
+    core_count = get_op_available_cores(row, arch_spec.worker_cores)
     math_fidelity = row["MATH FIDELITY"]
 
     # Check for DRAM-sharded program config
@@ -937,6 +952,8 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     
     op_code = Cell(row["OP CODE"])
     cores = Cell(int(row["CORE COUNT"]) if pd.notna(row["CORE COUNT"]) else None)
+    sub_device_id = Cell(get_op_sub_device_id(row))
+    available_cores = Cell(get_op_available_cores(row, arch_spec.worker_cores))
     device_time = Cell(
         row["DEVICE KERNEL DURATION [ns]"] / 1000 if pd.notna(row["DEVICE KERNEL DURATION [ns]"]) else 0,
         unit="μs",
@@ -1054,6 +1071,8 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         "Device Time": device_time,
         "Op-to-Op Gap": op_to_op_gap,
         "Cores": cores,
+        "Sub Device ID": sub_device_id,
+        "Available Cores": available_cores,
         "DRAM": dram_speed,
         "DRAM %": dram_percentage,
         "FLOPs": flops,
@@ -1212,9 +1231,14 @@ def color_row(op_data, percentage, min_percentage):
 
         num_cores = op_data["Cores"].raw_value
         if num_cores is not None:
+            # Green means "used the whole grid it was given", which is the
+            # subdevice's budget on a partitioned run and the full grid
+            # otherwise. Red stays absolute: below ~10 cores dispatch overhead
+            # dominates whatever the grid size is.
+            full_grid = op_data.get("Available Cores", Cell(None)).raw_value or 64
             if num_cores < 10:
                 op_data["Cores"].color = "red"
-            elif num_cores == 64:
+            elif num_cores == full_grid:
                 op_data["Cores"].color = "green"
         else:
             op_data["Cores"].color = muted_cell_color
@@ -1401,8 +1425,9 @@ def generate_matmul_advice(op_data):
         if fidelity_evaluation == "too_high":
             advice.append(fidelity_advice)
     elif op_data["Bound"].raw_value in ["FLOP", "BOTH"]:
-        if cores < 64:
-            advice.append(f"Increase grid size (currently using {cores})")
+        available_cores = op_data.get("Available Cores", Cell(None)).raw_value or 64
+        if cores < available_cores:
+            advice.append(f"Increase grid size (currently using {cores} of {available_cores})")
         if fidelity_evaluation == "too_high":
             advice.append(fidelity_advice)
     elif op_data["Bound"].raw_value == "SLOW":
@@ -2158,7 +2183,14 @@ def generate_perf_report(
         # For v1 and v2, use the arch parameter (either default or user-specified)
         arch_spec = ArchitectureSpec.from_name(arch)
     
-    print(colored(f"Architecture: {arch_spec.name}, Worker cores: {arch_spec.worker_cores}", "cyan"))
+    # Counted before merging, which drops rows but never columns.
+    sub_device_count = count_sub_devices(df)
+    show_sub_device = sub_device_count > 0
+
+    arch_summary = f"Architecture: {arch_spec.name}, Worker cores: {arch_spec.worker_cores}"
+    if show_sub_device:
+        arch_summary += f", Sub devices: {sub_device_count}"
+    print(colored(arch_summary, "cyan"))
 
     # Add a column for original row numbers
     df["ORIGINAL_ROW"] = df.index + 2  # +2 to match Excel row numbers (1-based + header)
@@ -2254,7 +2286,17 @@ def generate_perf_report(
         "Output Subblock H",
         "Output Subblock W",
         "Global Call Count",
+        "Available Cores",
     ]
+
+    # Sub Device ID is promoted into the visible table on a partitioned run, where
+    # it is the point, and kept out of it otherwise, where it is a blank column.
+    # It must land in exactly one of the two lists: they are concatenated into the
+    # CSV fieldnames, and a duplicate there emits the column twice.
+    if show_sub_device:
+        visible_headers.insert(visible_headers.index("Device") + 1, "Sub Device ID")
+    else:
+        additional_headers.append("Sub Device ID")
 
     if csv_output_file:
         all_headers = visible_headers + additional_headers

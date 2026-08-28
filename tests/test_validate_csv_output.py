@@ -17,7 +17,15 @@ from tt_perf_report.perf_report import (
     ArchitectureSpec,
     evaluate_fidelity,
     calculate_overall_dram_roofline,
+    analyze_conv,
+    color_row,
+    generate_matmul_advice,
     Cell,
+)
+from tt_perf_report.sub_device import (
+    count_sub_devices,
+    get_op_available_cores,
+    get_op_sub_device_id,
 )
 
 # Shared test data (sample output from TT-NN)
@@ -56,6 +64,8 @@ def expected_headers():
         "Output Subblock H",
         "Output Subblock W",
         "Global Call Count",
+        "Available Cores",
+        "Sub Device ID",
         "Advice",
         "Raw OP Code",
     ]
@@ -917,3 +927,403 @@ def test_overall_dram_roofline_weights_modeled_bytes_over_visible_device_time():
 
     assert dram_speed == pytest.approx(50.0)
     assert dram_percentage == pytest.approx(25.0)
+
+
+# --- Subdevice support -------------------------------------------------------
+#
+# No captured op perf report in tests/data carries a SUB DEVICE ID column, and
+# every one of them reports a single uniform AVAILABLE WORKER CORE COUNT, so the
+# partitioned-grid case is built synthetically here. Budgets mirror the DeepSeek-V3
+# MoE prefill trace in ttnn-visualizer#1940: a 108-core shared-expert subdevice, a
+# 12-core dispatch subdevice, and full-grid ops at 120.
+
+_SUBDEVICE_FIELDS = [
+    "OP CODE",
+    "OP TYPE",
+    "GLOBAL CALL COUNT",
+    "DEVICE ID",
+    "DEVICE ARCH",
+    "SUB DEVICE ID",
+    "AVAILABLE WORKER CORE COUNT",
+    "ATTRIBUTES",
+    "MATH FIDELITY",
+    "CORE COUNT",
+    "HOST START TS",
+    "OP TO OP LATENCY [ns]",
+    "DEVICE KERNEL DURATION [ns]",
+    "INPUT_0_W_PAD[LOGICAL]",
+    "INPUT_0_Z_PAD[LOGICAL]",
+    "INPUT_0_Y_PAD[LOGICAL]",
+    "INPUT_0_X_PAD[LOGICAL]",
+    "INPUT_0_LAYOUT",
+    "INPUT_0_DATATYPE",
+    "INPUT_0_MEMORY",
+    "INPUT_1_W_PAD[LOGICAL]",
+    "INPUT_1_Z_PAD[LOGICAL]",
+    "INPUT_1_Y_PAD[LOGICAL]",
+    "INPUT_1_X_PAD[LOGICAL]",
+    "INPUT_1_LAYOUT",
+    "INPUT_1_DATATYPE",
+    "INPUT_1_MEMORY",
+    "OUTPUT_0_W_PAD[LOGICAL]",
+    "OUTPUT_0_Z_PAD[LOGICAL]",
+    "OUTPUT_0_Y_PAD[LOGICAL]",
+    "OUTPUT_0_X_PAD[LOGICAL]",
+    "OUTPUT_0_LAYOUT",
+    "OUTPUT_0_DATATYPE",
+    "OUTPUT_0_MEMORY",
+]
+
+
+def _subdevice_row(op_code, sub_device_id, available_cores, core_count, host_ts):
+    return {
+        "OP CODE": op_code,
+        "OP TYPE": "tt_dnn_device",
+        "GLOBAL CALL COUNT": str(host_ts),
+        "DEVICE ID": "0",
+        "DEVICE ARCH": "blackhole",
+        "SUB DEVICE ID": sub_device_id,
+        "AVAILABLE WORKER CORE COUNT": available_cores,
+        "ATTRIBUTES": "",
+        "MATH FIDELITY": "HiFi2",
+        "CORE COUNT": core_count,
+        "HOST START TS": str(host_ts),
+        "OP TO OP LATENCY [ns]": "0",
+        "DEVICE KERNEL DURATION [ns]": "100000",
+        "INPUT_0_W_PAD[LOGICAL]": "1[1]",
+        "INPUT_0_Z_PAD[LOGICAL]": "1[1]",
+        "INPUT_0_Y_PAD[LOGICAL]": "512[512]",
+        "INPUT_0_X_PAD[LOGICAL]": "512[512]",
+        "INPUT_0_LAYOUT": "TILE",
+        "INPUT_0_DATATYPE": "BFLOAT16",
+        "INPUT_0_MEMORY": "DEV_0_L1_INTERLEAVED",
+        "INPUT_1_W_PAD[LOGICAL]": "1[1]",
+        "INPUT_1_Z_PAD[LOGICAL]": "1[1]",
+        "INPUT_1_Y_PAD[LOGICAL]": "512[512]",
+        "INPUT_1_X_PAD[LOGICAL]": "512[512]",
+        "INPUT_1_LAYOUT": "TILE",
+        "INPUT_1_DATATYPE": "BFLOAT16",
+        "INPUT_1_MEMORY": "DEV_0_DRAM_INTERLEAVED",
+        "OUTPUT_0_W_PAD[LOGICAL]": "1[1]",
+        "OUTPUT_0_Z_PAD[LOGICAL]": "1[1]",
+        "OUTPUT_0_Y_PAD[LOGICAL]": "512[512]",
+        "OUTPUT_0_X_PAD[LOGICAL]": "512[512]",
+        "OUTPUT_0_LAYOUT": "TILE",
+        "OUTPUT_0_DATATYPE": "BFLOAT16",
+        "OUTPUT_0_MEMORY": "DEV_0_DRAM_INTERLEAVED",
+    }
+
+
+def _subdevice_csv_content():
+    rows = [
+        # Shared-expert subdevice, using all of its 108 cores.
+        _subdevice_row("MatmulDeviceOperation", "1", "108", "108", 1000),
+        # Dispatch subdevice: 6 of 12 cores, which the collapsed global budget
+        # would have scored as 6 of 120.
+        _subdevice_row("DispatchDeviceOperation", "0", "12", "6", 2000),
+        # Blank subdevice means the full grid.
+        _subdevice_row("MatmulDeviceOperation", "", "120", "64", 3000),
+    ]
+
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=_SUBDEVICE_FIELDS)
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
+
+
+def _run_subdevice_report(mocker):
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as input_file:
+        input_file.write(_subdevice_csv_content())
+        input_file.flush()
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as output_file:
+            try:
+                stdout = StringIO()
+                mocker.patch("sys.stdout", stdout)
+                generate_perf_report(
+                    csv_files=[input_file.name],
+                    start_signpost=None,
+                    end_signpost=None,
+                    ignore_signposts=True,
+                    print_signposts=False,
+                    min_percentage=0.0,
+                    id_range=None,
+                    arch=None,
+                    csv_output_file=output_file.name,
+                    no_advice=False,
+                    tracing_mode=False,
+                    raw_op_codes=False,
+                    no_host_ops=False,
+                    no_summary=True,
+                    group_by="op",
+                    classic_colors=False,
+                    summary_file=None,
+                    no_stacked_report=True,
+                    no_stack_by_in0=True,
+                    stacked_csv=None,
+                    no_merge_devices=False,
+                )
+
+                with open(output_file.name, "r") as f:
+                    reader = csv.reader(f)
+                    headers = next(reader)
+                with open(output_file.name, "r") as f:
+                    rows = list(csv.DictReader(f))
+                return headers, rows, stdout.getvalue()
+            finally:
+                try:
+                    os.unlink(input_file.name)
+                    os.unlink(output_file.name)
+                except OSError:
+                    pass
+
+
+def test_subdevice_report_carries_per_op_core_budgets(mocker):
+    _, rows, _ = _run_subdevice_report(mocker)
+
+    assert [row["Sub Device ID"] for row in rows] == ["1", "0", ""]
+    assert [row["Available Cores"] for row in rows] == ["108", "12", "120"]
+    assert [row["Cores"] for row in rows] == ["108", "6", "64"]
+
+
+def test_subdevice_report_headers_have_no_duplicates(mocker):
+    headers, _, _ = _run_subdevice_report(mocker)
+
+    assert len(headers) == len(set(headers)), f"Duplicate column in CSV output: {headers}"
+    # Promoted into the visible table, immediately after Device.
+    assert headers.index("Sub Device ID") == headers.index("Device") + 1
+    assert "Available Cores" in headers
+
+
+def test_subdevice_report_reports_budgets_without_warning(mocker):
+    _, _, stdout = _run_subdevice_report(mocker)
+
+    assert "Detected multiple worker core budgets [120, 108, 12]" in stdout
+    assert "using per-op values for utilisation" in stdout
+    assert "full grid is 120" in stdout
+    # The old behaviour warned and silently measured every op against one budget.
+    assert "Multiple AVAILABLE WORKER CORE COUNT values found" not in stdout
+    assert "Sub devices: 2" in stdout
+
+
+def test_sub_device_id_stays_out_of_visible_table_without_subdevices(test_csv_content, mocker):
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as input_file:
+        input_file.write(test_csv_content)
+        input_file.flush()
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as output_file:
+            try:
+                mocker.patch("sys.stdout", new_callable=StringIO)
+                generate_perf_report(
+                    csv_files=[input_file.name],
+                    start_signpost=None,
+                    end_signpost=None,
+                    ignore_signposts=True,
+                    print_signposts=False,
+                    min_percentage=0.5,
+                    id_range=None,
+                    arch="wormhole",
+                    csv_output_file=output_file.name,
+                    no_advice=False,
+                    tracing_mode=False,
+                    raw_op_codes=False,
+                    no_host_ops=False,
+                    no_summary=True,
+                    group_by="op",
+                    classic_colors=False,
+                    summary_file=None,
+                    no_stacked_report=True,
+                    no_stack_by_in0=True,
+                    stacked_csv=None,
+                    no_merge_devices=False,
+                )
+
+                with open(output_file.name, "r") as f:
+                    headers = next(csv.reader(f))
+
+                assert len(headers) == len(set(headers))
+                # Still exported, but not promoted next to Device.
+                assert "Sub Device ID" in headers
+                assert headers.index("Sub Device ID") != headers.index("Device") + 1
+            finally:
+                try:
+                    os.unlink(input_file.name)
+                    os.unlink(output_file.name)
+                except OSError:
+                    pass
+
+
+def test_get_op_available_cores_prefers_per_op_value_over_file_wide():
+    assert get_op_available_cores({"AVAILABLE WORKER CORE COUNT": 108}, 120) == 108
+    # Floats: pandas types the column as float whenever any row is blank.
+    assert get_op_available_cores({"AVAILABLE WORKER CORE COUNT": 12.0}, 120) == 12
+    # Missing, blank and zero all fall back to the file-wide grid.
+    assert get_op_available_cores({}, 120) == 120
+    assert get_op_available_cores({"AVAILABLE WORKER CORE COUNT": float("nan")}, 120) == 120
+    assert get_op_available_cores({"AVAILABLE WORKER CORE COUNT": 0}, 120) == 120
+
+
+def test_get_op_sub_device_id_treats_blank_as_full_grid():
+    assert get_op_sub_device_id({"SUB DEVICE ID": "1"}) == 1
+    assert get_op_sub_device_id({"SUB DEVICE ID": 0.0}) == 0
+    assert get_op_sub_device_id({"SUB DEVICE ID": ""}) is None
+    assert get_op_sub_device_id({"SUB DEVICE ID": "   "}) is None
+    assert get_op_sub_device_id({"SUB DEVICE ID": float("nan")}) is None
+    assert get_op_sub_device_id({}) is None
+    # Tolerated spelling variant.
+    assert get_op_sub_device_id({"SUBDEVICE ID": "2"}) == 2
+
+
+def test_count_sub_devices_ignores_blank_rows():
+    assert count_sub_devices(pd.DataFrame({"SUB DEVICE ID": ["1", "0", "", None, "1"]})) == 2
+    assert count_sub_devices(pd.DataFrame({"SUB DEVICE ID": ["", None]})) == 0
+    assert count_sub_devices(pd.DataFrame({"CORE COUNT": [64]})) == 0
+
+
+def _conv_row(available_cores):
+    return {
+        "DEVICE KERNEL DURATION [ns]": 100000.0,
+        "MATH FIDELITY": "HiFi4",
+        "ATTRIBUTES": "window_hw=(3;3); ",
+        "AVAILABLE WORKER CORE COUNT": available_cores,
+        "OUTPUT_0_Y_PAD[LOGICAL]": "1024[1024]",
+        "INPUT_0_X_PAD[LOGICAL]": "64[64]",
+        "INPUT_1_X_PAD[LOGICAL]": "128[128]",
+        "INPUT_0_DATATYPE": "BFLOAT16",
+        "INPUT_0_MEMORY": "DEV_0_L1_INTERLEAVED",
+        "INPUT_1_DATATYPE": "BFLOAT16",
+        "INPUT_1_MEMORY": "DEV_0_DRAM_INTERLEAVED",
+        "OUTPUT_0_DATATYPE": "BFLOAT16",
+        "OUTPUT_0_MEMORY": "DEV_0_L1_INTERLEAVED",
+    }
+
+
+def test_analyze_conv_scores_against_its_own_subdevice_budget():
+    arch = ArchitectureSpec.from_name("blackhole", 120)
+
+    _, full_grid_pct, _, _, _, _ = analyze_conv(_conv_row(120), CsvFormat.V2_1, arch)
+    _, subdevice_pct, _, _, _, _ = analyze_conv(_conv_row(108), CsvFormat.V2_1, arch)
+
+    # Same work, smaller budget: utilisation must rise, by exactly the budget ratio.
+    assert subdevice_pct > full_grid_pct
+    assert subdevice_pct == pytest.approx(full_grid_pct * 120 / 108)
+
+    # No per-op column at all falls back to the file-wide grid.
+    row = _conv_row(120)
+    del row["AVAILABLE WORKER CORE COUNT"]
+    _, fallback_pct, _, _, _, _ = analyze_conv(row, CsvFormat.V2_1, arch)
+    assert fallback_pct == pytest.approx(full_grid_pct)
+
+
+def _colored_op_data(num_cores, available_cores):
+    op_data = {
+        "OP Code": Cell("MatmulDeviceOperation 512 x 512 x 512"),
+        "Cores": Cell(num_cores),
+        "Available Cores": Cell(available_cores),
+        "Bound": Cell(""),
+        "DRAM": Cell(None),
+        "DRAM %": Cell(None),
+        "FLOPs": Cell(None),
+        "FLOPs %": Cell(None),
+        "Op-to-Op Gap": Cell(None),
+        "Math Fidelity": Cell(None),
+    }
+    color_row(op_data, 100.0, 0.0)
+    return op_data["Cores"].color
+
+
+def test_cores_turn_green_at_full_grid_for_any_grid_size():
+    # Regression test for the hardcoded 64: a full Blackhole grid never went green.
+    assert _colored_op_data(120, 120) == "green"
+    assert _colored_op_data(108, 108) == "green"
+    assert _colored_op_data(64, 64) == "green"
+    # Below the grid it was given, so not green.
+    assert _colored_op_data(64, 120) != "green"
+    assert _colored_op_data(12, 120) != "green"
+
+
+def test_cores_red_threshold_stays_absolute():
+    # Deliberately left absolute: proportional red would newly flag every
+    # 10-15 core op on a 64-core grid.
+    assert _colored_op_data(6, 12) == "red"
+    assert _colored_op_data(9, 64) == "red"
+    assert _colored_op_data(10, 64) != "red"
+    assert _colored_op_data(15, 64) != "red"
+
+
+def _advice_op_data(num_cores, available_cores):
+    return {
+        "OP Code": Cell("MatmulDeviceOperation 512 x 512 x 512"),
+        "Bound": Cell("FLOP"),
+        "Cores": Cell(num_cores),
+        "Available Cores": Cell(available_cores),
+        "Math Fidelity": Cell("HiFi2 BF16 x BF16 => BF16"),
+        "Output Datatype": Cell("BFLOAT16"),
+        "Input 0 Datatype": Cell("BFLOAT16"),
+        "Input 1 Datatype": Cell("BFLOAT16"),
+        "DRAM Sharded": Cell(False),
+        "FLOPs %": Cell(80.0),
+    }
+
+
+def test_grid_size_advice_uses_the_ops_own_budget():
+    advice = generate_matmul_advice(_advice_op_data(64, 120))
+    assert "Increase grid size (currently using 64 of 120)" in advice
+
+    # At full use of a subdevice there is no grid left to ask for, where the
+    # hardcoded 64 would have told the user to increase it.
+    assert not any("Increase grid size" in item for item in generate_matmul_advice(_advice_op_data(108, 108)))
+
+    # Reports with no core-count column keep the previous 64-core assumption.
+    op_data = _advice_op_data(32, None)
+    assert "Increase grid size (currently using 32 of 64)" in generate_matmul_advice(op_data)
+
+
+def test_subdevice_report_stacked_path_tolerates_promoted_column(mocker):
+    # generate_stacked_report builds its DataFrame from visible_headers, so
+    # promoting Sub Device ID into the visible table reaches it too.
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as input_file:
+        input_file.write(_subdevice_csv_content())
+        input_file.flush()
+
+        stacked_base = os.path.join(tempfile.mkdtemp(), "stacked")
+        try:
+            mocker.patch("sys.stdout", new_callable=StringIO)
+            generate_perf_report(
+                csv_files=[input_file.name],
+                start_signpost=None,
+                end_signpost=None,
+                ignore_signposts=True,
+                print_signposts=False,
+                min_percentage=0.0,
+                id_range=None,
+                arch=None,
+                csv_output_file=None,
+                no_advice=False,
+                tracing_mode=False,
+                raw_op_codes=False,
+                no_host_ops=False,
+                no_summary=False,
+                group_by="op",
+                classic_colors=False,
+                summary_file=stacked_base,
+                no_stacked_report=False,
+                no_stack_by_in0=True,
+                stacked_csv=None,
+                no_merge_devices=False,
+            )
+
+            with open(f"{stacked_base}.csv", "r") as f:
+                stacked_rows = list(csv.DictReader(f))
+
+            op_codes = [row["Op Code"] for row in stacked_rows]
+            assert "MatmulDeviceOperation" in op_codes
+            assert "DispatchDeviceOperation" in op_codes
+            # The promoted column is not an aggregation key and must not appear.
+            assert "Sub Device ID" not in stacked_rows[0]
+        finally:
+            try:
+                os.unlink(input_file.name)
+            except OSError:
+                pass

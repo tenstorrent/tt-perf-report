@@ -89,7 +89,9 @@ The performance report provides several key metrics for analyzing operation perf
 - **Device Time**: Time spent executing the operation on device (in microseconds)
 - **Op-to-op Gap**: Time between operations, including host overhead and kernel dispatch (in microseconds)
 - **Total %**: Percentage of total execution time spent on this operation
-- **Cores**: Number of cores used by the operation (max 64 on Wormhole)
+- **Cores**: Number of cores used by the operation
+- **Available Cores**: Worker cores the operation could have used. This is the full grid (64 on Wormhole, 120–130 on Blackhole) unless the run partitioned the chip into subdevices, in which case it is that subdevice's budget. Utilisation and grid-size advice are measured against this value, not against the whole chip
+- **Sub Device ID**: Subdevice the operation ran on; blank means it ran on the full grid. Only shown in the terminal table for runs that use subdevices, but always present in `--csv` output
 
 ### Performance Metrics
 
