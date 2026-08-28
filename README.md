@@ -119,7 +119,7 @@ Both subdevice columns appear in the terminal table only for runs that use subde
 
 The tool automatically highlights potential optimization opportunities:
 - Red op-to-op times indicate high host or kernel launch overhead (>6.5μs)
-- Red core counts indicate underutilization (<10 cores)
+- Red core counts indicate underutilization (fewer than 10 cores, and less than half of the cores the operation was given)
 - Green metrics indicate good utilization of available resources
 - Yellow metrics indicate room for optimization
 

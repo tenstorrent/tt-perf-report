@@ -1285,13 +1285,21 @@ def test_cores_turn_green_at_full_grid_for_any_grid_size():
     assert _colored_op_data(64, None) != "green"
 
 
-def test_cores_red_threshold_stays_absolute():
-    # Deliberately left absolute: proportional red would newly flag every
-    # 10-15 core op on a 64-core grid.
-    assert _colored_op_data(6, 12) == "red"
+def test_cores_red_accounts_for_the_size_of_the_grid_given():
+    # The headline example from tt-perf-report#65: a dispatch op given a 12-core
+    # subdevice and using 6 of them is not underutilizing anything.
+    assert _colored_op_data(6, 12) != "red"
+    # The same 6 cores out of a full grid genuinely is a small slice.
+    assert _colored_op_data(6, 120) == "red"
+    # Absolute smallness is still required, so nothing newly turns red: an op
+    # using 10-15 of a 64-core grid was not red before and is not red now.
     assert _colored_op_data(9, 64) == "red"
     assert _colored_op_data(10, 64) != "red"
     assert _colored_op_data(15, 64) != "red"
+    # Unknown budget keeps the old absolute behaviour.
+    assert _colored_op_data(9, None) == "red"
+    # A tiny subdevice used in full is at its grid, so green wins over red.
+    assert _colored_op_data(6, 6) == "green"
 
 
 def _advice_op_data(num_cores, available_cores):

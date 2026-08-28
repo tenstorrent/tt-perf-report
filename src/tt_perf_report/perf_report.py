@@ -1244,11 +1244,18 @@ def color_row(op_data, percentage, min_percentage):
         num_cores = op_data["Cores"].raw_value
         if num_cores is not None:
             # Green means "used the whole grid it was given", which is the
-            # subdevice's budget on a partitioned run and the full grid
-            # otherwise. Red stays absolute: below ~10 cores dispatch overhead
-            # dominates whatever the grid size is.
+            # subdevice's budget on a partitioned run and the full grid otherwise.
+            #
+            # Red means "used a small slice of the grid it was given", and needs
+            # both halves of that: absolute smallness, because dispatch overhead
+            # dominates below ~10 cores whatever the grid size, and a relative
+            # check, so that an op given a 12-core dispatch subdevice and using 6
+            # of them is not reported as underutilizing the device. Requiring both
+            # only ever removes red from an op, never adds it.
             available_cores = op_data.get("Available Cores", Cell(None)).raw_value
-            if num_cores < 10:
+            is_small_grid_use = num_cores < 10
+            uses_little_of_budget = available_cores is None or num_cores < available_cores / 2
+            if is_small_grid_use and uses_little_of_budget:
                 op_data["Cores"].color = "red"
             elif available_cores is not None and num_cores == available_cores:
                 op_data["Cores"].color = "green"
