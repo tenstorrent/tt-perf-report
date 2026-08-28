@@ -162,6 +162,7 @@ class ArchitectureSpec:
     """Immutable specification for a hardware architecture."""
     name: str
     worker_cores: int
+    dram_sharded_matmul_cores: int
     dram_bandwidth_gb_s: float
     tflops_hifi4: float
     tflops_hifi3: float
@@ -185,8 +186,17 @@ class ArchitectureSpec:
         """
         # Normalize name
         normalized = arch_name.lower() if arch_name else "wormhole"
-        if normalized == "wormhole_b0":
-            normalized = "wormhole"
+        normalized = {
+            "wormhole_b0": "wormhole",
+            "p100": "blackhole_p100",
+            "p100a": "blackhole_p100",
+            "blackhole_p100a": "blackhole_p100",
+            "p150": "blackhole",
+            "p150a": "blackhole",
+            "p150b": "blackhole",
+            "p150c": "blackhole",
+            "blackhole_p150": "blackhole",
+        }.get(normalized, normalized)
 
         if normalized not in cls._SPECS:
             raise ValueError(f"Unknown architecture: {arch_name}")
@@ -198,6 +208,7 @@ class ArchitectureSpec:
             return ArchitectureSpec(
                 name=spec.name,
                 worker_cores=worker_cores,
+                dram_sharded_matmul_cores=spec.dram_sharded_matmul_cores,
                 dram_bandwidth_gb_s=spec.dram_bandwidth_gb_s,
                 tflops_hifi4=spec.tflops_hifi4,
                 tflops_hifi3=spec.tflops_hifi3,
@@ -244,20 +255,27 @@ class ArchitectureSpec:
 
         return first_arch
 
-    @staticmethod
-    def _get_worker_core_count_from_df(df) -> int:
+    @classmethod
+    def _get_worker_core_count_from_df(cls, df, arch_name: Optional[str] = None) -> int:
         """
         Get the file-wide available worker core count from CSV if available (v2.1+).
         Returns the largest non-zero value from AVAILABLE WORKER CORE COUNT column,
         which is the full worker grid; ops confined to a subdevice report a smaller
         budget and are measured against their own value, not this one.
-        Defaults to 64 if not available or all values are zero.
+        Defaults to the selected architecture's worker-core count if unavailable.
         """
         csv_format = detect_csv_format(df)
+        if arch_name is None:
+            arch_name = cls._get_arch_name_from_df(df)
+        default_worker_cores = cls.from_name(arch_name).worker_cores
 
         if csv_format != CsvFormat.V2_1 or AVAILABLE_WORKER_CORE_COUNT_COLUMN not in df.columns:
-            print(colored("AVAILABLE WORKER CORE COUNT column not found. Defaulting to 64 cores.", "yellow"))
-            return 64
+            print(colored(
+                "AVAILABLE WORKER CORE COUNT column not found. "
+                f"Defaulting to {default_worker_cores} {cls.from_name(arch_name).name} cores.",
+                "yellow",
+            ))
+            return default_worker_cores
 
         # Coerce before reducing. A single unreadable cell must not abort the
         # report, and a column that pandas typed as text must not be compared
@@ -276,19 +294,23 @@ class ArchitectureSpec:
             ))
 
         if core_counts.empty:
-            print(colored("No non-zero AVAILABLE WORKER CORE COUNT values found. Defaulting to 64 cores.", "yellow"))
-            return 64
+            print(colored(
+                "No non-zero AVAILABLE WORKER CORE COUNT values found. "
+                f"Defaulting to {default_worker_cores} {cls.from_name(arch_name).name} cores.",
+                "yellow",
+            ))
+            return default_worker_cores
 
         # The full grid is the largest budget in the file. Taking a positional
         # value instead would depend on which op happened to be logged first.
         full_grid_count = int(core_counts.max())
 
         # Multiple budgets mean the run partitioned the grid into subdevices. That
-        # is expected, not a problem: utilization uses each op's own budget.
+        # is expected, not a problem: each op is measured against its own budget.
         unique_counts = sorted({int(count) for count in core_counts.unique()}, reverse=True)
         if len(unique_counts) > 1:
             print(colored(
-                f"Detected multiple worker core budgets {unique_counts} - using per-op values for utilization; "
+                f"Detected multiple worker core budgets {unique_counts} - using per-op values; "
                 f"full grid is {full_grid_count}.",
                 "cyan"
             ))
@@ -296,12 +318,13 @@ class ArchitectureSpec:
         return full_grid_count
 
     @classmethod
-    def from_df(cls, df) -> 'ArchitectureSpec':
+    def from_df(cls, df, arch_name: Optional[str] = None) -> 'ArchitectureSpec':
         """
         Create ArchitectureSpec from CSV DataFrame.
         
         Args:
             df: DataFrame containing the CSV data
+            arch_name: Optional architecture/SKU override
         
         Returns:
             ArchitectureSpec instance with appropriate configuration
@@ -310,10 +333,10 @@ class ArchitectureSpec:
         csv_format = detect_csv_format(df)
         
         # Get architecture name from CSV
-        arch_name = cls._get_arch_name_from_df(df)
+        arch_name = arch_name or cls._get_arch_name_from_df(df)
         
         # Get worker core count from CSV
-        worker_cores = cls._get_worker_core_count_from_df(df)
+        worker_cores = cls._get_worker_core_count_from_df(df, arch_name)
         
         return cls.from_name(arch_name, worker_cores)
 
@@ -337,6 +360,7 @@ _wormhole_tflops_hifi4 = 74 / 72
 ArchitectureSpec.register(ArchitectureSpec(
     name="wormhole",
     worker_cores=64,  # N150 and N300 with ETH dispatch
+    dram_sharded_matmul_cores=12,
     dram_bandwidth_gb_s=288,
     tflops_hifi4=_wormhole_tflops_hifi4,
     tflops_hifi3=_wormhole_tflops_hifi4 * 4 / 3,
@@ -346,8 +370,20 @@ ArchitectureSpec.register(ArchitectureSpec(
 
 ArchitectureSpec.register(ArchitectureSpec(
     name="blackhole",
-    worker_cores=130,  # P150
+    worker_cores=110,  # P150 with dispatch cores reserved
+    dram_sharded_matmul_cores=8,
     dram_bandwidth_gb_s=512,
+    tflops_hifi4=4096 * 1.35 / 1000 / 4,
+    tflops_hifi3=4096 * 1.35 / 1000 / 3,
+    tflops_hifi2=4096 * 1.35 / 1000 / 2,
+    tflops_lofi=4096 * 1.35 / 1000,
+))
+
+ArchitectureSpec.register(ArchitectureSpec(
+    name="blackhole_p100",
+    worker_cores=110,
+    dram_sharded_matmul_cores=7,
+    dram_bandwidth_gb_s=448,
     tflops_hifi4=4096 * 1.35 / 1000 / 4,
     tflops_hifi3=4096 * 1.35 / 1000 / 3,
     tflops_hifi2=4096 * 1.35 / 1000 / 2,
@@ -357,6 +393,7 @@ ArchitectureSpec.register(ArchitectureSpec(
 ArchitectureSpec.register(ArchitectureSpec(
     name="bh20",
     worker_cores=20,   # N1-emu
+    dram_sharded_matmul_cores=8,
     dram_bandwidth_gb_s=512,
     tflops_hifi4=4096 * 1.35 / 1000 / 4,
     tflops_hifi3=4096 * 1.35 / 1000 / 3,
@@ -367,6 +404,7 @@ ArchitectureSpec.register(ArchitectureSpec(
 ArchitectureSpec.register(ArchitectureSpec(
     name="n1",
     worker_cores=20,
+    dram_sharded_matmul_cores=8,
     dram_bandwidth_gb_s=120,
     tflops_hifi4=4096 * 0.65 / 1000 / 4,
     tflops_hifi3=4096 * 0.65 / 1000 / 3,
@@ -395,7 +433,7 @@ OPERATION_CATEGORIES = {
     },
     # Tensor Manipulation
     "TM": {
-        "NLPCreateHeadsDecodeDeviceOperation", "NLPConcatHeadsDecodeDeviceOperation", "Fold", "CreateQKVHeadsDeviceOperation", "ConcatenateHeads",
+        "NLPCreateHeadsDecodeDeviceOperation", "NLPCreateQKVHeadsDecodeDeviceOperation", "NLPConcatHeadsDecodeDeviceOperation", "Fold", "CreateQKVHeadsDeviceOperation", "ConcatenateHeads",
         "Reshape", "ReshapeView", "Transpose", "Permute", "Slice", "PaddedSlice", "SliceWrite",
         "Concat", "Split", "Repeat",
         "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "Typecast",
@@ -486,6 +524,45 @@ class Cell:
 
     def __str__(self):
         return self.format()
+
+
+INVALID_OP_TO_OP_GAP_MIN_NS = 1_000_000
+
+
+def get_numeric_value(row, column):
+    if column not in row:
+        return None
+    value = row[column]
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_invalid_device_duration(row):
+    duration_ns = get_numeric_value(row, "DEVICE KERNEL DURATION [ns]")
+    if duration_ns is None or duration_ns < 0:
+        return True
+
+    gap_ns = get_numeric_value(row, "OP TO OP LATENCY [ns]")
+    if (
+        gap_ns is not None
+        and gap_ns < -INVALID_OP_TO_OP_GAP_MIN_NS
+        and abs(gap_ns) > max(duration_ns * 0.5, INVALID_OP_TO_OP_GAP_MIN_NS)
+    ):
+        return True
+
+    return False
+
+
+def get_analysis_duration_ns(row):
+    duration_ns = get_numeric_value(row, "DEVICE KERNEL DURATION [ns]")
+    invalid = is_invalid_device_duration(row)
+    if invalid:
+        return None, True
+    return duration_ns, False
 
 
 def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signposts=False, print_signposts=False):
@@ -752,9 +829,11 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     input_0_from_dram = "DRAM" in row["INPUT_0_MEMORY"]
     input_1_from_dram = "DRAM" in row["INPUT_1_MEMORY"]
 
-    duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
+    duration_ns, _ = get_analysis_duration_ns(row)
+    duration_s = duration_ns * 1e-9 if duration_ns is not None and duration_ns > 0 else None
 
-    core_count = row["CORE COUNT"]
+    raw_core_count = get_numeric_value(row, "CORE COUNT")
+    core_count = int(raw_core_count) if raw_core_count is not None and raw_core_count > 0 else None
     math_fidelity = row["MATH FIDELITY"]
 
     # Check for DRAM-sharded program config
@@ -762,11 +841,17 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     is_dram_sharded = "MatmulMultiCoreReuseMultiCastDRAMShardedProgramConfig" in attributes
     is_sparse_matmul = "SparseMatmul" in row["OP CODE"]
 
-    # Override core count for DRAM-sharded matmuls
+    # The profiler's CORE COUNT describes the enclosing worker grid for this
+    # program config. The compute kernel runs on one DRAM-interface worker per
+    # active port/channel instead: 12 on Wormhole, 8 on P150, and 7 on P100.
     if is_dram_sharded:
-        core_count = 12
+        core_count = arch_spec.dram_sharded_matmul_cores
 
-    peak_flops_value = arch_spec.tflops_per_core(math_fidelity) * 1e12 * core_count
+    peak_flops_value = (
+        arch_spec.tflops_per_core(math_fidelity) * 1e12 * core_count
+        if core_count is not None
+        else None
+    )
 
     input_0_w = get_tensor_dim(row, "INPUT_0", "W", csv_format)
     input_0_z = get_tensor_dim(row, "INPUT_0", "Z", csv_format)
@@ -807,7 +892,7 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
                 total_data_size_bytes += K * N * get_datatype_size(row["INPUT_1_DATATYPE"]) * sparse_active_batches
             if "DRAM" in row["OUTPUT_0_MEMORY"]:
                 total_data_size_bytes += M * N * get_datatype_size(row["OUTPUT_0_DATATYPE"]) * sparse_active_batches
-            flops = (M * K * N * sparse_active_batches * 2) / duration_s
+            flops = (M * K * N * sparse_active_batches * 2) / duration_s if duration_s else None
     else:
         if input_0_from_dram:
             total_data_size_bytes += input_0_w * input_0_y * input_0_z * input_0_x * get_datatype_size(row["INPUT_0_DATATYPE"])
@@ -818,11 +903,15 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
         if "DRAM" in row["OUTPUT_0_MEMORY"]:
             total_data_size_bytes += output_0_w * output_0_y * output_0_z * output_0_x * get_datatype_size(row["OUTPUT_0_DATATYPE"])
 
-        flops = (M * K * N * W * Z * 2) / duration_s
+        flops = (M * K * N * W * Z * 2) / duration_s if duration_s else None
+
+    if duration_s is None:
+        total_data_size_bytes = None
+        flops = None
 
     dram_speed_gb_s = (
         (total_data_size_bytes / duration_s) / 1e9
-        if total_data_size_bytes is not None and total_data_size_bytes > 0
+        if duration_s and total_data_size_bytes is not None and total_data_size_bytes > 0
         else None
     )
 
@@ -837,7 +926,11 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} @ {row['INPUT_1_DATATYPE']} {row['INPUT_1_MEMORY'].replace('DEV_0_', '')} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')})"
 
     dram_percentage = (dram_speed_gb_s / arch_spec.dram_bandwidth_gb_s) * 100 if dram_speed_gb_s is not None else None
-    flops_percentage = (flops / peak_flops_value) * 100 if flops is not None else None
+    flops_percentage = (
+        (flops / peak_flops_value) * 100
+        if flops is not None and peak_flops_value
+        else None
+    )
 
     return (
         dram_speed_gb_s,
@@ -896,17 +989,24 @@ def analyze_conv(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = Non
     if arch_spec is None:
         arch_spec = ArchitectureSpec.from_name("wormhole")
     
-    duration_s = row["DEVICE KERNEL DURATION [ns]"] * 1e-9
+    duration_ns, _ = get_analysis_duration_ns(row)
+    duration_s = duration_ns * 1e-9 if duration_ns is not None and duration_ns > 0 else None
 
-    # Conv is modelled as using the whole grid available to it, which on a
-    # subdevice run is that subdevice's budget rather than the full chip.
-    core_count = get_op_available_cores(row, arch_spec.worker_cores)
+    # Conv now scores against the cores it actually used, as matmul does, rather
+    # than against the grid it was given. That is subdevice-safe by construction,
+    # so the per-op budget is not needed here.
+    raw_core_count = get_numeric_value(row, "CORE COUNT")
+    core_count = int(raw_core_count) if raw_core_count is not None and raw_core_count > 0 else None
     math_fidelity = row["MATH FIDELITY"]
 
     # Check for DRAM-sharded program config
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
 
-    peak_flops_value = arch_spec.tflops_per_core(math_fidelity) * 1e12 * core_count
+    peak_flops_value = (
+        arch_spec.tflops_per_core(math_fidelity) * 1e12 * core_count
+        if core_count is not None
+        else None
+    )
 
     NHW = get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
     CH_IN = get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
@@ -914,12 +1014,16 @@ def analyze_conv(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = Non
     CH_OUT = get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
 
     M, K, N = NHW, CH_IN * W[0] * W[1], CH_OUT
-    flops = (M * K * N * 2) / duration_s
+    flops = (M * K * N * 2) / duration_s if duration_s else None
 
     size = f"{M} x {K} x {N}"
     memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} @ {row['INPUT_1_DATATYPE']} {row['INPUT_1_MEMORY'].replace('DEV_0_', '')} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')})"
 
-    flops_percentage = (flops / peak_flops_value) * 100
+    flops_percentage = (
+        (flops / peak_flops_value) * 100
+        if flops is not None and peak_flops_value
+        else None
+    )
 
     try:
         act_block_h_ntiles = int(attributes.split("act_block_h_ntiles")[1][1:].split(";")[0])
@@ -963,19 +1067,30 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         arch_spec = ArchitectureSpec.from_name("wormhole")
     
     op_code = Cell(row["OP CODE"])
-    cores = Cell(int(row["CORE COUNT"]) if pd.notna(row["CORE COUNT"]) else None)
+    raw_core_count = get_numeric_value(row, "CORE COUNT")
+    cores = Cell(int(raw_core_count) if raw_core_count is not None and raw_core_count > 0 else None)
     sub_device_id = Cell(get_op_sub_device_id(row))
     available_cores = Cell(get_op_available_cores(row, arch_spec.worker_cores))
+    duration_ns, invalid_device_duration = get_analysis_duration_ns(row)
     device_time = Cell(
-        row["DEVICE KERNEL DURATION [ns]"] / 1000 if pd.notna(row["DEVICE KERNEL DURATION [ns]"]) else 0,
+        duration_ns / 1000 if duration_ns is not None else None,
         unit="μs",
         decimals=0,
     )
 
     # Calculate op-to-op gap only if there's a valid previous non-signpost operation
-    if prev_row is not None and prev_row["OP TYPE"] != "signpost" and pd.notna(row["OP TO OP LATENCY [ns]"]):
+    raw_gap_ns = get_numeric_value(row, "OP TO OP LATENCY [ns]")
+    prev_invalid_device_duration = prev_row is not None and is_invalid_device_duration(prev_row)
+    current_or_prev_duration_invalid = invalid_device_duration or prev_invalid_device_duration
+    if (
+        prev_row is not None
+        and prev_row["OP TYPE"] != "signpost"
+        and raw_gap_ns is not None
+        and raw_gap_ns >= 0
+        and not (current_or_prev_duration_invalid and abs(raw_gap_ns) > INVALID_OP_TO_OP_GAP_MIN_NS)
+    ):
         op_to_op_gap = Cell(
-            row["OP TO OP LATENCY [ns]"] / 1000,
+            raw_gap_ns / 1000,
             unit="μs",
             decimals=0,
         )
@@ -1094,10 +1209,12 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         "Input 0 Datatype": input_0_datatype_cell,
         "Input 1 Datatype": input_1_datatype_cell,
         "DRAM Sharded": Cell(is_dram_sharded),
+        "Architecture Worker Cores": Cell(arch_spec.worker_cores),
         "DRAM Bytes": dram_bytes,
         "Sparse Matmul": Cell(is_sparse_matmul),
         "Sparse Active Batches Missing": Cell(sparse_active_batches_missing),
         "Sparse Active Source": Cell(sparse_active_source),
+        "Invalid Device Duration": Cell(invalid_device_duration),
     }
 
     input_0_memory = Cell(row["INPUT_0_MEMORY"] if pd.notna(row["INPUT_0_MEMORY"]) else None)
@@ -1210,6 +1327,23 @@ def print_sparse_matmul_active_experts_warning(rows):
         ))
 
 
+def print_invalid_duration_warning(rows):
+    invalid_rows = [
+        op_data
+        for op_data in rows
+        if op_data.get("Invalid Device Duration", Cell(False)).raw_value
+        and not is_signpost_op(op_data)
+    ]
+    if not invalid_rows:
+        return
+
+    print(colored(
+        f"Warning: {len(invalid_rows)} rows had invalid device durations. "
+        "Their device time, utilization, and timing-total contributions were omitted.",
+        "yellow",
+    ))
+
+
 def get_op_color(op_code):
     for op, color in op_colors.items():
         if op in op_code:
@@ -1243,8 +1377,9 @@ def color_row(op_data, percentage, min_percentage):
 
         num_cores = op_data["Cores"].raw_value
         if num_cores is not None:
-            # Green means "used the whole grid it was given", which is the
-            # subdevice's budget on a partitioned run and the full grid otherwise.
+            # Green means "used the whole grid it was given". That grid is the
+            # subdevice's budget on a partitioned run and the architecture grid
+            # otherwise; Available Cores already carries whichever applies.
             #
             # Red means "used a small slice of the grid it was given", and needs
             # both halves of that: absolute smallness, because dispatch overhead
@@ -1252,10 +1387,14 @@ def color_row(op_data, percentage, min_percentage):
             # check, so that an op given a 12-core dispatch subdevice and using 6
             # of them is not reported as underutilizing the device. Requiring both
             # only ever removes red from an op, never adds it.
+            is_dram_sharded = op_data.get("DRAM Sharded", Cell(False)).raw_value
             available_cores = op_data.get("Available Cores", Cell(None)).raw_value
-            is_small_grid_use = num_cores < 10
+            if available_cores is None:
+                available_cores = op_data.get("Architecture Worker Cores", Cell(None)).raw_value
             uses_little_of_budget = available_cores is None or num_cores < available_cores / 2
-            if is_small_grid_use and uses_little_of_budget:
+            if is_dram_sharded:
+                op_data["Cores"].color = "green"
+            elif num_cores < 10 and uses_little_of_budget:
                 op_data["Cores"].color = "red"
             elif available_cores is not None and num_cores == available_cores:
                 op_data["Cores"].color = "green"
@@ -1430,6 +1569,7 @@ def generate_matmul_advice(op_data):
     input_0_datatype = op_data["Input 0 Datatype"].raw_value
     input_1_datatype = op_data["Input 1 Datatype"].raw_value
     cores = op_data["Cores"].raw_value
+    architecture_worker_cores = op_data.get("Architecture Worker Cores", Cell(None)).raw_value
     fidelity_evaluation, fidelity_advice = evaluate_fidelity(
         input_0_datatype, input_1_datatype, output_datatype, math_fidelity
     )
@@ -1444,8 +1584,18 @@ def generate_matmul_advice(op_data):
         if fidelity_evaluation == "too_high":
             advice.append(fidelity_advice)
     elif op_data["Bound"].raw_value in ["FLOP", "BOTH"]:
+        # Measured against the grid this op was actually given, which is its
+        # subdevice budget on a partitioned run. DRAM-sharded matmuls run on a
+        # fixed set of DRAM-interface workers, so there is no grid to grow.
         available_cores = op_data.get("Available Cores", Cell(None)).raw_value
-        if available_cores is not None and cores < available_cores:
+        if available_cores is None:
+            available_cores = architecture_worker_cores
+        if (
+            not op_data["DRAM Sharded"].raw_value
+            and cores is not None
+            and available_cores is not None
+            and cores < available_cores
+        ):
             advice.append(f"Increase grid size (currently using {cores} of {available_cores})")
         if fidelity_evaluation == "too_high":
             advice.append(fidelity_advice)
@@ -1457,8 +1607,9 @@ def generate_matmul_advice(op_data):
         inner_dim_block = op_data["Inner Dim Block Size"].raw_value
         out_h = op_data["Output Subblock H"].raw_value
         out_w = op_data["Output Subblock W"].raw_value
+        is_dram_sharded = op_data["DRAM Sharded"].raw_value
 
-        if inner_dim_block is None and out_h is None and out_w is None:
+        if not is_dram_sharded and inner_dim_block is None and out_h is None and out_w is None:
             advice.append(
                 "No program_config specified, try using one to override in0_block_w and out_subblock_h/w"
             )
@@ -1472,21 +1623,27 @@ def generate_matmul_advice(op_data):
                 advice.append("No inner dim block size found")
                 all_good = False
 
-            if out_h is not None and out_w is not None:
-                out_area = out_h * out_w
-                if out_area < 2:
-                    advice.append(
-                        f"Output subblock {out_h}x{out_w} is small, try out_subblock_h * out_subblock_w >= 2 if possible"
-                    )
+            # DRAM-sharded program configs expose per_core_M/per_core_N rather
+            # than tunable out_subblock_h/out_subblock_w fields.
+            if not is_dram_sharded:
+                if out_h is not None and out_w is not None:
+                    out_area = out_h * out_w
+                    if out_area < 2:
+                        advice.append(
+                            f"Output subblock {out_h}x{out_w} is small, try out_subblock_h * out_subblock_w >= 2 if possible"
+                        )
+                        all_good = False
+                else:
+                    advice.append("No output subblock size found")
                     all_good = False
-            else:
-                advice.append("No output subblock size found")
-                all_good = False
 
             if all_good:
-                advice.append(
-                    f"in0_block_w={inner_dim_block} and output subblock {out_h}x{out_w} look good 🤷"
-                )
+                if is_dram_sharded:
+                    advice.append(f"in0_block_w={inner_dim_block} looks good 🤷")
+                else:
+                    advice.append(
+                        f"in0_block_w={inner_dim_block} and output subblock {out_h}x{out_w} look good 🤷"
+                    )
             if fidelity_advice:
                 advice.append(fidelity_advice)
 
@@ -1969,9 +2126,12 @@ def merge_device_rows(df):
 
         if "AllGather" in op_name or "ReduceScatter" in op_name or "AllReduce" in op_name:
             # For collective ops, take the average duration over all rows within a block
-            device_kernel_durations = [d["DEVICE KERNEL DURATION [ns]"] 
-                             for _, d in blocks 
-                             if pd.notna(d["DEVICE KERNEL DURATION [ns]"])]
+            device_kernel_durations = [
+                duration
+                for _, d in blocks
+                for duration, _ in [get_analysis_duration_ns(d)]
+                if duration is not None
+            ]
             # Use the first block's data but update its duration with the average
             base_block = blocks[0][1].copy()
             base_block["DEVICE KERNEL DURATION [ns]"] = (
@@ -1980,7 +2140,14 @@ def merge_device_rows(df):
             merged_blocks.append(base_block)
         else:
             # For non-collective ops, take the row with maximum duration
-            max_duration_block = max(blocks, key=lambda x: x[1]["DEVICE KERNEL DURATION [ns]"])
+            max_duration_block = max(
+                blocks,
+                key=lambda x: (
+                    get_analysis_duration_ns(x[1])[0]
+                    if get_analysis_duration_ns(x[1])[0] is not None
+                    else -1
+                ),
+            )
             merged_blocks.append(max_duration_block[1])
 
         global_index += 1
@@ -2085,7 +2252,15 @@ def parse_args():
     parser.add_argument(
         "--id-range", type=str, help="Show only rows with IDs in the specified range (e.g., '5-10', '31-', or '-12')"
     )
-    parser.add_argument("--arch", type=str, help="Specify architecture (wormhole, blackhole, bh20, N1); auto-detected on new op perf reports.", default=None)
+    parser.add_argument(
+        "--arch",
+        type=str,
+        help=(
+            "Specify or override architecture (wormhole, blackhole/p150, p100, bh20, N1). "
+            "New op perf reports auto-detect the chip architecture, but not the Blackhole card SKU."
+        ),
+        default=None,
+    )
     parser.add_argument("--color", action="store_true", help="Force colored output even when output is redirected")
     parser.add_argument("--no-color", action="store_true", help="Force output without color")
     parser.add_argument("--csv", type=str, help="Output filename for CSV format", metavar="OUTPUT_FILE")
@@ -2184,20 +2359,21 @@ def generate_perf_report(
         print(colored(f"Detected CSV format: v2", "cyan"))
     elif csv_format == CsvFormat.V2_1:
         print(colored(f"Detected CSV format: v2.1 (with device arch and worker core count)", "cyan"))
-        # Override arch parameter with value from CSV if not explicitly provided by user
-        # Check if arch was explicitly set by user (not default)
         csv_arch = ArchitectureSpec._get_arch_name_from_df(df)
 
         if arch is None:
             arch = csv_arch
             print(colored(f"Using architecture from CSV: {arch}", "cyan"))
         else:
-            print(colored(f"Warning: Ignoring user-specified architecture: {arch}, CSV detected {csv_arch} architecture", "yellow"))
+            print(colored(
+                f"Using user-specified architecture: {arch} (CSV detected {csv_arch})",
+                "cyan",
+            ))
     
     # Create ArchitectureSpec early to pass through analysis functions
     if csv_format == CsvFormat.V2_1:
-        # For v2.1, use the auto-detected architecture and core count
-        arch_spec = ArchitectureSpec.from_df(df)
+        # For v2.1, use the selected/detected architecture and CSV worker count.
+        arch_spec = ArchitectureSpec.from_df(df, arch)
     else:
         # For v1 and v2, use the arch parameter (either default or user-specified)
         arch_spec = ArchitectureSpec.from_name(arch)
@@ -2212,6 +2388,8 @@ def generate_perf_report(
     if "HOST START TS" in df.columns and not tracing_mode:
         print(colored("Sorting CSV by 'HOST START TS' column...", "cyan"))
         df = df.sort_values(by="HOST START TS")
+    elif tracing_mode:
+        print(colored("Tracing mode enabled. CSV will not be sorted by 'HOST START TS'.", "cyan"))
     else:
         print(colored("Warning: 'HOST START TS' column not found. CSV will not be sorted.", "yellow"))
 
@@ -2271,6 +2449,7 @@ def generate_perf_report(
 
     rows = [color_row(op_data, op_data["Total %"].raw_value, min_percentage) for op_data in rows]
     print_sparse_matmul_active_experts_warning(rows)
+    print_invalid_duration_warning(rows)
 
     # Counted from the rows actually being reported, after every filter, so the
     # count and the promotion decision describe what the reader will see. The ids

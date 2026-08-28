@@ -87,6 +87,77 @@ def test_hifi3_integer_datatypes_keep_not_applicable_advice():
     )
 
 
+def test_blackhole_trace_invalid_device_durations_are_omitted(mocker):
+    csv_file_path = os.path.join(os.path.dirname(__file__), "data", "bh_invalid_trace_decode_window.csv")
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as output_file:
+        try:
+            stdout = StringIO()
+            mocker.patch("sys.stdout", stdout)
+            generate_perf_report(
+                csv_files=[csv_file_path],
+                start_signpost="PERF_DECODE",
+                end_signpost="PERF_DECODE_END",
+                ignore_signposts=False,
+                print_signposts=False,
+                min_percentage=0.5,
+                id_range=None,
+                arch=None,
+                csv_output_file=output_file.name,
+                no_advice=True,
+                tracing_mode=True,
+                raw_op_codes=True,
+                no_host_ops=False,
+                no_summary=True,
+                group_by="op",
+                classic_colors=False,
+                summary_file=None,
+                no_stacked_report=True,
+                no_stack_by_in0=True,
+                stacked_csv=None,
+                no_merge_devices=False,
+            )
+
+            report_stdout = stdout.getvalue()
+            assert "invalid device durations" in report_stdout
+            assert "performance-model durations" not in report_stdout
+            assert "Overall DRAM roofline" not in report_stdout
+
+            with open(output_file.name, "r") as f:
+                rows = list(csv.DictReader(f))
+
+            device_times_us = [
+                float(row["Device Time"])
+                for row in rows
+                if row["Device Time"]
+            ]
+            assert max(device_times_us) < 200
+
+            op_to_op_gaps_us = [
+                float(row["Op-to-Op Gap"])
+                for row in rows
+                if row["Op-to-Op Gap"]
+            ]
+            assert all(gap >= 0 for gap in op_to_op_gaps_us)
+            assert max(op_to_op_gaps_us) < 10
+
+            matmul_rows = [
+                row
+                for row in rows
+                if row["OP Code"].startswith("MatmulDeviceOperation")
+            ]
+            assert len(matmul_rows) == 5
+            assert all(row["Cores"] == "8" for row in matmul_rows)
+            assert all(row["Device Time"] == "" for row in matmul_rows)
+            assert all(row["DRAM %"] == "" for row in matmul_rows)
+
+        finally:
+            try:
+                os.unlink(output_file.name)
+            except OSError:
+                pass
+
+
 # TT-NN Visualizer default request
 def test_csv_headers_with_all_options(expected_headers, test_csv_content, mocker):
     with tempfile.NamedTemporaryFile(
@@ -1159,7 +1230,7 @@ def test_subdevice_report_reports_budgets_without_warning(mocker):
     _, _, stdout = _run_subdevice_report(mocker)
 
     assert "Detected multiple worker core budgets [120, 108, 12]" in stdout
-    assert "using per-op values for utilization" in stdout
+    assert "using per-op values" in stdout
     assert "full grid is 120" in stdout
     # The old behavior warned and silently measured every op against one budget.
     assert "Multiple AVAILABLE WORKER CORE COUNT values found" not in stdout
@@ -1221,11 +1292,12 @@ def test_count_sub_devices_counts_distinct_real_ids():
     assert count_sub_devices([]) == 0
 
 
-def _conv_row(available_cores):
+def _conv_row(core_count, available_cores):
     return {
         "DEVICE KERNEL DURATION [ns]": 100000.0,
         "MATH FIDELITY": "HiFi4",
         "ATTRIBUTES": "window_hw=(3;3); ",
+        "CORE COUNT": core_count,
         "AVAILABLE WORKER CORE COUNT": available_cores,
         "OUTPUT_0_Y_PAD[LOGICAL]": "1024[1024]",
         "INPUT_0_X_PAD[LOGICAL]": "64[64]",
@@ -1239,21 +1311,19 @@ def _conv_row(available_cores):
     }
 
 
-def test_analyze_conv_scores_against_its_own_subdevice_budget():
-    arch = ArchitectureSpec.from_name("blackhole", 120)
+def test_analyze_conv_scores_against_cores_actually_used():
+    # Conv scores against the cores it used, as matmul does, so it is
+    # subdevice-safe by construction and the per-op budget is not its
+    # denominator. Changing only the budget must not move FLOPs %.
+    arch = ArchitectureSpec.from_name("blackhole", 110)
 
-    _, full_grid_pct, _, _, _, _ = analyze_conv(_conv_row(120), CsvFormat.V2_1, arch)
-    _, subdevice_pct, _, _, _, _ = analyze_conv(_conv_row(108), CsvFormat.V2_1, arch)
+    _, full_grid_pct, _, _, _, _ = analyze_conv(_conv_row(64, 110), CsvFormat.V2_1, arch)
+    _, subdevice_pct, _, _, _, _ = analyze_conv(_conv_row(64, 12), CsvFormat.V2_1, arch)
+    assert subdevice_pct == pytest.approx(full_grid_pct)
 
-    # Same work, smaller budget: utilization must rise, by exactly the budget ratio.
-    assert subdevice_pct > full_grid_pct
-    assert subdevice_pct == pytest.approx(full_grid_pct * 120 / 108)
-
-    # No per-op column at all falls back to the file-wide grid.
-    row = _conv_row(120)
-    del row["AVAILABLE WORKER CORE COUNT"]
-    _, fallback_pct, _, _, _, _ = analyze_conv(row, CsvFormat.V2_1, arch)
-    assert fallback_pct == pytest.approx(full_grid_pct)
+    # Halving the cores actually used doubles utilization of those cores.
+    _, half_cores_pct, _, _, _, _ = analyze_conv(_conv_row(32, 110), CsvFormat.V2_1, arch)
+    assert half_cores_pct == pytest.approx(full_grid_pct * 2)
 
 
 def _colored_op_data(num_cores, available_cores):
@@ -1374,12 +1444,13 @@ def _core_count_df(values):
     # Non-finite values are not a core count.
     ([float("inf"), 64], 64),
     ([float("-inf"), 108], 108),
-    # Nothing usable falls back to the 64-core default.
-    ([0, 0], 64),
-    (["nonsense"], 64),
-    ([float("inf")], 64),
+    # Nothing usable falls back to the architecture's own grid, not a fixed 64.
+    ([0, 0], 110),
+    (["nonsense"], 110),
+    ([float("inf")], 110),
 ])
 def test_worker_core_count_tolerates_malformed_cells(values, expected):
+    # _core_count_df reports blackhole, whose registered grid is 110.
     assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df(values)) == expected
 
 
