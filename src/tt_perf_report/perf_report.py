@@ -20,8 +20,13 @@ except ImportError:
 import pandas as pd
 from enum import Enum
 
-from tt_perf_report.sub_device import (
+from tt_perf_report.csv_values import (
     AVAILABLE_WORKER_CORE_COUNT_COLUMN,
+    get_numeric_value,
+    get_positive_int,
+    get_value_physical_logical,
+)
+from tt_perf_report.sub_device import (
     count_sub_devices,
     get_op_available_cores,
     get_op_sub_device_id,
@@ -76,25 +81,6 @@ stacked_report_csv_column_labels = {
     "Flops_std": "Std FLOPs [%]",
     "Flops_weighted_mean": "Weighted Mean FLOPs [%]",
 }
-
-def get_value_physical_logical(input, is_physical: bool = True):
-    # Handle numeric inputs (old format)
-    if isinstance(input, (int, float)):
-        return int(input)
-
-    # Handle string inputs (new format)
-    if isinstance(input, str) and "[" in input and "]" in input:
-        physical_part = input.split("[")[0]
-        logical_part = input.split("[")[1].split("]")[0]
-
-        if is_physical:
-            return int(physical_part)
-        else:
-            return int(logical_part)
-    else:
-        # backwards compatibility - convert string to int
-        return int(input)
-
 
 def detect_csv_format(df):
     """Detect CSV format version by checking for specific columns"""
@@ -283,15 +269,24 @@ class ArchitectureSpec:
         raw_counts = df[AVAILABLE_WORKER_CORE_COUNT_COLUMN]
         numeric_counts = pd.to_numeric(raw_counts, errors="coerce")
 
-        # Finite and positive drops nulls, +/-inf, zero and negatives in one pass.
-        core_counts = numeric_counts[(numeric_counts > 0) & (numeric_counts < float("inf"))]
+        # Comparing against infinity drops nulls and both infinities in one pass,
+        # since a NaN comparison is always False.
+        finite_counts = numeric_counts[numeric_counts.abs() < float("inf")]
 
-        unreadable = int(raw_counts.notna().sum() - len(core_counts) - (numeric_counts == 0).sum())
+        # Unreadable means present but not a number - a cell like "-" or "inf".
+        # A value that parses but is not a usable count (zero, negative, or
+        # fractional) is not unreadable, so it is excluded from this message.
+        unreadable = int(raw_counts.notna().sum()) - len(finite_counts)
         if unreadable > 0:
             print(colored(
                 f"Ignoring {unreadable} unreadable AVAILABLE WORKER CORE COUNT value(s).",
                 "yellow"
             ))
+
+        # Truncate before filtering, so that a fractional budget below one is
+        # rejected rather than reduced to a zero-core grid.
+        core_counts = finite_counts.astype(int)
+        core_counts = core_counts[core_counts > 0]
 
         if core_counts.empty:
             print(colored(
@@ -301,9 +296,12 @@ class ArchitectureSpec:
             ))
             return default_worker_cores
 
-        # The full grid is the largest budget in the file. Taking a positional
-        # value instead would depend on which op happened to be logged first.
-        full_grid_count = int(core_counts.max())
+        # The largest budget in the file is the best available evidence of the full
+        # grid. Taking a positional value instead would depend on which op happened
+        # to be logged first. It is only evidence, not a fact about the chip: on a
+        # capture where every op is confined to a subdevice, no row reports the
+        # real grid, so this is deliberately not called "the full grid" in output.
+        largest_budget = int(core_counts.max())
 
         # Multiple budgets mean the run partitioned the grid into subdevices. That
         # is expected, not a problem: each op is measured against its own budget.
@@ -311,11 +309,11 @@ class ArchitectureSpec:
         if len(unique_counts) > 1:
             print(colored(
                 f"Detected multiple worker core budgets {unique_counts} - using per-op values; "
-                f"full grid is {full_grid_count}.",
+                f"largest observed budget is {largest_budget}.",
                 "cyan"
             ))
 
-        return full_grid_count
+        return largest_budget
 
     @classmethod
     def from_df(cls, df, arch_name: Optional[str] = None) -> 'ArchitectureSpec':
@@ -527,18 +525,6 @@ class Cell:
 
 
 INVALID_OP_TO_OP_GAP_MIN_NS = 1_000_000
-
-
-def get_numeric_value(row, column):
-    if column not in row:
-        return None
-    value = row[column]
-    if value is None or pd.isna(value):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def is_invalid_device_duration(row):
@@ -832,8 +818,7 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     duration_ns, _ = get_analysis_duration_ns(row)
     duration_s = duration_ns * 1e-9 if duration_ns is not None and duration_ns > 0 else None
 
-    raw_core_count = get_numeric_value(row, "CORE COUNT")
-    core_count = int(raw_core_count) if raw_core_count is not None and raw_core_count > 0 else None
+    core_count = get_positive_int(row, "CORE COUNT")
     math_fidelity = row["MATH FIDELITY"]
 
     # Check for DRAM-sharded program config
@@ -995,8 +980,7 @@ def analyze_conv(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = Non
     # Conv now scores against the cores it actually used, as matmul does, rather
     # than against the grid it was given. That is subdevice-safe by construction,
     # so the per-op budget is not needed here.
-    raw_core_count = get_numeric_value(row, "CORE COUNT")
-    core_count = int(raw_core_count) if raw_core_count is not None and raw_core_count > 0 else None
+    core_count = get_positive_int(row, "CORE COUNT")
     math_fidelity = row["MATH FIDELITY"]
 
     # Check for DRAM-sharded program config
@@ -1062,13 +1046,13 @@ def analyze_conv(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = Non
     )
 
 
-def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None, active_experts: Optional[int] = None):
+def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None,
+               active_experts: Optional[int] = None, prev_row_invalid_duration: Optional[bool] = None):
     if arch_spec is None:
         arch_spec = ArchitectureSpec.from_name("wormhole")
     
     op_code = Cell(row["OP CODE"])
-    raw_core_count = get_numeric_value(row, "CORE COUNT")
-    cores = Cell(int(raw_core_count) if raw_core_count is not None and raw_core_count > 0 else None)
+    cores = Cell(get_positive_int(row, "CORE COUNT"))
     sub_device_id = Cell(get_op_sub_device_id(row))
     available_cores = Cell(get_op_available_cores(row, arch_spec.worker_cores))
     duration_ns, invalid_device_duration = get_analysis_duration_ns(row)
@@ -1080,7 +1064,12 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
 
     # Calculate op-to-op gap only if there's a valid previous non-signpost operation
     raw_gap_ns = get_numeric_value(row, "OP TO OP LATENCY [ns]")
-    prev_invalid_device_duration = prev_row is not None and is_invalid_device_duration(prev_row)
+    # The caller already resolved this for the previous row on its last pass;
+    # recomputing it here made validity a ~4x per-row cost. Fall back to
+    # computing it when a caller does not thread it through.
+    if prev_row_invalid_duration is None:
+        prev_row_invalid_duration = prev_row is not None and is_invalid_device_duration(prev_row)
+    prev_invalid_device_duration = prev_row is not None and prev_row_invalid_duration
     current_or_prev_duration_invalid = invalid_device_duration or prev_invalid_device_duration
     if (
         prev_row is not None
@@ -1209,7 +1198,6 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         "Input 0 Datatype": input_0_datatype_cell,
         "Input 1 Datatype": input_1_datatype_cell,
         "DRAM Sharded": Cell(is_dram_sharded),
-        "Architecture Worker Cores": Cell(arch_spec.worker_cores),
         "DRAM Bytes": dram_bytes,
         "Sparse Matmul": Cell(is_sparse_matmul),
         "Sparse Active Batches Missing": Cell(sparse_active_batches_missing),
@@ -1389,8 +1377,6 @@ def color_row(op_data, percentage, min_percentage):
             # only ever removes red from an op, never adds it.
             is_dram_sharded = op_data.get("DRAM Sharded", Cell(False)).raw_value
             available_cores = op_data.get("Available Cores", Cell(None)).raw_value
-            if available_cores is None:
-                available_cores = op_data.get("Architecture Worker Cores", Cell(None)).raw_value
             uses_little_of_budget = available_cores is None or num_cores < available_cores / 2
             if is_dram_sharded:
                 op_data["Cores"].color = "green"
@@ -1569,7 +1555,6 @@ def generate_matmul_advice(op_data):
     input_0_datatype = op_data["Input 0 Datatype"].raw_value
     input_1_datatype = op_data["Input 1 Datatype"].raw_value
     cores = op_data["Cores"].raw_value
-    architecture_worker_cores = op_data.get("Architecture Worker Cores", Cell(None)).raw_value
     fidelity_evaluation, fidelity_advice = evaluate_fidelity(
         input_0_datatype, input_1_datatype, output_datatype, math_fidelity
     )
@@ -1588,8 +1573,6 @@ def generate_matmul_advice(op_data):
         # subdevice budget on a partitioned run. DRAM-sharded matmuls run on a
         # fixed set of DRAM-interface workers, so there is no grid to grow.
         available_cores = op_data.get("Available Cores", Cell(None)).raw_value
-        if available_cores is None:
-            available_cores = architecture_worker_cores
         if (
             not op_data["DRAM Sharded"].raw_value
             and cores is not None
@@ -2409,8 +2392,12 @@ def generate_perf_report(
     device_ops = 0
     host_ops = 0
     signpost_count = 0
+    prev_non_signpost_invalid_duration = None
     for _, row in df.iterrows():
-        op_data, current_gap = analyze_op(row, prev_non_signpost_row, csv_format, arch_spec, active_experts)
+        op_data, current_gap = analyze_op(
+            row, prev_non_signpost_row, csv_format, arch_spec, active_experts,
+            prev_row_invalid_duration=prev_non_signpost_invalid_duration,
+        )
         op_data["ID"] = Cell(row["ORIGINAL_ROW"])  # Use the original row number
         op_data["Global Call Count"] = Cell(row["GLOBAL CALL COUNT"])
         if raw_op_codes:
@@ -2424,6 +2411,7 @@ def generate_perf_report(
         else:
             # Update prev_non_signpost_row only for non-signpost operations
             prev_non_signpost_row = row
+            prev_non_signpost_invalid_duration = op_data["Invalid Device Duration"].raw_value
 
         rows.append(op_data)
 
@@ -2457,9 +2445,29 @@ def generate_perf_report(
     sub_device_count = count_sub_devices(
         op_data["Sub Device ID"].raw_value for op_data in rows if "Sub Device ID" in op_data
     )
-    show_sub_device = sub_device_count > 0
-    if show_sub_device:
-        print(colored(f"Sub devices: {sub_device_count} - using per-op worker core budgets.", "cyan"))
+
+    # Budgets can vary without the capture carrying any subdevice id - an older
+    # profiler, or a file whose id column is blank throughout. The varying budget
+    # is what changes the maths, so it alone is enough to promote the column;
+    # otherwise the per-op values would be applied with nothing in the table to
+    # show it, which is the complaint this change exists to fix.
+    reported_budgets = {
+        op_data["Available Cores"].raw_value
+        for op_data in rows
+        if "Available Cores" in op_data and op_data["Available Cores"].raw_value is not None
+    }
+
+    show_sub_device_ids = sub_device_count > 0
+    show_available_cores = show_sub_device_ids or len(reported_budgets) > 1
+
+    if show_sub_device_ids:
+        print(colored(f"Subdevices: {sub_device_count} - using per-op worker core budgets.", "cyan"))
+    elif show_available_cores:
+        print(colored(
+            f"Worker core budgets vary across ops {sorted(reported_budgets, reverse=True)} "
+            "- using per-op values.",
+            "cyan"
+        ))
 
     base_visible_headers = [
         "ID",
@@ -2498,8 +2506,9 @@ def generate_perf_report(
     csv_headers = base_visible_headers + additional_headers
 
     visible_headers = list(base_visible_headers)
-    if show_sub_device:
+    if show_sub_device_ids:
         visible_headers.insert(visible_headers.index("Device") + 1, "Sub Device ID")
+    if show_available_cores:
         visible_headers.insert(visible_headers.index("Cores") + 1, "Available Cores")
 
     if csv_output_file:

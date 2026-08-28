@@ -773,7 +773,8 @@ def test_stacked_csv_headers_with_input0_layout(expected_stacked_headers, test_c
     ("tests/data/bh_64_clip_encoder_1.csv", CsvFormat.V2_1, "blackhole", 64),
     ("tests/data/wh_clip_encoder_2.csv", CsvFormat.V2_1, "wormhole", 64),
     ("tests/data/bh20_oft_integral_image_trace.csv", CsvFormat.V1, "wormhole", 64),  # V1 defaults to wormhole
-    ("tests/data/bh_8xp150_deepseek_v3_d_p.csv", CsvFormat.V2_1, "blackhole", 110)
+    ("tests/data/bh_8xp150_deepseek_v3_d_p.csv", CsvFormat.V2_1, "blackhole", 110),
+    ("tests/data/bh_invalid_trace_decode_window.csv", CsvFormat.V2_1, "blackhole", 110),
 ])
 def test_csv_format_arch_and_cores(file_path, expected_csv_format, expected_arch, expected_worker_core_count):
     """Test that CSV format, architecture, and worker core count are correctly detected."""
@@ -1002,11 +1003,13 @@ def test_overall_dram_roofline_weights_modeled_bytes_over_visible_device_time():
 
 # --- Subdevice support -------------------------------------------------------
 #
-# No captured op perf report in tests/data carries a SUB DEVICE ID column, and
-# every one of them reports a single uniform AVAILABLE WORKER CORE COUNT, so the
-# partitioned-grid case is built synthetically here. Budgets mirror the DeepSeek-V3
-# MoE prefill trace in ttnn-visualizer#1940: a 108-core shared-expert subdevice, a
-# 12-core dispatch subdevice, and full-grid ops at 120.
+# bh_invalid_trace_decode_window.csv is a real capture carrying a SUB DEVICE ID
+# column, which confirms the column name, but every value in it is blank and its
+# AVAILABLE WORKER CORE COUNT is uniformly 110. No captured report here reports
+# more than one budget, so the partitioned-grid case is built synthetically.
+# Budgets mirror the DeepSeek-V3 MoE prefill trace in tt-perf-report#65: a
+# 108-core shared-expert subdevice, a 12-core dispatch subdevice, and full-grid
+# ops at 120.
 
 _SUBDEVICE_FIELDS = [
     "OP CODE",
@@ -1231,10 +1234,10 @@ def test_subdevice_report_reports_budgets_without_warning(mocker):
 
     assert "Detected multiple worker core budgets [120, 108, 12]" in stdout
     assert "using per-op values" in stdout
-    assert "full grid is 120" in stdout
+    assert "largest observed budget is 120" in stdout
     # The old behavior warned and silently measured every op against one budget.
     assert "Multiple AVAILABLE WORKER CORE COUNT values found" not in stdout
-    assert "Sub devices: 2" in stdout
+    assert "Subdevices: 2" in stdout
     assert "Architecture: blackhole, Worker cores: 120" in stdout
 
 
@@ -1366,7 +1369,7 @@ def test_cores_red_accounts_for_the_size_of_the_grid_given():
     assert _colored_op_data(9, 64) == "red"
     assert _colored_op_data(10, 64) != "red"
     assert _colored_op_data(15, 64) != "red"
-    # Unknown budget keeps the old absolute behaviour.
+    # Unknown budget keeps the old absolute behavior.
     assert _colored_op_data(9, None) == "red"
     # A tiny subdevice used in full is at its grid, so green wins over red.
     assert _colored_op_data(6, 6) == "green"
@@ -1510,3 +1513,113 @@ def test_unmerged_devices_keep_their_own_budgets(mocker):
 
     pairs = {(row["Sub Device ID"], row["Available Cores"]) for row in rows}
     assert pairs == {("1", "108"), ("2", "64")}
+
+
+def _report_rows_for_fixture(mocker, filename, **overrides):
+    path = os.path.join(os.path.dirname(__file__), "data", filename)
+    with open(path, "r") as f:
+        return _run_report(mocker, f.read(), **overrides)
+
+
+@pytest.mark.parametrize("filename,arch,expected_budget", [
+    # v2 capture with no AVAILABLE WORKER CORE COUNT column at all.
+    ("ops_perf_results_2025_09_18_11_39_20.csv", "wormhole", "64"),
+    # v2.1 blackhole capture whose column is uniformly 110.
+    ("bh_invalid_trace_decode_window.csv", None, "110"),
+])
+def test_available_cores_falls_back_to_the_architecture_grid(mocker, filename, arch, expected_budget):
+    # Pins that the per-op fallback is the architecture's own grid. Hardcoding it
+    # back to 64 - the magic number this change removed - must fail here.
+    _, rows, _ = _report_rows_for_fixture(mocker, filename, arch=arch, min_percentage=0.0)
+
+    budgets = {row["Available Cores"] for row in rows}
+    assert budgets == {expected_budget}, f"expected every op to report {expected_budget}, got {budgets}"
+
+
+def test_subdevice_columns_absent_when_the_id_column_is_present_but_blank(mocker):
+    # bh_invalid_trace_decode_window.csv is a real capture that carries a
+    # SUB DEVICE ID column with no values in it, which must read as "no
+    # subdevices" rather than as one unnamed subdevice.
+    _, _, stdout = _report_rows_for_fixture(
+        mocker, "bh_invalid_trace_decode_window.csv", csv_output_file=None, min_percentage=0.0
+    )
+
+    header_line = next(line for line in stdout.splitlines() if line.startswith("ID") and "Total %" in line)
+    columns = re.split(r"\s{2,}", header_line.strip())
+    assert "Sub Device ID" not in columns
+    assert "Available Cores" not in columns
+    assert "Subdevices:" not in stdout
+
+
+def _multi_budget_flop_bound_csv():
+    # 6 of 12 cores on the dispatch subdevice, in a file whose largest budget is
+    # 120, so "of 12" and "of 120" are distinguishable. Duration is tuned to put
+    # FLOPs %% over the 65%% bound threshold while DRAM %% stays under it.
+    return _rows_to_csv([
+        _subdevice_row(
+            "MatmulDeviceOperation", "0", "12", "6", 1000,
+            **{
+                "DEVICE KERNEL DURATION [ns]": "20230",
+                "OUTPUT_0_MEMORY": "DEV_0_L1_INTERLEAVED",
+            },
+        ),
+        _subdevice_row("MatmulDeviceOperation", "1", "108", "108", 2000),
+        _subdevice_row("MatmulDeviceOperation", "", "120", "120", 3000),
+    ])
+
+
+def test_grid_size_advice_names_the_ops_own_budget_not_the_file_wide_one(mocker):
+    _, rows, _ = _run_report(mocker, _multi_budget_flop_bound_csv())
+
+    dispatch = next(row for row in rows if row["Sub Device ID"] == "0")
+    assert dispatch["Bound"] == "FLOP", f"expected FLOP-bound, got {dispatch['Bound']!r}"
+    assert dispatch["Available Cores"] == "12"
+    assert "Increase grid size (currently using 6 of 12)" in dispatch["Advice"]
+    assert "of 120" not in dispatch["Advice"]
+
+
+def test_budget_variation_alone_promotes_available_cores(mocker):
+    # No subdevice ids anywhere, but the budgets differ - so the per-op values
+    # are in use and must be visible, or the table silently disagrees with the
+    # numbers behind it.
+    csv_content = _rows_to_csv([
+        _subdevice_row("MatmulDeviceOperation", "", "108", "6", 1000),
+        _subdevice_row("MatmulDeviceOperation", "", "120", "120", 2000),
+    ])
+    _, _, stdout = _run_report(mocker, csv_content, csv_output_file=None)
+
+    header_line = next(line for line in stdout.splitlines() if line.startswith("ID") and "Total %" in line)
+    columns = re.split(r"\s{2,}", header_line.strip())
+
+    assert "Available Cores" in columns
+    # Nothing to show in an id column, so it stays out of the table.
+    assert "Sub Device ID" not in columns
+    assert "Worker core budgets vary across ops [120, 108]" in stdout
+
+
+def test_core_count_of_infinity_does_not_abort_the_report(mocker):
+    # CORE COUNT is untrusted like every other column; a non-finite cell must
+    # cost that one value, not the whole report.
+    csv_content = _rows_to_csv([_subdevice_row("MatmulDeviceOperation", "1", "108", "inf", 1000)])
+    _, rows, _ = _run_report(mocker, csv_content)
+
+    assert rows[0]["Cores"] == ""
+    assert rows[0]["Available Cores"] == "108"
+
+
+def test_fractional_budget_falls_back_rather_than_becoming_zero(mocker):
+    # A budget under 1 truncates to 0, which would disable both coloring rules
+    # and suppress the grid-size advice.
+    csv_content = _rows_to_csv([_subdevice_row("MatmulDeviceOperation", "1", "0.5", "6", 1000)])
+    _, rows, _ = _run_report(mocker, csv_content)
+
+    assert rows[0]["Available Cores"] == "110"
+
+
+def test_worker_core_count_does_not_call_readable_values_unreadable(capsys):
+    # A negative parses fine; it is unusable, not unreadable.
+    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df([-8, 120])) == 120
+    assert "unreadable" not in capsys.readouterr().out
+
+    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df([0.5])) == 110
+    assert "unreadable" not in capsys.readouterr().out

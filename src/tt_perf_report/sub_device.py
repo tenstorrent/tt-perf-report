@@ -19,7 +19,11 @@ import math
 
 import pandas as pd
 
-AVAILABLE_WORKER_CORE_COUNT_COLUMN = "AVAILABLE WORKER CORE COUNT"
+from tt_perf_report.csv_values import (
+    AVAILABLE_WORKER_CORE_COUNT_COLUMN,
+    get_positive_int,
+)
+
 SUB_DEVICE_ID_COLUMN = "SUB DEVICE ID"
 
 
@@ -63,22 +67,7 @@ def get_op_available_cores(row, fallback_cores: int) -> int:
     Falls back to fallback_cores - normally the architecture's full grid - when
     the CSV predates the column, or carries no usable value for this row.
     """
-    if AVAILABLE_WORKER_CORE_COUNT_COLUMN not in row:
-        return fallback_cores
-
-    value = row[AVAILABLE_WORKER_CORE_COUNT_COLUMN]
-    if pd.isna(value):
-        return fallback_cores
-
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return fallback_cores
-
-    if not math.isfinite(number) or number <= 0:
-        return fallback_cores
-
-    return int(number)
+    return get_positive_int(row, AVAILABLE_WORKER_CORE_COUNT_COLUMN, default=fallback_cores)
 
 
 def count_sub_devices(sub_device_ids) -> int:

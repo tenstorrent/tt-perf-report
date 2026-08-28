@@ -92,10 +92,10 @@ The performance report provides several key metrics for analyzing operation perf
 - **Total %**: Percentage of total execution time spent on this operation
 - **Cores**: Number of compute cores used by the operation.
   DRAM-sharded matmuls use the architecture's DRAM-interface workers: 12 on Wormhole, 8 on Blackhole P150, and 7 on Blackhole P100.
-- **Available Cores**: Worker cores the operation could have used, read per operation from newer profiler CSVs. This is the architecture's worker grid (64 on Wormhole, 110 on Blackhole) unless the run partitioned the chip into subdevices, in which case it is that subdevice's own budget. Grid-size advice and the **Cores** coloring are measured against this value rather than against the whole chip; **FLOPs %** is unaffected, since utilization is based on the cores the operation actually used
+- **Available Cores**: Worker cores the operation could have used, read per operation from newer profiler CSVs. On a run that partitions the chip into subdevices this is that subdevice's own budget; otherwise it is the full worker grid the profiler reports. When the column is absent it falls back to the architecture's registered grid (64 on Wormhole, 110 on Blackhole P150 and P100). Grid-size advice and the **Cores** coloring are measured against this value rather than against the whole chip; **FLOPs %** is unaffected, since utilization is based on the cores the operation actually used
 - **Sub Device ID**: Subdevice the operation ran on; blank means it ran on the full grid
 
-Both subdevice columns appear in the terminal table only for runs that use subdevices, where they are the point rather than a column of blanks. Both are always present in `--csv` output, whose column set and order do not vary with the input.
+**Sub Device ID** appears in the terminal table only when the run reports subdevices, and **Available Cores** only when subdevices or differing core budgets are reported — otherwise they would be columns of blanks or of one repeated value. Both are always present in `--csv` output, whose column set and order do not vary with the input.
 
 ### Performance Metrics
 
@@ -123,7 +123,7 @@ The tool automatically highlights potential optimization opportunities:
 - Red op-to-op times indicate high host or kernel launch overhead (>6.5μs)
 - Red core counts indicate underutilization (fewer than 10 cores, and less than half of the cores the operation was given), excluding architecture-standard DRAM-sharded matmuls
 - Green core counts indicate either all the cores the operation was given — the subdevice's budget on a partitioned run — or the expected DRAM-sharded worker count
-- Green metrics indicate good utilization of available resources
+- Green DRAM % and FLOPs % indicate good utilization of available resources
 - Yellow metrics indicate room for optimization
 
 ## Examples

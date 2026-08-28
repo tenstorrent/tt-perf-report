@@ -240,7 +240,7 @@ def _colorable_op(core_count, worker_cores, dram_sharded=False):
     return {
         "OP Code": Cell("CopyDeviceOperation"),
         "Cores": Cell(core_count),
-        "Architecture Worker Cores": Cell(worker_cores),
+        "Available Cores": Cell(worker_cores),
         "DRAM Sharded": Cell(dram_sharded),
         "Bound": Cell(""),
         "Op-to-Op Gap": Cell(None),
@@ -267,7 +267,7 @@ def _flop_bound_matmul_op(core_count, worker_cores, dram_sharded=False):
         "Input 0 Datatype": Cell("BFLOAT16"),
         "Input 1 Datatype": Cell("BFLOAT4_B"),
         "Cores": Cell(core_count),
-        "Architecture Worker Cores": Cell(worker_cores),
+        "Available Cores": Cell(worker_cores),
         "Bound": Cell("FLOP"),
         "DRAM Sharded": Cell(dram_sharded),
         "FLOPs %": Cell(70),
