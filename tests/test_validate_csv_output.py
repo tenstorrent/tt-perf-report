@@ -64,8 +64,8 @@ def expected_headers():
         "Output Subblock H",
         "Output Subblock W",
         "Global Call Count",
-        "Available Cores",
         "Sub Device ID",
+        "Available Cores",
         "Advice",
         "Raw OP Code",
     ]
@@ -975,12 +975,12 @@ _SUBDEVICE_FIELDS = [
 ]
 
 
-def _subdevice_row(op_code, sub_device_id, available_cores, core_count, host_ts):
-    return {
+def _subdevice_row(op_code, sub_device_id, available_cores, core_count, host_ts, device_id="0", **overrides):
+    row = {
         "OP CODE": op_code,
         "OP TYPE": "tt_dnn_device",
         "GLOBAL CALL COUNT": str(host_ts),
-        "DEVICE ID": "0",
+        "DEVICE ID": device_id,
         "DEVICE ARCH": "blackhole",
         "SUB DEVICE ID": sub_device_id,
         "AVAILABLE WORKER CORE COUNT": available_cores,
@@ -1012,6 +1012,16 @@ def _subdevice_row(op_code, sub_device_id, available_cores, core_count, host_ts)
         "OUTPUT_0_DATATYPE": "BFLOAT16",
         "OUTPUT_0_MEMORY": "DEV_0_DRAM_INTERLEAVED",
     }
+    row.update(overrides)
+    return row
+
+
+def _rows_to_csv(rows):
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=_SUBDEVICE_FIELDS)
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
 
 
 def _subdevice_csv_content():
@@ -1024,59 +1034,76 @@ def _subdevice_csv_content():
         # Blank subdevice means the full grid.
         _subdevice_row("MatmulDeviceOperation", "", "120", "64", 3000),
     ]
-
-    output = StringIO()
-    writer = csv.DictWriter(output, fieldnames=_SUBDEVICE_FIELDS)
-    writer.writeheader()
-    writer.writerows(rows)
-    return output.getvalue()
+    return _rows_to_csv(rows)
 
 
-def _run_subdevice_report(mocker):
+_REPORT_DEFAULTS = dict(
+    start_signpost=None,
+    end_signpost=None,
+    ignore_signposts=True,
+    print_signposts=False,
+    min_percentage=0.0,
+    id_range=None,
+    arch=None,
+    no_advice=False,
+    tracing_mode=False,
+    raw_op_codes=False,
+    no_host_ops=False,
+    no_summary=True,
+    group_by="op",
+    classic_colors=False,
+    summary_file=None,
+    no_stacked_report=True,
+    no_stack_by_in0=True,
+    stacked_csv=None,
+    no_merge_devices=False,
+)
+
+_DEFAULT_CSV_OUTPUT = object()
+
+
+def _run_report(mocker, csv_content, csv_output_file=_DEFAULT_CSV_OUTPUT, **overrides):
+    """
+    Run generate_perf_report over csv_content and return (csv_headers, csv_rows, stdout).
+
+    Pass csv_output_file=None to exercise the terminal-table path instead; the
+    returned headers and rows are then empty.
+    """
     with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as input_file:
-        input_file.write(_subdevice_csv_content())
+        input_file.write(csv_content)
         input_file.flush()
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as output_file:
-            try:
-                stdout = StringIO()
-                mocker.patch("sys.stdout", stdout)
-                generate_perf_report(
-                    csv_files=[input_file.name],
-                    start_signpost=None,
-                    end_signpost=None,
-                    ignore_signposts=True,
-                    print_signposts=False,
-                    min_percentage=0.0,
-                    id_range=None,
-                    arch=None,
-                    csv_output_file=output_file.name,
-                    no_advice=False,
-                    tracing_mode=False,
-                    raw_op_codes=False,
-                    no_host_ops=False,
-                    no_summary=True,
-                    group_by="op",
-                    classic_colors=False,
-                    summary_file=None,
-                    no_stacked_report=True,
-                    no_stack_by_in0=True,
-                    stacked_csv=None,
-                    no_merge_devices=False,
-                )
+    if csv_output_file is _DEFAULT_CSV_OUTPUT:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as handle:
+            csv_output_file = handle.name
 
-                with open(output_file.name, "r") as f:
-                    reader = csv.reader(f)
-                    headers = next(reader)
-                with open(output_file.name, "r") as f:
-                    rows = list(csv.DictReader(f))
-                return headers, rows, stdout.getvalue()
-            finally:
+    try:
+        stdout = StringIO()
+        mocker.patch("sys.stdout", stdout)
+        generate_perf_report(
+            csv_files=[input_file.name],
+            csv_output_file=csv_output_file,
+            **{**_REPORT_DEFAULTS, **overrides},
+        )
+
+        headers, rows = [], []
+        if csv_output_file:
+            with open(csv_output_file, "r") as f:
+                headers = next(csv.reader(f))
+            with open(csv_output_file, "r") as f:
+                rows = list(csv.DictReader(f))
+        return headers, rows, stdout.getvalue()
+    finally:
+        for path in (input_file.name, csv_output_file):
+            if path:
                 try:
-                    os.unlink(input_file.name)
-                    os.unlink(output_file.name)
+                    os.unlink(path)
                 except OSError:
                     pass
+
+
+def _run_subdevice_report(mocker, **overrides):
+    return _run_report(mocker, _subdevice_csv_content(), **overrides)
 
 
 def test_subdevice_report_carries_per_op_core_budgets(mocker):
@@ -1091,77 +1118,83 @@ def test_subdevice_report_headers_have_no_duplicates(mocker):
     headers, _, _ = _run_subdevice_report(mocker)
 
     assert len(headers) == len(set(headers)), f"Duplicate column in CSV output: {headers}"
-    # Promoted into the visible table, immediately after Device.
-    assert headers.index("Sub Device ID") == headers.index("Device") + 1
+    assert "Sub Device ID" in headers
     assert "Available Cores" in headers
+
+
+def test_csv_column_order_does_not_depend_on_subdevices(test_csv_content, mocker):
+    # The CSV is a machine-readable contract for downstream consumers, so a
+    # partitioned run must not shift columns for everyone else. The subdevice
+    # columns are promoted in the terminal table only.
+    partitioned_headers, _, _ = _run_subdevice_report(mocker)
+    plain_headers, _, _ = _run_report(mocker, test_csv_content, arch="wormhole", min_percentage=0.5)
+
+    assert partitioned_headers == plain_headers
+    assert partitioned_headers.index("Sub Device ID") > partitioned_headers.index("Math Fidelity")
+
+
+def test_subdevice_columns_promoted_into_terminal_table(mocker):
+    _, _, stdout = _run_subdevice_report(mocker, csv_output_file=None)
+
+    header_line = next(line for line in stdout.splitlines() if line.startswith("ID") and "Total %" in line)
+    columns = re.split(r"\s{2,}", header_line.strip())
+
+    assert columns.index("Sub Device ID") == columns.index("Device") + 1
+    assert columns.index("Available Cores") == columns.index("Cores") + 1
+
+    # The subdevice op reports its id; the full-grid op leaves the cell blank.
+    # Columns are padded to the header width, so slice the header's own span
+    # rather than splitting on whitespace, which would collapse a blank cell.
+    start = header_line.index("Sub Device ID")
+    end = start + len("Sub Device ID")
+    matmul_cells = {
+        line[start:end].strip()
+        for line in stdout.splitlines()
+        if "MatmulDeviceOperation" in line
+    }
+    assert matmul_cells == {"1", ""}
 
 
 def test_subdevice_report_reports_budgets_without_warning(mocker):
     _, _, stdout = _run_subdevice_report(mocker)
 
     assert "Detected multiple worker core budgets [120, 108, 12]" in stdout
-    assert "using per-op values for utilisation" in stdout
+    assert "using per-op values for utilization" in stdout
     assert "full grid is 120" in stdout
-    # The old behaviour warned and silently measured every op against one budget.
+    # The old behavior warned and silently measured every op against one budget.
     assert "Multiple AVAILABLE WORKER CORE COUNT values found" not in stdout
     assert "Sub devices: 2" in stdout
+    assert "Architecture: blackhole, Worker cores: 120" in stdout
 
 
-def test_sub_device_id_stays_out_of_visible_table_without_subdevices(test_csv_content, mocker):
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as input_file:
-        input_file.write(test_csv_content)
-        input_file.flush()
+def test_subdevice_columns_absent_from_terminal_table_without_subdevices(test_csv_content, mocker):
+    _, _, stdout = _run_report(
+        mocker, test_csv_content, csv_output_file=None, arch="wormhole", min_percentage=0.5
+    )
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as output_file:
-            try:
-                mocker.patch("sys.stdout", new_callable=StringIO)
-                generate_perf_report(
-                    csv_files=[input_file.name],
-                    start_signpost=None,
-                    end_signpost=None,
-                    ignore_signposts=True,
-                    print_signposts=False,
-                    min_percentage=0.5,
-                    id_range=None,
-                    arch="wormhole",
-                    csv_output_file=output_file.name,
-                    no_advice=False,
-                    tracing_mode=False,
-                    raw_op_codes=False,
-                    no_host_ops=False,
-                    no_summary=True,
-                    group_by="op",
-                    classic_colors=False,
-                    summary_file=None,
-                    no_stacked_report=True,
-                    no_stack_by_in0=True,
-                    stacked_csv=None,
-                    no_merge_devices=False,
-                )
+    header_line = next(line for line in stdout.splitlines() if line.startswith("ID") and "Total %" in line)
+    columns = re.split(r"\s{2,}", header_line.strip())
 
-                with open(output_file.name, "r") as f:
-                    headers = next(csv.reader(f))
-
-                assert len(headers) == len(set(headers))
-                # Still exported, but not promoted next to Device.
-                assert "Sub Device ID" in headers
-                assert headers.index("Sub Device ID") != headers.index("Device") + 1
-            finally:
-                try:
-                    os.unlink(input_file.name)
-                    os.unlink(output_file.name)
-                except OSError:
-                    pass
+    assert "Sub Device ID" not in columns
+    assert "Available Cores" not in columns
+    assert "Sub devices:" not in stdout
 
 
 def test_get_op_available_cores_prefers_per_op_value_over_file_wide():
     assert get_op_available_cores({"AVAILABLE WORKER CORE COUNT": 108}, 120) == 108
     # Floats: pandas types the column as float whenever any row is blank.
     assert get_op_available_cores({"AVAILABLE WORKER CORE COUNT": 12.0}, 120) == 12
-    # Missing, blank and zero all fall back to the file-wide grid.
+    # Missing, blank, zero and negative all fall back to the file-wide grid.
     assert get_op_available_cores({}, 120) == 120
     assert get_op_available_cores({"AVAILABLE WORKER CORE COUNT": float("nan")}, 120) == 120
     assert get_op_available_cores({"AVAILABLE WORKER CORE COUNT": 0}, 120) == 120
+    assert get_op_available_cores({"AVAILABLE WORKER CORE COUNT": -8}, 120) == 120
+
+
+def test_get_op_available_cores_falls_back_on_unusable_values():
+    # Malformed cells must not abort the report: the CSV is untrusted input.
+    for value in ("unknown", "-", "", float("inf"), float("-inf"), None):
+        assert get_op_available_cores({"AVAILABLE WORKER CORE COUNT": value}, 120) == 120
 
 
 def test_get_op_sub_device_id_treats_blank_as_full_grid():
@@ -1171,14 +1204,21 @@ def test_get_op_sub_device_id_treats_blank_as_full_grid():
     assert get_op_sub_device_id({"SUB DEVICE ID": "   "}) is None
     assert get_op_sub_device_id({"SUB DEVICE ID": float("nan")}) is None
     assert get_op_sub_device_id({}) is None
-    # Tolerated spelling variant.
-    assert get_op_sub_device_id({"SUBDEVICE ID": "2"}) == 2
 
 
-def test_count_sub_devices_ignores_blank_rows():
-    assert count_sub_devices(pd.DataFrame({"SUB DEVICE ID": ["1", "0", "", None, "1"]})) == 2
-    assert count_sub_devices(pd.DataFrame({"SUB DEVICE ID": ["", None]})) == 0
-    assert count_sub_devices(pd.DataFrame({"CORE COUNT": [64]})) == 0
+def test_get_op_sub_device_id_passes_through_unparseable_ids():
+    # Visible garbage beats a silent full-grid reading.
+    assert get_op_sub_device_id({"SUB DEVICE ID": "compute"}) == "compute"
+    assert get_op_sub_device_id({"SUB DEVICE ID": float("inf")}) == "inf"
+    assert get_op_sub_device_id({"SUB DEVICE ID": "1e999"}) == "1e999"
+
+
+def test_count_sub_devices_counts_distinct_real_ids():
+    # Takes ids already extracted by get_op_sub_device_id, so "1" and "1.0"
+    # cannot be counted as two subdevices.
+    assert count_sub_devices([1, 0, None, 1]) == 2
+    assert count_sub_devices([None, None]) == 0
+    assert count_sub_devices([]) == 0
 
 
 def _conv_row(available_cores):
@@ -1205,7 +1245,7 @@ def test_analyze_conv_scores_against_its_own_subdevice_budget():
     _, full_grid_pct, _, _, _, _ = analyze_conv(_conv_row(120), CsvFormat.V2_1, arch)
     _, subdevice_pct, _, _, _, _ = analyze_conv(_conv_row(108), CsvFormat.V2_1, arch)
 
-    # Same work, smaller budget: utilisation must rise, by exactly the budget ratio.
+    # Same work, smaller budget: utilization must rise, by exactly the budget ratio.
     assert subdevice_pct > full_grid_pct
     assert subdevice_pct == pytest.approx(full_grid_pct * 120 / 108)
 
@@ -1241,6 +1281,8 @@ def test_cores_turn_green_at_full_grid_for_any_grid_size():
     # Below the grid it was given, so not green.
     assert _colored_op_data(64, 120) != "green"
     assert _colored_op_data(12, 120) != "green"
+    # Unknown budget: no green rather than a guessed 64-core grid.
+    assert _colored_op_data(64, None) != "green"
 
 
 def test_cores_red_threshold_stays_absolute():
@@ -1275,55 +1317,117 @@ def test_grid_size_advice_uses_the_ops_own_budget():
     # hardcoded 64 would have told the user to increase it.
     assert not any("Increase grid size" in item for item in generate_matmul_advice(_advice_op_data(108, 108)))
 
-    # Reports with no core-count column keep the previous 64-core assumption.
-    op_data = _advice_op_data(32, None)
-    assert "Increase grid size (currently using 32 of 64)" in generate_matmul_advice(op_data)
+    # An unknown budget yields no advice rather than advice against a guessed
+    # 64-core grid, which would be wrong for every Blackhole part. Real reports
+    # always carry a budget: analyze_op falls back to the architecture grid.
+    assert not any("Increase grid size" in item for item in generate_matmul_advice(_advice_op_data(32, None)))
 
 
-def test_subdevice_report_stacked_path_tolerates_promoted_column(mocker):
+def test_subdevice_report_stacked_path_tolerates_promoted_column(mocker, tmp_path):
     # generate_stacked_report builds its DataFrame from visible_headers, so
-    # promoting Sub Device ID into the visible table reaches it too.
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as input_file:
-        input_file.write(_subdevice_csv_content())
-        input_file.flush()
+    # promoting the subdevice columns into the visible table reaches it too.
+    stacked_base = str(tmp_path / "stacked")
+    _run_subdevice_report(
+        mocker,
+        csv_output_file=None,
+        no_summary=False,
+        no_stacked_report=False,
+        summary_file=stacked_base,
+    )
 
-        stacked_base = os.path.join(tempfile.mkdtemp(), "stacked")
-        try:
-            mocker.patch("sys.stdout", new_callable=StringIO)
-            generate_perf_report(
-                csv_files=[input_file.name],
-                start_signpost=None,
-                end_signpost=None,
-                ignore_signposts=True,
-                print_signposts=False,
-                min_percentage=0.0,
-                id_range=None,
-                arch=None,
-                csv_output_file=None,
-                no_advice=False,
-                tracing_mode=False,
-                raw_op_codes=False,
-                no_host_ops=False,
-                no_summary=False,
-                group_by="op",
-                classic_colors=False,
-                summary_file=stacked_base,
-                no_stacked_report=False,
-                no_stack_by_in0=True,
-                stacked_csv=None,
-                no_merge_devices=False,
-            )
+    with open(f"{stacked_base}.csv", "r") as f:
+        stacked_rows = list(csv.DictReader(f))
 
-            with open(f"{stacked_base}.csv", "r") as f:
-                stacked_rows = list(csv.DictReader(f))
+    assert stacked_rows, "stacked report should not be empty"
+    op_codes = [row["Op Code"] for row in stacked_rows]
+    assert "MatmulDeviceOperation" in op_codes
+    assert "DispatchDeviceOperation" in op_codes
+    # The promoted columns are not aggregation keys and must not appear.
+    assert "Sub Device ID" not in stacked_rows[0]
+    assert "Available Cores" not in stacked_rows[0]
 
-            op_codes = [row["Op Code"] for row in stacked_rows]
-            assert "MatmulDeviceOperation" in op_codes
-            assert "DispatchDeviceOperation" in op_codes
-            # The promoted column is not an aggregation key and must not appear.
-            assert "Sub Device ID" not in stacked_rows[0]
-        finally:
-            try:
-                os.unlink(input_file.name)
-            except OSError:
-                pass
+
+def _core_count_df(values):
+    return pd.DataFrame({
+        "DEVICE ARCH": ["blackhole"] * len(values),
+        "AVAILABLE WORKER CORE COUNT": values,
+    })
+
+
+@pytest.mark.parametrize("values,expected", [
+    # Numeric column: the largest budget is the full grid, whatever the row order.
+    ([120, 108, 12], 120),
+    ([12, 108, 120], 120),
+    # Text column must be coerced, not compared lexicographically ("8" > "120").
+    (["120", "64", "8"], 120),
+    # An unreadable cell must be ignored rather than abort the report.
+    (["120", "unknown", "8"], 120),
+    (["120", "-", "8"], 120),
+    # Non-finite values are not a core count.
+    ([float("inf"), 64], 64),
+    ([float("-inf"), 108], 108),
+    # Nothing usable falls back to the 64-core default.
+    ([0, 0], 64),
+    (["nonsense"], 64),
+    ([float("inf")], 64),
+])
+def test_worker_core_count_tolerates_malformed_cells(values, expected):
+    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df(values)) == expected
+
+
+def test_worker_core_count_reports_ignored_cells(capsys):
+    ArchitectureSpec._get_worker_core_count_from_df(_core_count_df(["120", "unknown", "-", "108"]))
+
+    assert "Ignoring 2 unreadable AVAILABLE WORKER CORE COUNT value(s)." in capsys.readouterr().out
+
+
+def _flop_bound_csv_content():
+    # Tuned so DRAM % lands under the 65% threshold while FLOPs % clears it,
+    # which is the only path that reaches the grid-size advice branch.
+    return _rows_to_csv([
+        _subdevice_row(
+            "MatmulDeviceOperation", "1", "108", "64", 1000,
+            **{
+                "DEVICE KERNEL DURATION [ns]": "1896",
+                "OUTPUT_0_MEMORY": "DEV_0_L1_INTERLEAVED",
+            },
+        )
+    ])
+
+
+def test_grid_size_advice_reaches_the_report_for_a_subdevice_op(mocker):
+    _, rows, _ = _run_report(mocker, _flop_bound_csv_content())
+
+    assert rows[0]["Bound"] == "FLOP", f"expected a FLOP-bound op, got {rows[0]['Bound']!r}"
+    assert rows[0]["Available Cores"] == "108"
+    # The hardcoded 64 would have stayed silent here: the op uses 64 cores.
+    assert "Increase grid size (currently using 64 of 108)" in rows[0]["Advice"]
+
+
+def _multi_device_csv_content():
+    return _rows_to_csv([
+        _subdevice_row("MatmulDeviceOperation", "1", "108", "108", 1000, device_id="0"),
+        # Slower, so merge_device_rows keeps this row and its budget.
+        _subdevice_row(
+            "MatmulDeviceOperation", "2", "64", "64", 1000, device_id="1",
+            **{"DEVICE KERNEL DURATION [ns]": "200000"},
+        ),
+    ])
+
+
+def test_merged_devices_keep_a_consistent_subdevice_and_budget_pair(mocker):
+    _, rows, _ = _run_report(mocker, _multi_device_csv_content())
+
+    # One row survives per op position, carrying that device's own pair - the
+    # id and the budget must come from the same source row.
+    assert len(rows) == 1
+    assert rows[0]["Sub Device ID"] == "2"
+    assert rows[0]["Available Cores"] == "64"
+    assert rows[0]["Cores"] == "64"
+
+
+def test_unmerged_devices_keep_their_own_budgets(mocker):
+    _, rows, _ = _run_report(mocker, _multi_device_csv_content(), no_merge_devices=True)
+
+    pairs = {(row["Sub Device ID"], row["Available Cores"]) for row in rows}
+    assert pairs == {("1", "108"), ("2", "64")}

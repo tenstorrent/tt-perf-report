@@ -90,8 +90,10 @@ The performance report provides several key metrics for analyzing operation perf
 - **Op-to-op Gap**: Time between operations, including host overhead and kernel dispatch (in microseconds)
 - **Total %**: Percentage of total execution time spent on this operation
 - **Cores**: Number of cores used by the operation
-- **Available Cores**: Worker cores the operation could have used. This is the full grid (64 on Wormhole, 120–130 on Blackhole) unless the run partitioned the chip into subdevices, in which case it is that subdevice's budget. Utilisation and grid-size advice are measured against this value, not against the whole chip
-- **Sub Device ID**: Subdevice the operation ran on; blank means it ran on the full grid. Only shown in the terminal table for runs that use subdevices, but always present in `--csv` output
+- **Available Cores**: Worker cores the operation could have used. This is the full grid (64 on Wormhole, 120–130 on Blackhole) unless the run partitioned the chip into subdevices, in which case it is that subdevice's budget. Grid-size advice, the **Cores** coloring and conv utilization are measured against this value rather than against the whole chip; matmul **FLOPs %** is unaffected, as it already divides by the cores the operation actually used
+- **Sub Device ID**: Subdevice the operation ran on; blank means it ran on the full grid
+
+Both subdevice columns appear in the terminal table only for runs that use subdevices, where they are the point rather than a column of blanks. Both are always present in `--csv` output, whose column set and order do not vary with the input.
 
 ### Performance Metrics
 

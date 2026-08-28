@@ -100,7 +100,7 @@ def detect_csv_format(df):
     """Detect CSV format version by checking for specific columns"""
     # Check for v2.1 columns (DEVICE ARCH and AVAILABLE WORKER CORE COUNT)
     has_device_arch = "DEVICE ARCH" in df.columns
-    has_worker_core_count = "AVAILABLE WORKER CORE COUNT" in df.columns
+    has_worker_core_count = AVAILABLE_WORKER_CORE_COUNT_COLUMN in df.columns
     
     if has_device_arch or has_worker_core_count:
         return CsvFormat.V2_1
@@ -259,9 +259,21 @@ class ArchitectureSpec:
             print(colored("AVAILABLE WORKER CORE COUNT column not found. Defaulting to 64 cores.", "yellow"))
             return 64
 
-        # Get all non-zero, non-null values
-        core_counts = df[AVAILABLE_WORKER_CORE_COUNT_COLUMN].dropna()
-        core_counts = core_counts[core_counts != 0]
+        # Coerce before reducing. A single unreadable cell must not abort the
+        # report, and a column that pandas typed as text must not be compared
+        # lexicographically - "8" sorts above "120".
+        raw_counts = df[AVAILABLE_WORKER_CORE_COUNT_COLUMN]
+        numeric_counts = pd.to_numeric(raw_counts, errors="coerce")
+
+        # Finite and positive drops nulls, +/-inf, zero and negatives in one pass.
+        core_counts = numeric_counts[(numeric_counts > 0) & (numeric_counts < float("inf"))]
+
+        unreadable = int(raw_counts.notna().sum() - len(core_counts) - (numeric_counts == 0).sum())
+        if unreadable > 0:
+            print(colored(
+                f"Ignoring {unreadable} unreadable AVAILABLE WORKER CORE COUNT value(s).",
+                "yellow"
+            ))
 
         if core_counts.empty:
             print(colored("No non-zero AVAILABLE WORKER CORE COUNT values found. Defaulting to 64 cores.", "yellow"))
@@ -272,11 +284,11 @@ class ArchitectureSpec:
         full_grid_count = int(core_counts.max())
 
         # Multiple budgets mean the run partitioned the grid into subdevices. That
-        # is expected, not a problem: utilisation uses each op's own budget.
+        # is expected, not a problem: utilization uses each op's own budget.
         unique_counts = sorted({int(count) for count in core_counts.unique()}, reverse=True)
         if len(unique_counts) > 1:
             print(colored(
-                f"Detected multiple worker core budgets {unique_counts} - using per-op values for utilisation; "
+                f"Detected multiple worker core budgets {unique_counts} - using per-op values for utilization; "
                 f"full grid is {full_grid_count}.",
                 "cyan"
             ))
@@ -1235,10 +1247,10 @@ def color_row(op_data, percentage, min_percentage):
             # subdevice's budget on a partitioned run and the full grid
             # otherwise. Red stays absolute: below ~10 cores dispatch overhead
             # dominates whatever the grid size is.
-            full_grid = op_data.get("Available Cores", Cell(None)).raw_value or 64
+            available_cores = op_data.get("Available Cores", Cell(None)).raw_value
             if num_cores < 10:
                 op_data["Cores"].color = "red"
-            elif num_cores == full_grid:
+            elif available_cores is not None and num_cores == available_cores:
                 op_data["Cores"].color = "green"
         else:
             op_data["Cores"].color = muted_cell_color
@@ -1425,8 +1437,8 @@ def generate_matmul_advice(op_data):
         if fidelity_evaluation == "too_high":
             advice.append(fidelity_advice)
     elif op_data["Bound"].raw_value in ["FLOP", "BOTH"]:
-        available_cores = op_data.get("Available Cores", Cell(None)).raw_value or 64
-        if cores < available_cores:
+        available_cores = op_data.get("Available Cores", Cell(None)).raw_value
+        if available_cores is not None and cores < available_cores:
             advice.append(f"Increase grid size (currently using {cores} of {available_cores})")
         if fidelity_evaluation == "too_high":
             advice.append(fidelity_advice)
@@ -2183,14 +2195,7 @@ def generate_perf_report(
         # For v1 and v2, use the arch parameter (either default or user-specified)
         arch_spec = ArchitectureSpec.from_name(arch)
     
-    # Counted before merging, which drops rows but never columns.
-    sub_device_count = count_sub_devices(df)
-    show_sub_device = sub_device_count > 0
-
-    arch_summary = f"Architecture: {arch_spec.name}, Worker cores: {arch_spec.worker_cores}"
-    if show_sub_device:
-        arch_summary += f", Sub devices: {sub_device_count}"
-    print(colored(arch_summary, "cyan"))
+    print(colored(f"Architecture: {arch_spec.name}, Worker cores: {arch_spec.worker_cores}", "cyan"))
 
     # Add a column for original row numbers
     df["ORIGINAL_ROW"] = df.index + 2  # +2 to match Excel row numbers (1-based + header)
@@ -2260,7 +2265,17 @@ def generate_perf_report(
     rows = [color_row(op_data, op_data["Total %"].raw_value, min_percentage) for op_data in rows]
     print_sparse_matmul_active_experts_warning(rows)
 
-    visible_headers = [
+    # Counted from the rows actually being reported, after every filter, so the
+    # count and the promotion decision describe what the reader will see. The ids
+    # come only from get_op_sub_device_id, so there is one definition of "blank".
+    sub_device_count = count_sub_devices(
+        op_data["Sub Device ID"].raw_value for op_data in rows if "Sub Device ID" in op_data
+    )
+    show_sub_device = sub_device_count > 0
+    if show_sub_device:
+        print(colored(f"Sub devices: {sub_device_count} - using per-op worker core budgets.", "cyan"))
+
+    base_visible_headers = [
         "ID",
         "Total %",
         "Bound",
@@ -2286,20 +2301,23 @@ def generate_perf_report(
         "Output Subblock H",
         "Output Subblock W",
         "Global Call Count",
+        "Sub Device ID",
         "Available Cores",
     ]
 
-    # Sub Device ID is promoted into the visible table on a partitioned run, where
-    # it is the point, and kept out of it otherwise, where it is a blank column.
-    # It must land in exactly one of the two lists: they are concatenated into the
-    # CSV fieldnames, and a duplicate there emits the column twice.
+    # The CSV is a machine-readable contract for downstream consumers, so its
+    # column set and order must not depend on the contents of the input. The
+    # terminal table is free to vary: on a partitioned run the subdevice columns
+    # are the point, and on every other run they would be blank.
+    csv_headers = base_visible_headers + additional_headers
+
+    visible_headers = list(base_visible_headers)
     if show_sub_device:
         visible_headers.insert(visible_headers.index("Device") + 1, "Sub Device ID")
-    else:
-        additional_headers.append("Sub Device ID")
+        visible_headers.insert(visible_headers.index("Cores") + 1, "Available Cores")
 
     if csv_output_file:
-        all_headers = visible_headers + additional_headers
+        all_headers = list(csv_headers)
         if not no_advice:
             all_headers.append("Advice")
         if raw_op_codes:
