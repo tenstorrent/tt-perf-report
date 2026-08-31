@@ -22,9 +22,13 @@ from enum import Enum
 
 from tt_perf_report.csv_values import (
     AVAILABLE_WORKER_CORE_COUNT_COLUMN,
+    core_count_from_value,
+    finite_float,
+    get_core_count,
+    get_int,
     get_numeric_value,
-    get_positive_int,
     get_value_physical_logical,
+    whole_number,
 )
 from tt_perf_report.sub_device import (
     count_sub_devices,
@@ -263,32 +267,37 @@ class ArchitectureSpec:
             ))
             return default_worker_cores
 
-        # Coerce before reducing. A single unreadable cell must not abort the
-        # report, and a column that pandas typed as text must not be compared
-        # lexicographically - "8" sorts above "120".
-        raw_counts = df[AVAILABLE_WORKER_CORE_COUNT_COLUMN]
-        numeric_counts = pd.to_numeric(raw_counts, errors="coerce")
+        # Reduce through the same per-cell policy the per-op path uses, rather
+        # than restating it vectorised. A vectorised astype(int) would also
+        # truncate a fraction into a plausible grid and saturate an out-of-range
+        # magnitude to the int64 maximum, both silently. This runs once per file.
+        present_counts = [value for value in df[AVAILABLE_WORKER_CORE_COUNT_COLUMN] if not pd.isna(value)]
+        core_counts = [
+            count
+            for count in (core_count_from_value(value) for value in present_counts)
+            if count is not None
+        ]
 
-        # Comparing against infinity drops nulls and both infinities in one pass,
-        # since a NaN comparison is always False.
-        finite_counts = numeric_counts[numeric_counts.abs() < float("inf")]
-
-        # Unreadable means present but not a number - a cell like "-" or "inf".
-        # A value that parses but is not a usable count (zero, negative, or
-        # fractional) is not unreadable, so it is excluded from this message.
-        unreadable = int(raw_counts.notna().sum()) - len(finite_counts)
+        # Two distinct complaints, kept apart so the message is accurate.
+        # Unreadable: present but not a number at all, a cell like "-" or "inf".
+        # Unusable: a real number that cannot be a core count - zero, negative,
+        # fractional, or a magnitude no hardware would report. Neither is
+        # silently dropped, since either can change the grid every op without
+        # its own budget is measured against.
+        unreadable = sum(1 for value in present_counts if finite_float(value) is None)
+        unusable = len(present_counts) - unreadable - len(core_counts)
         if unreadable > 0:
             print(colored(
                 f"Ignoring {unreadable} unreadable AVAILABLE WORKER CORE COUNT value(s).",
                 "yellow"
             ))
+        if unusable > 0:
+            print(colored(
+                f"Ignoring {unusable} AVAILABLE WORKER CORE COUNT value(s) that are not a core count.",
+                "yellow"
+            ))
 
-        # Truncate before filtering, so that a fractional budget below one is
-        # rejected rather than reduced to a zero-core grid.
-        core_counts = finite_counts.astype(int)
-        core_counts = core_counts[core_counts > 0]
-
-        if core_counts.empty:
+        if not core_counts:
             print(colored(
                 "No non-zero AVAILABLE WORKER CORE COUNT values found. "
                 f"Defaulting to {default_worker_cores} {cls.from_name(arch_name).name} cores.",
@@ -301,11 +310,11 @@ class ArchitectureSpec:
         # to be logged first. It is only evidence, not a fact about the chip: on a
         # capture where every op is confined to a subdevice, no row reports the
         # real grid, so this is deliberately not called "the full grid" in output.
-        largest_budget = int(core_counts.max())
+        largest_budget = max(core_counts)
 
         # Multiple budgets mean the run partitioned the grid into subdevices. That
         # is expected, not a problem: each op is measured against its own budget.
-        unique_counts = sorted({int(count) for count in core_counts.unique()}, reverse=True)
+        unique_counts = sorted(set(core_counts), reverse=True)
         if len(unique_counts) > 1:
             print(colored(
                 f"Detected multiple worker core budgets {unique_counts} - using per-op values; "
@@ -818,7 +827,7 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     duration_ns, _ = get_analysis_duration_ns(row)
     duration_s = duration_ns * 1e-9 if duration_ns is not None and duration_ns > 0 else None
 
-    core_count = get_positive_int(row, "CORE COUNT")
+    core_count = get_core_count(row, "CORE COUNT")
     math_fidelity = row["MATH FIDELITY"]
 
     # Check for DRAM-sharded program config
@@ -838,6 +847,8 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
         else None
     )
 
+    memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} @ {row['INPUT_1_DATATYPE']} {row['INPUT_1_MEMORY'].replace('DEV_0_', '')} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')})"
+
     input_0_w = get_tensor_dim(row, "INPUT_0", "W", csv_format)
     input_0_z = get_tensor_dim(row, "INPUT_0", "Z", csv_format)
     input_0_y = get_tensor_dim(row, "INPUT_0", "Y", csv_format)
@@ -850,6 +861,19 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     output_0_z = get_tensor_dim(row, "OUTPUT_0", "Z", csv_format)
     output_0_y = get_tensor_dim(row, "OUTPUT_0", "Y", csv_format)
     output_0_x = get_tensor_dim(row, "OUTPUT_0", "X", csv_format)
+
+    dimensions = (
+        input_0_w, input_0_z, input_0_y, input_0_x,
+        input_1_w, input_1_z, input_1_y, input_1_x,
+        output_0_w, output_0_z, output_0_y, output_0_x,
+    )
+    if any(dimension is None for dimension in dimensions):
+        # A malformed shape cell costs this op its modelled figures rather than
+        # aborting the whole report on the arithmetic below.
+        return (
+            None, None, None, None, "unknown shape", memory_info, math_fidelity,
+            is_dram_sharded, core_count, None, is_sparse_matmul, False, None,
+        )
 
     M, K, N = input_0_y, input_0_x, input_1_x
     W = max(input_0_w, input_1_w)
@@ -908,7 +932,6 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
             size = f"active={sparse_active_batches}/{sparse_dense_batches} x {M} x {K} x {N}"
     else:
         size = f"b={{{batch}}} x {M} x {K} x {N}" if batch > 1 else f"{M} x {K} x {N}"
-    memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} @ {row['INPUT_1_DATATYPE']} {row['INPUT_1_MEMORY'].replace('DEV_0_', '')} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')})"
 
     dram_percentage = (dram_speed_gb_s / arch_spec.dram_bandwidth_gb_s) * 100 if dram_speed_gb_s is not None else None
     flops_percentage = (
@@ -980,7 +1003,7 @@ def analyze_conv(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = Non
     # Conv now scores against the cores it actually used, as matmul does, rather
     # than against the grid it was given. That is subdevice-safe by construction,
     # so the per-op budget is not needed here.
-    core_count = get_positive_int(row, "CORE COUNT")
+    core_count = get_core_count(row, "CORE COUNT")
     math_fidelity = row["MATH FIDELITY"]
 
     # Check for DRAM-sharded program config
@@ -997,10 +1020,16 @@ def analyze_conv(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = Non
     W = [int(x) for x in (attributes.split("window_hw")[1].split("; ")[0][2:-1].split(";"))]
     CH_OUT = get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
 
-    M, K, N = NHW, CH_IN * W[0] * W[1], CH_OUT
-    flops = (M * K * N * 2) / duration_s if duration_s else None
-
-    size = f"{M} x {K} x {N}"
+    if NHW is None or CH_IN is None or CH_OUT is None:
+        # A malformed shape cell costs this op its modelled figures rather than
+        # aborting the whole report.
+        M = K = N = None
+        flops = None
+        size = "unknown shape"
+    else:
+        M, K, N = NHW, CH_IN * W[0] * W[1], CH_OUT
+        flops = (M * K * N * 2) / duration_s if duration_s else None
+        size = f"{M} x {K} x {N}"
     memory_info = f"({row['INPUT_0_DATATYPE']} {row['INPUT_0_MEMORY'].replace('DEV_0_', '')} @ {row['INPUT_1_DATATYPE']} {row['INPUT_1_MEMORY'].replace('DEV_0_', '')} => {row['OUTPUT_0_DATATYPE']} {row['OUTPUT_0_MEMORY'].replace('DEV_0_', '')})"
 
     flops_percentage = (
@@ -1052,7 +1081,7 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         arch_spec = ArchitectureSpec.from_name("wormhole")
     
     op_code = Cell(row["OP CODE"])
-    cores = Cell(get_positive_int(row, "CORE COUNT"))
+    cores = Cell(get_core_count(row, "CORE COUNT"))
     sub_device_id = Cell(get_op_sub_device_id(row))
     available_cores = Cell(get_op_available_cores(row, arch_spec.worker_cores))
     duration_ns, invalid_device_duration = get_analysis_duration_ns(row)
@@ -1174,10 +1203,7 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         dram_percentage = Cell(None, unit="%", decimals=1)
         flops = Cell(None, unit="TFLOPs", decimals=1)
         flops_percentage = Cell(None, unit="%", decimals=1)
-    if "DEVICE ID" in row and pd.notna(row["DEVICE ID"]) and isinstance(row["DEVICE ID"], (int, float)):
-        device_id = Cell(int(row["DEVICE ID"]))
-    else:
-        device_id = Cell(None)
+    device_id = Cell(get_int(row, "DEVICE ID"))
 
     output = {
         "ID": None,
@@ -2036,8 +2062,14 @@ def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
             sys.exit(1)
 
         df["DEVICE ID"] = pd.to_numeric(df["DEVICE ID"], errors="coerce")
-        device_ids = df["DEVICE ID"].dropna()
-        max_device_id = int(device_ids.max()) if not device_ids.empty else -1
+        # Only whole, finite ids can name a device. An unusable cell must not
+        # decide the device count, nor abort the run on the conversion below.
+        device_ids = [
+            device_id
+            for device_id in (whole_number(value) for value in df["DEVICE ID"].dropna())
+            if device_id is not None
+        ]
+        max_device_id = max(device_ids) if device_ids else -1
         current_num_devices = max_device_id + 1 if max_device_id >= 0 else 0
 
         if num_devices_per_system is None:
@@ -2062,6 +2094,27 @@ def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
     return pd.concat(merged_frames, ignore_index=True)
 
 
+def _merge_sort_duration_ns(block):
+    """
+    Sort key for picking the slowest row in a block of per-device rows.
+
+    A row with no usable duration sorts below every real one. Note the explicit
+    None test: `duration_ns or -1` would push a genuine zero-duration row to the
+    bottom alongside the unusable ones.
+    """
+    duration_ns, _ = get_analysis_duration_ns(block[1])
+    return duration_ns if duration_ns is not None else -1
+
+
+def _restore_report_order(result_df):
+    """Restore chronological order by original row position, else by timestamp."""
+    if "ORIGINAL_ROW" in result_df.columns:
+        return result_df.sort_values(by="ORIGINAL_ROW").reset_index(drop=True)
+    if "HOST START TS" in result_df.columns:
+        return result_df.sort_values(by="HOST START TS").reset_index(drop=True)
+    return result_df
+
+
 def merge_device_rows(df):
     block_by_device = defaultdict(list)
     # Preserve non-device ops (host ops, signposts, etc.)
@@ -2071,18 +2124,27 @@ def merge_device_rows(df):
         op_name = row["OP CODE"]
         op_type = row["OP TYPE"]
 
-        if op_type == "tt_dnn_device":
-            device_id = int(row["DEVICE ID"])
+        device_id = get_int(row, "DEVICE ID")
+        if op_type == "tt_dnn_device" and device_id is not None:
             block_by_device[device_id].append((op_name, row.to_dict()))
         else:
+            # A device op with no usable device id cannot take part in per-device
+            # merging, so it is reported unmerged rather than aborting the run.
+            if op_type == "tt_dnn_device":
+                print(colored(
+                    f"Warning: {op_name} has no usable DEVICE ID and was not merged across devices.",
+                    "yellow",
+                ))
             non_device_rows.append(row.to_dict())
 
     device_ids = sorted(block_by_device.keys())
     merged_blocks = []
 
-    # If there are no device operations, return an empty dataframe
+    # Nothing to merge across devices. Preserved rows - host ops, signposts, and
+    # any device op whose DEVICE ID was unusable - are still returned, since
+    # dropping them would lose rows rather than merely leave them unmerged.
     if not device_ids:
-        return pd.DataFrame()
+        return _restore_report_order(pd.DataFrame(non_device_rows))
 
     global_index = 0
     while max(len(block_by_device[device_id]) for device_id in device_ids) > 0:
@@ -2123,28 +2185,13 @@ def merge_device_rows(df):
             merged_blocks.append(base_block)
         else:
             # For non-collective ops, take the row with maximum duration
-            max_duration_block = max(
-                blocks,
-                key=lambda x: (
-                    get_analysis_duration_ns(x[1])[0]
-                    if get_analysis_duration_ns(x[1])[0] is not None
-                    else -1
-                ),
-            )
+            max_duration_block = max(blocks, key=_merge_sort_duration_ns)
             merged_blocks.append(max_duration_block[1])
 
         global_index += 1
 
-    all_rows = merged_blocks + non_device_rows  
-    result_df = pd.DataFrame(all_rows)
-
-    # Restore chronological order by sorting by original row position or timestamp
-    if "ORIGINAL_ROW" in result_df.columns:
-        result_df = result_df.sort_values(by="ORIGINAL_ROW").reset_index(drop=True)
-    elif "HOST START TS" in result_df.columns:
-        result_df = result_df.sort_values(by="HOST START TS").reset_index(drop=True)
-    
-    return result_df
+    all_rows = merged_blocks + non_device_rows
+    return _restore_report_order(pd.DataFrame(all_rows))
 
 
 def parse_id_range(id_range_str):

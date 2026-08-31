@@ -1623,3 +1623,107 @@ def test_worker_core_count_does_not_call_readable_values_unreadable(capsys):
 
     assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df([0.5])) == 110
     assert "unreadable" not in capsys.readouterr().out
+
+
+def test_merge_prefers_a_zero_duration_row_over_an_unusable_one():
+    # Pins the explicit None test in the merge sort key: a genuine zero duration
+    # must outrank a row with no usable duration, which `or -1` would not do.
+    from tt_perf_report.perf_report import _merge_sort_duration_ns
+
+    zero_duration = ("Matmul", {"DEVICE KERNEL DURATION [ns]": 0})
+    unusable = ("Matmul", {"DEVICE KERNEL DURATION [ns]": None})
+
+    assert _merge_sort_duration_ns(zero_duration) == 0
+    assert _merge_sort_duration_ns(unusable) == -1
+    assert max([unusable, zero_duration], key=_merge_sort_duration_ns) is zero_duration
+
+
+def test_fractional_subdevice_id_is_not_merged_into_a_real_subdevice(mocker):
+    # "1.5" truncated to 1 would silently fold a malformed row into subdevice 1
+    # and count it as that subdevice, contradicting the pass-through contract.
+    csv_content = _rows_to_csv([
+        _subdevice_row("MatmulDeviceOperation", "1", "108", "108", 1000),
+        _subdevice_row("MatmulDeviceOperation", "1.5", "108", "108", 2000),
+    ])
+    _, rows, stdout = _run_report(mocker, csv_content)
+
+    assert [row["Sub Device ID"] for row in rows] == ["1", "1.5"]
+    assert "Subdevices: 2" in stdout
+
+
+@pytest.mark.parametrize("column", ["INPUT_0_Y_PAD[LOGICAL]", "INPUT_1_X_PAD[LOGICAL]", "OUTPUT_0_X_PAD[LOGICAL]"])
+@pytest.mark.parametrize("value", ["unknown", "inf", "", "512.5[512]"])
+def test_malformed_tensor_dimension_omits_metrics_without_aborting(mocker, column, value):
+    row = _subdevice_row("MatmulDeviceOperation", "1", "108", "108", 1000)
+    row[column] = value
+    _, rows, _ = _run_report(mocker, _rows_to_csv([row]))
+
+    # The op is still reported, with its shape-derived figures omitted.
+    assert len(rows) == 1
+    assert rows[0]["FLOPs %"] == ""
+    assert rows[0]["DRAM %"] == ""
+    assert "unknown shape" in rows[0]["OP Code"]
+    # Fields that do not depend on the shape survive.
+    assert rows[0]["Cores"] == "108"
+    assert rows[0]["Available Cores"] == "108"
+
+
+@pytest.mark.parametrize("device_id", ["inf", "-inf", "banana", "1.5", ""])
+def test_unusable_device_id_does_not_abort_the_report(mocker, device_id):
+    row = _subdevice_row("MatmulDeviceOperation", "1", "108", "108", 1000)
+    row["DEVICE ID"] = device_id
+    _, rows, _ = _run_report(mocker, _rows_to_csv([row]))
+
+    assert len(rows) == 1
+    assert rows[0]["Device"] == ""
+
+
+def test_non_matmul_op_with_unusable_core_count(mocker):
+    # A matmul has its Cores overwritten by analyze_matmul, so only a non-matmul
+    # row exercises analyze_op's own CORE COUNT coercion.
+    csv_content = _rows_to_csv([_subdevice_row("DispatchDeviceOperation", "1", "108", "inf", 1000)])
+    _, rows, _ = _run_report(mocker, csv_content)
+
+    assert rows[0]["Cores"] == ""
+    assert rows[0]["Available Cores"] == "108"
+
+
+def test_blank_budget_row_inherits_the_largest_observed_budget(mocker):
+    # Pins which fallback a blank cell gets in a file that does report budgets:
+    # the largest observed, not the architecture's registered grid (110 here).
+    csv_content = _rows_to_csv([
+        _subdevice_row("MatmulDeviceOperation", "1", "108", "108", 1000),
+        _subdevice_row("MatmulDeviceOperation", "0", "", "6", 2000),
+        _subdevice_row("MatmulDeviceOperation", "", "120", "120", 3000),
+    ])
+    _, rows, _ = _run_report(mocker, csv_content)
+
+    assert [row["Available Cores"] for row in rows] == ["108", "120", "120"]
+
+
+@pytest.mark.parametrize("values,expected,message", [
+    # Not integral: a fraction is malformed, not a 108-core grid.
+    ([108.5], 110, "not a core count"),
+    # Implausible magnitude, which a vectorised astype(int) would have saturated
+    # to the int64 maximum and reported as the file's grid.
+    ([1e30, 108.0], 108, "not a core count"),
+    ([-8, 108.0], 108, "not a core count"),
+    # Not a number at all keeps the separate, accurate wording.
+    (["-", 108.0], 108, "unreadable"),
+])
+def test_worker_core_count_reports_what_it_ignored(capsys, values, expected, message):
+    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df(values)) == expected
+    assert message in capsys.readouterr().out
+
+
+def test_worker_core_count_does_not_complain_about_blank_cells(capsys):
+    # Blank cells are the common real case, and are not something to report.
+    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df([120, None, 108])) == 120
+    assert "Ignoring" not in capsys.readouterr().out
+
+
+def test_cores_red_threshold_is_relative_to_the_budget(capsys):
+    # Discriminates the "less than half the budget" rule from other divisors:
+    # 8 of 20 is under half, 8 of 15 is not.
+    assert _colored_op_data(8, 20) == "red"
+    assert _colored_op_data(8, 15) != "red"
