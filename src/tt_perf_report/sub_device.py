@@ -28,10 +28,16 @@ SUB_DEVICE_ID_COLUMN = "SUB DEVICE ID"
 
 def get_op_sub_device_id(row):
     """
-    Get the subdevice this op ran on, or None when the op used the full grid.
+    Get the subdevice this op ran on, or None when there is no id to report.
 
-    A blank value is meaningful rather than missing: it denotes the full worker
-    grid, so it is reported as an empty cell rather than as a subdevice.
+    None is deliberately ambiguous, because the CSV cannot distinguish the two
+    cases it covers. When the column is present, a blank cell is meaningful
+    rather than missing: it denotes the full worker grid. When the column is
+    absent - a capture predating it - no row has an id at all, and None means
+    unknown, even on a run whose per-op budgets show the chip was partitioned.
+    Callers that need to tell the two apart must test for the column itself;
+    count_sub_devices collapses both to "no subdevices reported" on purpose,
+    since neither gives the reader a subdevice to look at.
 
     Anything that is not a whole number is passed through as text rather than
     normalised, so that unexpected profiler output stays visible in the report.
