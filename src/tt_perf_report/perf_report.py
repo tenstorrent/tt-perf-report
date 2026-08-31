@@ -2516,6 +2516,18 @@ def generate_perf_report(
             "cyan"
         ))
 
+    if show_available_cores:
+        # Per-op utilisation is now measured correctly, but every total in this
+        # report still adds durations together as though the ops ran one after
+        # another. Subdevices exist so that they do not, and the report does not
+        # read DEVICE FW START/END CYCLE, so it cannot tell which ops overlapped.
+        print(colored(
+            "Warning: totals assume ops ran sequentially. Ops on disjoint subdevices can run "
+            "concurrently, so summed device time, Total %, the op-to-op gap totals and the "
+            "overall DRAM roofline overcount overlapped work.",
+            "yellow"
+        ))
+
     base_visible_headers = [
         "ID",
         "Total %",

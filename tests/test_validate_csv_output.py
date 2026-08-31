@@ -1727,3 +1727,18 @@ def test_cores_red_threshold_is_relative_to_the_budget(capsys):
     # 8 of 20 is under half, 8 of 15 is not.
     assert _colored_op_data(8, 20) == "red"
     assert _colored_op_data(8, 15) != "red"
+
+
+def test_partitioned_run_warns_that_totals_assume_sequential_execution(mocker):
+    # The per-op figures are right, but every total still sums durations as if
+    # the ops ran one after another, which is exactly what subdevices break.
+    _, _, stdout = _run_subdevice_report(mocker)
+
+    assert "totals assume ops ran sequentially" in stdout
+    assert "overcount overlapped work" in stdout
+
+
+def test_no_sequential_warning_when_the_run_is_not_partitioned(test_csv_content, mocker):
+    _, _, stdout = _run_report(mocker, test_csv_content, arch="wormhole", min_percentage=0.5)
+
+    assert "totals assume ops ran sequentially" not in stdout
