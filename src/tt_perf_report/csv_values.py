@@ -28,6 +28,15 @@ AVAILABLE_WORKER_CORE_COUNT_COLUMN = "AVAILABLE WORKER CORE COUNT"
 # saturates such a value to the int64 maximum instead of raising.
 MAX_PLAUSIBLE_CORE_COUNT = 1 << 20
 
+# No tensor a device could hold has a dimension this large - four billion
+# elements along one axis exceeds any on-chip or DRAM capacity by orders of
+# magnitude. The bound is not cosmetic: dimensions are multiplied together in
+# the modelled FLOP and DRAM figures, and a cell like 1e300 coerces to a
+# 301-digit int whose product raises OverflowError when divided by a float
+# duration, aborting the report. Capping each dimension keeps every such
+# product comfortably inside the float range.
+MAX_PLAUSIBLE_TENSOR_DIM = 1 << 32
+
 
 def finite_float(value):
     """
@@ -69,6 +78,20 @@ def core_count_from_value(value, default=None):
     return count
 
 
+def tensor_dim_from_value(value):
+    """
+    Positive, whole, plausible tensor dimension from a single value, or None.
+
+    Zero and negatives are rejected alongside implausible magnitudes: a matmul
+    or conv with a degenerate axis has no modellable figures either way, so the
+    caller wants the same "unknown shape" outcome it gets from a corrupt cell.
+    """
+    dimension = whole_number(value)
+    if dimension is None or dimension <= 0 or dimension > MAX_PLAUSIBLE_TENSOR_DIM:
+        return None
+    return dimension
+
+
 def get_numeric_value(row, column):
     """Read one cell as a finite float, or None when absent or unusable."""
     if column not in row:
@@ -101,17 +124,18 @@ def get_value_physical_logical(value, is_physical: bool = True):
     Read a tensor dimension cell, which newer reports write as "physical[logical]".
 
     Returns None when the cell holds no usable dimension, so that one malformed
-    shape omits that op's modelled figures rather than aborting the report.
+    shape omits that op's modelled figures rather than aborting the report. A
+    dimension that is merely whole is not enough - see tensor_dim_from_value.
     """
     # Handle numeric inputs (old format)
     if isinstance(value, (int, float)):
-        return whole_number(value)
+        return tensor_dim_from_value(value)
 
     # Handle string inputs (new format)
     if isinstance(value, str) and "[" in value and "]" in value:
         physical_part = value.split("[")[0]
         logical_part = value.split("[")[1].split("]")[0]
-        return whole_number(physical_part if is_physical else logical_part)
+        return tensor_dim_from_value(physical_part if is_physical else logical_part)
 
     # backwards compatibility - a bare value, numeric or as text
-    return whole_number(value)
+    return tensor_dim_from_value(value)

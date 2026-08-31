@@ -7,12 +7,14 @@ import pytest
 
 from tt_perf_report.csv_values import (
     MAX_PLAUSIBLE_CORE_COUNT,
+    MAX_PLAUSIBLE_TENSOR_DIM,
     core_count_from_value,
     finite_float,
     get_core_count,
     get_int,
     get_numeric_value,
     get_value_physical_logical,
+    tensor_dim_from_value,
     whole_number,
 )
 
@@ -106,3 +108,38 @@ def test_get_value_physical_logical_returns_none_rather_than_raising(value):
     # These reach matmul and conv analysis through get_tensor_dim; raising here
     # would abort the whole report over one malformed shape cell.
     assert get_value_physical_logical(value) is None
+
+
+@pytest.mark.parametrize("value,expected", [
+    (512, 512),
+    (512.0, 512),
+    ("512", 512),
+    (MAX_PLAUSIBLE_TENSOR_DIM, MAX_PLAUSIBLE_TENSOR_DIM),
+    # Discrete quantity: a fraction means the cell is malformed.
+    (512.5, None),
+    # A degenerate axis has no modellable figures, so it takes the same path as
+    # a corrupt cell rather than producing a zero-FLOP row.
+    (0, None),
+    (-8, None),
+    # Finite and whole, but no tensor is this large. Left unbounded, the
+    # 301-digit int this coerces to overflows the modelled FLOP arithmetic.
+    (1e300, None),
+    (MAX_PLAUSIBLE_TENSOR_DIM + 1, None),
+    (float("inf"), None),
+])
+def test_tensor_dim_from_value(value, expected):
+    assert tensor_dim_from_value(value) == expected
+
+
+@pytest.mark.parametrize("cell", [1e300, "1e300", "1e300[1e300]", 0, -8])
+def test_implausible_dimensions_do_not_reach_flop_arithmetic(cell):
+    # The regression this guards: get_value_physical_logical used to accept any
+    # finite whole number, and (M * K * N * 2) / duration then raised
+    # OverflowError, aborting the whole report instead of omitting one op's
+    # modelled figures. Both analyze_matmul and analyze_conv rely on the None.
+    dimension = get_value_physical_logical(cell)
+    assert dimension is None
+    # Sanity-check the arithmetic those callers would otherwise perform.
+    if cell == 1e300:
+        with pytest.raises(OverflowError):
+            (int(cell) ** 3 * 2) / 1e-9
