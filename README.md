@@ -121,8 +121,8 @@ The performance report provides several key metrics for analyzing operation perf
 
 The tool automatically highlights potential optimization opportunities:
 - Red op-to-op times indicate high host or kernel launch overhead (>6.5μs)
-- Red core counts indicate underutilization (fewer than 10 cores, and less than half of the cores the operation was given), excluding architecture-standard DRAM-sharded matmuls
-- Green core counts indicate either all the cores the operation was given — the subdevice's budget on a partitioned run — or the expected DRAM-sharded worker count
+- Red core counts indicate underutilization (fewer than 10 cores, and less than half of the cores the operation was given), excluding DRAM-sharded matmuls
+- Green core counts indicate either all the cores the operation was given — the subdevice's budget on a partitioned run — or a DRAM-sharded matmul, which runs on a fixed set of DRAM-interface workers rather than on a grid it could grow into
 - Green DRAM % and FLOPs % indicate good utilization of available resources
 - Yellow metrics indicate room for optimization
 
