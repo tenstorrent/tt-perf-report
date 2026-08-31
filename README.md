@@ -97,6 +97,8 @@ The performance report provides several key metrics for analyzing operation perf
 
 **Sub Device ID** appears in the terminal table only when the run reports subdevices, and **Available Cores** only when subdevices or differing core budgets are reported — otherwise they would be columns of blanks or of one repeated value. Both are always present in `--csv` output, whose column set and order do not vary with the input.
 
+> **Upgrading from 1.2.x:** the two new columns are appended after **Global Call Count**, which shifts **Advice** and **Raw OP Code** two positions to the right. Read `--csv` output by header name rather than by column index. A cell whose text would otherwise be evaluated as a spreadsheet formula (one opening with `=`, `+`, `-` or `@`) is written with a leading apostrophe.
+
 ### Performance Metrics
 
 - **DRAM**: Memory bandwidth achieved (in GB/s)

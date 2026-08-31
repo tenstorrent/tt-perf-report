@@ -19,9 +19,14 @@ from tt_perf_report.perf_report import (
     calculate_overall_dram_roofline,
     analyze_conv,
     color_row,
+    escape_csv_formula,
     generate_matmul_advice,
+    get_conv_window_hw,
+    merge_device_rows,
+    merge_perf_traces,
     Cell,
 )
+from tt_perf_report.csv_values import sanitize_text
 from tt_perf_report.sub_device import (
     count_sub_devices,
     get_op_available_cores,
@@ -792,7 +797,7 @@ def test_csv_format_arch_and_cores(file_path, expected_csv_format, expected_arch
         f"Expected architecture '{expected_arch}', but got '{detected_arch}'"
     
     # Test worker core count detection
-    detected_cores = ArchitectureSpec._get_worker_core_count_from_df(df)
+    detected_cores = ArchitectureSpec._get_worker_core_count_from_df(df).worker_cores
     assert detected_cores == expected_worker_core_count, \
         f"Expected {expected_worker_core_count} worker cores, but got {detected_cores}"
 
@@ -1238,7 +1243,21 @@ def test_subdevice_report_reports_budgets_without_warning(mocker):
     # The old behavior warned and silently measured every op against one budget.
     assert "Multiple AVAILABLE WORKER CORE COUNT values found" not in stdout
     assert "Subdevices: 2" in stdout
-    assert "Architecture: blackhole, Worker cores: 120" in stdout
+    # 120 is the largest budget any op reported, not blackhole's grid, which is
+    # 110. Naming it as the architecture's worker cores would assert a grid size
+    # no row in the file reported.
+    assert "Architecture: blackhole, largest observed worker core budget: 120" in stdout
+    assert "Worker cores:" not in stdout
+
+
+def test_uniform_budget_still_reports_the_count_as_the_worker_grid(mocker):
+    # Only a partitioned capture needs the "observed" hedge; on every other run
+    # the single budget is the grid, and the wording is unchanged.
+    csv_content = _rows_to_csv([_subdevice_row("MatmulDeviceOperation", "", "110", "88", 1000)])
+    _, _, stdout = _run_report(mocker, csv_content)
+
+    assert "Architecture: blackhole, Worker cores: 110" in stdout
+    assert "largest observed worker core budget" not in stdout
 
 
 def test_subdevice_columns_absent_from_terminal_table_without_subdevices(test_csv_content, mocker):
@@ -1454,7 +1473,7 @@ def _core_count_df(values):
 ])
 def test_worker_core_count_tolerates_malformed_cells(values, expected):
     # _core_count_df reports blackhole, whose registered grid is 110.
-    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df(values)) == expected
+    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df(values)).worker_cores == expected
 
 
 def test_worker_core_count_reports_ignored_cells(capsys):
@@ -1618,10 +1637,10 @@ def test_fractional_budget_falls_back_rather_than_becoming_zero(mocker):
 
 def test_worker_core_count_does_not_call_readable_values_unreadable(capsys):
     # A negative parses fine; it is unusable, not unreadable.
-    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df([-8, 120])) == 120
+    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df([-8, 120])).worker_cores == 120
     assert "unreadable" not in capsys.readouterr().out
 
-    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df([0.5])) == 110
+    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df([0.5])).worker_cores == 110
     assert "unreadable" not in capsys.readouterr().out
 
 
@@ -1712,13 +1731,13 @@ def test_blank_budget_row_inherits_the_largest_observed_budget(mocker):
     (["-", 108.0], 108, "unreadable"),
 ])
 def test_worker_core_count_reports_what_it_ignored(capsys, values, expected, message):
-    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df(values)) == expected
+    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df(values)).worker_cores == expected
     assert message in capsys.readouterr().out
 
 
 def test_worker_core_count_does_not_complain_about_blank_cells(capsys):
     # Blank cells are the common real case, and are not something to report.
-    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df([120, None, 108])) == 120
+    assert ArchitectureSpec._get_worker_core_count_from_df(_core_count_df([120, None, 108])).worker_cores == 120
     assert "Ignoring" not in capsys.readouterr().out
 
 
@@ -1735,10 +1754,280 @@ def test_partitioned_run_warns_that_totals_assume_sequential_execution(mocker):
     _, _, stdout = _run_subdevice_report(mocker)
 
     assert "totals assume ops ran sequentially" in stdout
-    assert "overcount overlapped work" in stdout
+    assert "overcounts overlapped work" in stdout
+    # Every figure tt-perf-report#65 identified as skewed is named, so a reader
+    # is not left assuming the summary report's totals escaped.
+    for figure in [
+        "summed device time",
+        "Total %",
+        "op-to-op gap totals",
+        "overall DRAM roofline",
+        "tracing-savings estimate",
+        "Device Time Sum",
+        "device-time-weighted mean FLOPs %",
+    ]:
+        assert figure in stdout, f"the warning does not name {figure}"
+    # Per-op FLOPs % is a rate against cores used, so concurrency does not skew it.
+    assert "Per-op FLOPs % is unaffected" in stdout
 
 
 def test_no_sequential_warning_when_the_run_is_not_partitioned(test_csv_content, mocker):
     _, _, stdout = _run_report(mocker, test_csv_content, arch="wormhole", min_percentage=0.5)
 
     assert "totals assume ops ran sequentially" not in stdout
+
+
+def test_subdevice_ids_with_a_uniform_budget_still_report_as_partitioned(mocker):
+    # The realistic partitioned capture: two subdevices that happen to have been
+    # given the same budget. The subdevice columns and the totals warning are
+    # still owed, but there is nothing varying to announce.
+    csv_content = _rows_to_csv([
+        _subdevice_row("MatmulDeviceOperation", "0", "108", "108", 1000),
+        _subdevice_row("MatmulDeviceOperation", "1", "108", "54", 2000),
+    ])
+    _, rows, stdout = _run_report(mocker, csv_content)
+
+    assert [row["Available Cores"] for row in rows] == ["108", "108"]
+    assert "Subdevices: 2" in stdout
+    assert "totals assume ops ran sequentially" in stdout
+    assert "Worker core budgets vary across ops" not in stdout
+
+
+def test_filtered_out_subdevices_are_not_promoted_into_the_terminal_table(mocker):
+    # The promotion decision is taken after every filter, so a range that leaves
+    # only the full-grid op must leave the table looking like an unpartitioned
+    # run - while --csv keeps both columns, whose order is a fixed contract.
+    _, _, stdout = _run_report(
+        mocker, _subdevice_csv_content(), csv_output_file=None, id_range=(4, 4)
+    )
+    header_line = next(line for line in stdout.splitlines() if line.startswith("ID") and "Total %" in line)
+
+    assert "Sub Device ID" not in header_line
+    assert "Available Cores" not in header_line
+
+    headers, rows, _ = _run_report(mocker, _subdevice_csv_content(), id_range=(4, 4))
+    assert "Sub Device ID" in headers
+    assert "Available Cores" in headers
+    assert [row["Cores"] for row in rows] == ["64"]
+
+
+# --- Untrusted text reaching the report's two output sinks --------------------
+
+
+def test_sanitize_text_drops_row_breaking_control_characters():
+    # A newline would end the table row early and render its tail as an op that
+    # never ran; a bare escape byte would recolour every following column.
+    assert sanitize_text("1\nSPLIT") == "1SPLIT"
+    assert sanitize_text("\x1b[31mRED\x1b[0m") == "[31mRED[0m"
+    assert sanitize_text("a\x00\x7f\x9fb") == "ab"
+    # Tab is left alone: it is whitespace, not a control sequence.
+    assert sanitize_text("a\tb") == "a\tb"
+    assert sanitize_text("MatmulDeviceOperation 512 x 512") == "MatmulDeviceOperation 512 x 512"
+    # Safe on any cell, so callers need no isinstance check of their own.
+    assert sanitize_text(108) == 108
+    assert sanitize_text(None) is None
+
+
+def test_a_control_character_in_an_op_code_cannot_forge_a_stacked_report_row(mocker):
+    # The stacked report reads raw values rather than going through Cell.format,
+    # so op codes are sanitized where they are read instead.
+    row = _subdevice_row("Binary\nSPLITOperation", "", "108", "108", 1000)
+    _, _, stdout = _run_report(mocker, _rows_to_csv([row]), csv_output_file=None, no_stacked_report=False)
+
+    assert "BinarySPLITOperation" in stdout
+    assert not any(line.strip().startswith("SPLIT") for line in stdout.splitlines())
+
+
+def test_control_characters_in_a_sub_device_id_cannot_forge_a_table_row(mocker):
+    row = _subdevice_row("MatmulDeviceOperation", "\x1b[31mRED\x1b[0m\nSPLIT", "108", "108", 1000)
+    _, _, stdout = _run_report(mocker, _rows_to_csv([row]), csv_output_file=None)
+
+    assert "SPLIT" in stdout, "the id should still be visible"
+    assert not any(line.strip().startswith("SPLIT") for line in stdout.splitlines())
+
+
+def test_a_long_sub_device_id_cannot_set_the_column_width(mocker):
+    row = _subdevice_row("MatmulDeviceOperation", "A" * 300, "108", "108", 1000)
+    _, rows, stdout = _run_report(mocker, _rows_to_csv([row]))
+
+    assert rows[0]["Sub Device ID"] == "A" * 32
+    assert "A" * 33 not in stdout
+
+
+def test_escape_csv_formula_only_touches_text_a_spreadsheet_would_evaluate():
+    assert escape_csv_formula("=cmd|' /C calc'!A0") == "'=cmd|' /C calc'!A0"
+    assert escape_csv_formula("+1") == "'+1"
+    assert escape_csv_formula("@SUM(A1)") == "'@SUM(A1)"
+    # Values a report normally emits are untouched, numbers included.
+    assert escape_csv_formula("MatmulDeviceOperation 512 x 512") == "MatmulDeviceOperation 512 x 512"
+    assert escape_csv_formula(-3.5) == -3.5
+    assert escape_csv_formula(108) == 108
+    assert escape_csv_formula(None) is None
+
+
+def test_csv_output_neutralises_a_formula_in_a_sub_device_id(mocker):
+    row = _subdevice_row("MatmulDeviceOperation", "=cmd|' /C calc'!A0", "108", "108", 1000)
+    _, rows, _ = _run_report(mocker, _rows_to_csv([row]))
+
+    assert rows[0]["Sub Device ID"] == "'=cmd|' /C calc'!A0"
+
+
+# --- Conv attribute parsing --------------------------------------------------
+
+
+@pytest.mark.parametrize("attributes,expected", [
+    ("window_hw=(3;3); stride_hw=(1;1); ", (3, 3)),
+    ("window_hw=(7;1); ", (7, 1)),
+    # No window recorded at all, which used to raise IndexError.
+    ("", None),
+    ("stride_hw=(1;1); ", None),
+    # Present but not a pair of dimensions.
+    ("window_hw=(a;b); ", None),
+    ("window_hw=(3); ", None),
+    ("window_hw=(0;3); ", None),
+    ("window_hw=(-3;3); ", None),
+    # A cell of thousands of digits, which int() refuses to convert at all.
+    (f"window_hw=({'9' * 5000};3); ", None),
+])
+def test_get_conv_window_hw_never_raises_on_a_malformed_cell(attributes, expected):
+    assert get_conv_window_hw(attributes) == expected
+
+
+def test_get_conv_window_hw_tolerates_a_non_string_cell():
+    assert get_conv_window_hw(None) is None
+    assert get_conv_window_hw(3.5) is None
+
+
+@pytest.mark.parametrize("attributes", [
+    "",
+    "stride_hw=(1;1); ",
+    "window_hw=(a;b); ",
+    f"window_hw=({'9' * 5000};3); ",
+])
+@pytest.mark.parametrize("op_code", ["Conv2dDeviceOperation", "OptimizedConvNew"])
+def test_conv_with_no_usable_window_omits_metrics_without_aborting(mocker, attributes, op_code):
+    row = _subdevice_row(op_code, "1", "108", "88", 1000, ATTRIBUTES=attributes)
+    _, rows, _ = _run_report(mocker, _rows_to_csv([row]))
+
+    assert len(rows) == 1
+    assert "unknown shape" in rows[0]["OP Code"]
+    assert rows[0]["FLOPs %"] == ""
+    # Fields that do not depend on the window survive.
+    assert rows[0]["Cores"] == "88"
+    assert rows[0]["Available Cores"] == "108"
+
+
+@pytest.mark.parametrize("column", ["OUTPUT_0_Y_PAD[LOGICAL]", "INPUT_0_X_PAD[LOGICAL]", "INPUT_1_X_PAD[LOGICAL]"])
+@pytest.mark.parametrize("value", ["unknown", "inf", "", "512.5[512]"])
+def test_conv_with_a_malformed_shape_omits_metrics_without_aborting(mocker, column, value):
+    row = _subdevice_row(
+        "Conv2dDeviceOperation", "1", "108", "88", 1000, ATTRIBUTES="window_hw=(3;3); "
+    )
+    row[column] = value
+    _, rows, _ = _run_report(mocker, _rows_to_csv([row]))
+
+    assert len(rows) == 1
+    assert "unknown shape" in rows[0]["OP Code"]
+    assert rows[0]["FLOPs %"] == ""
+    assert rows[0]["Cores"] == "88"
+
+
+def test_conv_with_a_usable_window_still_models_flops(mocker):
+    row = _subdevice_row(
+        "Conv2dDeviceOperation", "1", "108", "88", 1000, ATTRIBUTES="window_hw=(3;3); "
+    )
+    _, rows, _ = _run_report(mocker, _rows_to_csv([row]))
+
+    assert "unknown shape" not in rows[0]["OP Code"]
+    assert float(rows[0]["FLOPs %"]) > 0
+
+
+def test_sparse_matmul_with_a_malformed_shape_does_not_blame_active_experts(mocker):
+    # Without shapes there is no active batch count to be missing, and the op has
+    # no modelled figures either way, so the advice must not send the reader off
+    # to --active-experts when the fault is the shape cell.
+    row = _subdevice_row("SparseMatmulDeviceOperation", "1", "108", "108", 1000)
+    row["INPUT_0_Y_PAD[LOGICAL]"] = "unknown"
+    _, rows, stdout = _run_report(mocker, _rows_to_csv([row]))
+
+    assert "unknown shape" in rows[0]["OP Code"]
+    assert "--active-experts" not in rows[0]["Advice"]
+    assert "--active-experts" not in stdout
+
+
+# --- Multi-file and multi-device merging -------------------------------------
+
+
+def _write_csv(tmp_path, name, device_ids):
+    rows = [
+        _subdevice_row("MatmulDeviceOperation", "", "108", "108", 1000 + index, device_id=device_id)
+        for index, device_id in enumerate(device_ids)
+    ]
+    path = tmp_path / name
+    path.write_text(_rows_to_csv(rows))
+    return str(path)
+
+
+def test_merge_perf_traces_offsets_each_files_device_ids(tmp_path):
+    first = _write_csv(tmp_path, "a.csv", ["0", "1"])
+    second = _write_csv(tmp_path, "b.csv", ["0", "1"])
+
+    merged = merge_perf_traces([first, second])
+
+    assert sorted(merged["DEVICE ID"].tolist()) == [0.0, 1.0, 2.0, 3.0]
+
+
+def test_merge_perf_traces_tolerates_a_file_that_names_no_device(tmp_path, capsys):
+    # An unusable id must not decide the device count: taking zero from here
+    # would zero the offset applied to every later file and silently merge their
+    # devices together. It must not abort the run either.
+    first = _write_csv(tmp_path, "a.csv", ["1.5", "banana"])
+    second = _write_csv(tmp_path, "b.csv", ["0", "1"])
+
+    merged = merge_perf_traces([first, second])
+    stdout = capsys.readouterr().out
+
+    assert "reports no usable 'DEVICE ID' values" in stdout
+    # The second file still gets its own device range rather than colliding with
+    # the first. The unusable id is passed through untouched for the report to
+    # handle per row, which it does by leaving that row's Device cell blank.
+    assert sorted(merged["DEVICE ID"].dropna().tolist()) == [1.5, 2.0, 3.0]
+
+
+def test_merge_perf_traces_rejects_files_that_disagree_on_device_count(tmp_path, capsys):
+    first = _write_csv(tmp_path, "a.csv", ["0", "1"])
+    second = _write_csv(tmp_path, "b.csv", ["0"])
+
+    with pytest.raises(SystemExit):
+        merge_perf_traces([first, second])
+
+    # The message names both counts, not an off-by-one derived from the maximum.
+    assert "reports 1 device(s) (max DEVICE ID 0), expected 2" in capsys.readouterr().out
+
+
+def _merge_frame(rows):
+    df = pd.DataFrame(rows)
+    df["ORIGINAL_ROW"] = df.index + 2
+    return df
+
+
+def test_merge_device_rows_keeps_an_unmergeable_device_op_alongside_merged_ones(capsys):
+    good = _subdevice_row("MatmulDeviceOperation", "", "108", "108", 1000, device_id="0")
+    bad = _subdevice_row("BinaryNgDeviceOperation", "", "108", "64", 2000, device_id="banana")
+    result = merge_device_rows(_merge_frame([good, bad]))
+    stdout = capsys.readouterr().out
+
+    assert result["OP CODE"].tolist() == ["MatmulDeviceOperation", "BinaryNgDeviceOperation"]
+    assert result["ORIGINAL_ROW"].tolist() == [2, 3]
+    assert "BinaryNgDeviceOperation has no usable DEVICE ID" in stdout
+
+
+def test_merge_device_rows_keeps_rows_when_there_is_nothing_to_merge():
+    # Dropping these would lose rows rather than merely leave them unmerged.
+    rows = [
+        _subdevice_row("Sum (torch)", "", "108", "108", 1000, **{"OP TYPE": "tt_dnn_host"}),
+        _subdevice_row("start", "", "108", "108", 2000, **{"OP TYPE": "signpost"}),
+    ]
+    result = merge_device_rows(_merge_frame(rows))
+
+    assert result["OP CODE"].tolist() == ["Sum (torch)", "start"]

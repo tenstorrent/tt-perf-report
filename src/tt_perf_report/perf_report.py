@@ -7,9 +7,9 @@ import csv
 import os
 import re
 import sys
-from collections import defaultdict
-from dataclasses import dataclass
-from typing import Any, ClassVar, Dict, List, Optional, Union
+from collections import defaultdict, deque
+from dataclasses import dataclass, replace
+from typing import Any, ClassVar, Dict, List, NamedTuple, Optional, Tuple, Union
 
 try:
     import matplotlib.pyplot as plt
@@ -28,7 +28,8 @@ from tt_perf_report.csv_values import (
     get_int,
     get_numeric_value,
     get_value_physical_logical,
-    whole_number,
+    sanitize_text,
+    tensor_dim_from_value,
 )
 from tt_perf_report.sub_device import (
     count_sub_devices,
@@ -147,6 +148,21 @@ def colored(text, color):
         return text
 
 
+class WorkerCoreBudgets(NamedTuple):
+    """
+    What a CSV's AVAILABLE WORKER CORE COUNT column says about the worker grid.
+
+    worker_cores is the number to measure an op against when its own row carries
+    no usable budget. observed_budgets is every distinct budget the file reported,
+    largest first, and is empty when the column was absent or held nothing usable
+    - so a caller can tell "the chip has this many cores" from "this is the most
+    any operation in this file said it was given".
+    """
+
+    worker_cores: int
+    observed_budgets: Tuple[int, ...] = ()
+
+
 @dataclass(frozen=True)
 class ArchitectureSpec:
     """Immutable specification for a hardware architecture."""
@@ -158,7 +174,15 @@ class ArchitectureSpec:
     tflops_hifi3: float
     tflops_hifi2: float
     tflops_lofi: float
-    
+
+    # The distinct worker core budgets the CSV reported, largest first, or empty
+    # when worker_cores came from this registry rather than from a file. More
+    # than one means the run partitioned the grid, and that worker_cores is the
+    # largest budget observed rather than a grid any row actually reported - a
+    # distinction the report has to make when it names the number.
+    observed_budgets: Tuple[int, ...] = ()
+
+
     # Registry of known architectures
     _SPECS: ClassVar[Dict[str, 'ArchitectureSpec']] = {}
     
@@ -169,10 +193,17 @@ class ArchitectureSpec:
         return spec
     
     @classmethod
-    def from_name(cls, arch_name: Optional[str], worker_cores: Optional[int] = None) -> 'ArchitectureSpec':
+    def from_name(
+        cls,
+        arch_name: Optional[str],
+        worker_cores: Optional[int] = None,
+        observed_budgets: Tuple[int, ...] = (),
+    ) -> 'ArchitectureSpec':
         """
         Get architecture spec by name with normalization.
         If worker_cores is provided, it overrides the default for that architecture.
+        observed_budgets records the budgets a CSV reported, for callers that need
+        to say whether worker_cores came from a file or from this registry.
         """
         # Normalize name
         normalized = arch_name.lower() if arch_name else "wormhole"
@@ -193,17 +224,16 @@ class ArchitectureSpec:
 
         spec = cls._SPECS[normalized]
 
-        # If custom worker_cores provided, create a new spec with that value
-        if worker_cores is not None and worker_cores != spec.worker_cores:
-            return ArchitectureSpec(
-                name=spec.name,
-                worker_cores=worker_cores,
-                dram_sharded_matmul_cores=spec.dram_sharded_matmul_cores,
-                dram_bandwidth_gb_s=spec.dram_bandwidth_gb_s,
-                tflops_hifi4=spec.tflops_hifi4,
-                tflops_hifi3=spec.tflops_hifi3,
-                tflops_hifi2=spec.tflops_hifi2,
-                tflops_lofi=spec.tflops_lofi,
+        # A custom worker count, or budgets read from a file, both need a spec of
+        # their own: the registered one is shared and frozen. Budgets are carried
+        # even when the count they imply matches the registry, since a file whose
+        # largest budget happens to equal the registered grid is still a file
+        # where no row reported that grid.
+        if (worker_cores is not None and worker_cores != spec.worker_cores) or observed_budgets:
+            return replace(
+                spec,
+                worker_cores=spec.worker_cores if worker_cores is None else worker_cores,
+                observed_budgets=observed_budgets,
             )
 
         return spec
@@ -246,13 +276,16 @@ class ArchitectureSpec:
         return first_arch
 
     @classmethod
-    def _get_worker_core_count_from_df(cls, df, arch_name: Optional[str] = None) -> int:
+    def _get_worker_core_count_from_df(cls, df, arch_name: Optional[str] = None) -> WorkerCoreBudgets:
         """
         Get the file-wide available worker core count from CSV if available (v2.1+).
         Returns the largest non-zero value from AVAILABLE WORKER CORE COUNT column,
         which is the full worker grid; ops confined to a subdevice report a smaller
         budget and are measured against their own value, not this one.
         Defaults to the selected architecture's worker-core count if unavailable.
+
+        Returns a WorkerCoreBudgets, so that a caller naming the number can say
+        whether it came from the file or from the architecture registry.
         """
         csv_format = detect_csv_format(df)
         if arch_name is None:
@@ -265,7 +298,7 @@ class ArchitectureSpec:
                 f"Defaulting to {default_worker_cores} {cls.from_name(arch_name).name} cores.",
                 "yellow",
             ))
-            return default_worker_cores
+            return WorkerCoreBudgets(default_worker_cores)
 
         # Reduce through the same per-cell policy the per-op path uses, rather
         # than restating it vectorised. A vectorised astype(int) would also
@@ -299,11 +332,11 @@ class ArchitectureSpec:
 
         if not core_counts:
             print(colored(
-                "No non-zero AVAILABLE WORKER CORE COUNT values found. "
+                "No usable AVAILABLE WORKER CORE COUNT values found. "
                 f"Defaulting to {default_worker_cores} {cls.from_name(arch_name).name} cores.",
                 "yellow",
             ))
-            return default_worker_cores
+            return WorkerCoreBudgets(default_worker_cores)
 
         # The largest budget in the file is the best available evidence of the full
         # grid. Taking a positional value instead would depend on which op happened
@@ -322,7 +355,7 @@ class ArchitectureSpec:
                 "cyan"
             ))
 
-        return largest_budget
+        return WorkerCoreBudgets(largest_budget, tuple(unique_counts))
 
     @classmethod
     def from_df(cls, df, arch_name: Optional[str] = None) -> 'ArchitectureSpec':
@@ -343,9 +376,9 @@ class ArchitectureSpec:
         arch_name = arch_name or cls._get_arch_name_from_df(df)
         
         # Get worker core count from CSV
-        worker_cores = cls._get_worker_core_count_from_df(df, arch_name)
-        
-        return cls.from_name(arch_name, worker_cores)
+        budgets = cls._get_worker_core_count_from_df(df, arch_name)
+
+        return cls.from_name(arch_name, budgets.worker_cores, budgets.observed_budgets)
 
     def tflops_per_core(self, math_fidelity: str) -> float:
         """Get TFLOPs per core for given math fidelity."""
@@ -488,6 +521,30 @@ def classify_operation(op_code):
     return "Other"
 
 
+# A spreadsheet evaluates a cell beginning with one of these as a formula when
+# the file is opened, rather than showing it.
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def escape_csv_formula(value):
+    """
+    Make a text cell that a spreadsheet would evaluate literal instead.
+
+    --csv output carries text the profiler wrote - op codes, and a subdevice id
+    that was not a whole number - and a cell such as "=cmd|'/C calc'!A0" is a
+    formula to Excel, so opening a report would run it. A leading apostrophe is
+    the standard way to mark the cell as text.
+
+    Only str values are touched, and only when they open with a formula
+    character, so nothing a report normally emits changes: durations, core
+    counts and percentages reach here as numbers, not text. A programmatic
+    consumer reading a value that did change is reading an anomalous cell.
+    """
+    if isinstance(value, str) and value.startswith(_CSV_FORMULA_PREFIXES):
+        return f"'{value}"
+    return value
+
+
 class Cell:
     def __init__(self, value: Any, unit: Optional[str] = None, decimals=0, color=None):
         self.raw_value = value
@@ -499,13 +556,18 @@ class Cell:
         if self.raw_value is None or pd.isna(self.raw_value):
             return ""
 
-        if isinstance(self.raw_value, str) and (
-            "Matmul" in self.raw_value
-            or "OptimizedConvNew" in self.raw_value
-            or "Conv2dDeviceOperation" in self.raw_value
-            or "HaloDeviceOperation" in self.raw_value
+        # Cells read straight from the CSV are sanitized where they are read, so
+        # that every sink agrees. Repeating it here covers text assembled after
+        # that - an op code with its shape and config appended, for instance.
+        raw_value = sanitize_text(self.raw_value)
+
+        if isinstance(raw_value, str) and (
+            "Matmul" in raw_value
+            or "OptimizedConvNew" in raw_value
+            or "Conv2dDeviceOperation" in raw_value
+            or "HaloDeviceOperation" in raw_value
         ):
-            parts = self.raw_value.split(maxsplit=1)
+            parts = raw_value.split(maxsplit=1)
             op_name = parts[0]
             size = parts[1] if len(parts) > 1 else ""
             if self.color:
@@ -514,9 +576,9 @@ class Cell:
                 formatted = f"{op_name} {size}"
         else:
             try:
-                formatted = f"{float(self.raw_value):,.{self.decimals}f}"
+                formatted = f"{float(raw_value):,.{self.decimals}f}"
             except (ValueError, TypeError):
-                formatted = str(self.raw_value)
+                formatted = str(raw_value)
 
             if self.color:
                 formatted = colored(formatted, self.color)
@@ -817,6 +879,32 @@ def evaluate_fidelity(
         )
 
 
+class MatmulAnalysis(NamedTuple):
+    """
+    What analyze_matmul modelled for one matmul row.
+
+    Every field defaults to "nothing modelled" so that the early exit for a
+    malformed shape names only the fields that survive it. Restating the whole
+    result positionally instead invites the two returns to drift apart, and
+    reading the defaults is how a caller sees which figures an unknown shape
+    costs. Still a tuple, so positional unpacking keeps working.
+    """
+
+    dram_speed_gb_s: Optional[float] = None
+    dram_percentage: Optional[float] = None
+    flops: Optional[float] = None
+    flops_percentage: Optional[float] = None
+    size: Optional[str] = None
+    memory_info: Optional[str] = None
+    math_fidelity: Optional[str] = None
+    is_dram_sharded: bool = False
+    core_count: Optional[int] = None
+    total_data_size_bytes: Optional[int] = None
+    is_sparse_matmul: bool = False
+    sparse_active_batches_missing: bool = False
+    sparse_active_source: Optional[str] = None
+
+
 def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None, active_experts: Optional[int] = None):
     if arch_spec is None:
         arch_spec = ArchitectureSpec.from_name("wormhole")
@@ -869,10 +957,19 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     )
     if any(dimension is None for dimension in dimensions):
         # A malformed shape cell costs this op its modelled figures rather than
-        # aborting the whole report on the arithmetic below.
-        return (
-            None, None, None, None, "unknown shape", memory_info, math_fidelity,
-            is_dram_sharded, core_count, None, is_sparse_matmul, False, None,
+        # aborting the whole report on the arithmetic below. is_sparse_matmul
+        # still holds - an op is sparse by op code, not by shape - but
+        # sparse_active_batches_missing deliberately stays False: the active
+        # batch count is unknowable without the shapes, and this op has no
+        # modelled figures for it to qualify, so warning about it would point
+        # the reader at active_experts when the real fault is the shape cell.
+        return MatmulAnalysis(
+            size="unknown shape",
+            memory_info=memory_info,
+            math_fidelity=math_fidelity,
+            is_dram_sharded=is_dram_sharded,
+            core_count=core_count,
+            is_sparse_matmul=is_sparse_matmul,
         )
 
     M, K, N = input_0_y, input_0_x, input_1_x
@@ -940,20 +1037,20 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
         else None
     )
 
-    return (
-        dram_speed_gb_s,
-        dram_percentage,
-        flops,
-        flops_percentage,
-        size,
-        memory_info,
-        math_fidelity,
-        is_dram_sharded,
-        core_count,  # Return the potentially adjusted core count
-        total_data_size_bytes,
-        is_sparse_matmul,
-        sparse_active_batches_missing,
-        sparse_active_source,
+    return MatmulAnalysis(
+        dram_speed_gb_s=dram_speed_gb_s,
+        dram_percentage=dram_percentage,
+        flops=flops,
+        flops_percentage=flops_percentage,
+        size=size,
+        memory_info=memory_info,
+        math_fidelity=math_fidelity,
+        is_dram_sharded=is_dram_sharded,
+        core_count=core_count,  # The potentially adjusted core count
+        total_data_size_bytes=total_data_size_bytes,
+        is_sparse_matmul=is_sparse_matmul,
+        sparse_active_batches_missing=sparse_active_batches_missing,
+        sparse_active_source=sparse_active_source,
     )
 
 
@@ -993,16 +1090,43 @@ def analyze_halo(row):
 
     return config
 
+def get_conv_window_hw(attributes) -> Optional[Tuple[int, int]]:
+    """
+    Window height and width from a conv op's ATTRIBUTES cell, or None.
+
+    Guarded like every other attribute read in analyze_conv: ATTRIBUTES is
+    untrusted, and a cell that does not record a window must cost this op its
+    modelled figures rather than aborting the whole report. The two values are
+    multiplied into the modelled FLOP figure, so they go through the same
+    coercion policy as a tensor dimension rather than a bare int() - which also
+    keeps a cell of thousands of digits from raising on the conversion.
+    """
+    try:
+        window = attributes.split("window_hw")[1].split("; ")[0][2:-1].split(";")
+    except (IndexError, AttributeError):
+        return None
+
+    if len(window) < 2:
+        return None
+
+    height = tensor_dim_from_value(window[0])
+    width = tensor_dim_from_value(window[1])
+    if height is None or width is None:
+        return None
+
+    return height, width
+
+
 def analyze_conv(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None):
     if arch_spec is None:
         arch_spec = ArchitectureSpec.from_name("wormhole")
-    
+
     duration_ns, _ = get_analysis_duration_ns(row)
     duration_s = duration_ns * 1e-9 if duration_ns is not None and duration_ns > 0 else None
 
-    # Conv now scores against the cores it actually used, as matmul does, rather
-    # than against the grid it was given. That is subdevice-safe by construction,
-    # so the per-op budget is not needed here.
+    # Conv scores against the cores it actually used, as matmul does, rather than
+    # against the grid it was given. That is subdevice-safe by construction, so
+    # the per-op budget is not needed here.
     core_count = get_core_count(row, "CORE COUNT")
     math_fidelity = row["MATH FIDELITY"]
 
@@ -1017,13 +1141,12 @@ def analyze_conv(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = Non
 
     NHW = get_value_physical_logical(row[get_column_name("OUTPUT_0_Y", csv_format)])
     CH_IN = get_value_physical_logical(row[get_column_name("INPUT_0_X", csv_format)])
-    W = [int(x) for x in (attributes.split("window_hw")[1].split("; ")[0][2:-1].split(";"))]
+    W = get_conv_window_hw(attributes)
     CH_OUT = get_value_physical_logical(row[get_column_name("INPUT_1_X", csv_format)])
 
-    if NHW is None or CH_IN is None or CH_OUT is None:
-        # A malformed shape cell costs this op its modelled figures rather than
-        # aborting the whole report.
-        M = K = N = None
+    if NHW is None or CH_IN is None or CH_OUT is None or W is None:
+        # A malformed shape cell, or an ATTRIBUTES cell that records no window,
+        # costs this op its modelled figures rather than aborting the report.
         flops = None
         size = "unknown shape"
     else:
@@ -1080,7 +1203,9 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     if arch_spec is None:
         arch_spec = ArchitectureSpec.from_name("wormhole")
     
-    op_code = Cell(row["OP CODE"])
+    # OP CODE is CSV text reported verbatim, and it reaches the terminal table,
+    # the stacked report and --csv. Sanitize it once, here, rather than at each.
+    op_code = Cell(sanitize_text(row["OP CODE"]))
     cores = Cell(get_core_count(row, "CORE COUNT"))
     sub_device_id = Cell(get_op_sub_device_id(row))
     available_cores = Cell(get_op_available_cores(row, arch_spec.worker_cores))
@@ -1149,28 +1274,26 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     is_dram_sharded = False
 
     if "Matmul" in op_code.raw_value:
-        (
-            dram_speed,
-            dram_percentage,
-            flops,
-            flops_percentage,
-            size,
-            memory_info,
-            math_fidelity,
-            is_dram_sharded,
-            adjusted_core_count,  # Get the potentially adjusted core count
-            total_data_size_bytes,
-            is_sparse_matmul,
-            sparse_active_batches_missing,
-            sparse_active_source,
-        ) = analyze_matmul(row, csv_format, arch_spec, active_experts)
-        op_code = Cell(f"{op_code.raw_value} {size}")
-        dram_speed = Cell(dram_speed, unit="GB/s", decimals=0)
-        dram_percentage = Cell(dram_percentage, unit="%", decimals=1)
-        flops = Cell(flops / 1e12 if flops is not None and pd.notna(flops) else None, unit="TFLOPs", decimals=1)
-        flops_percentage = Cell(flops_percentage, unit="%", decimals=1)
-        dram_bytes = Cell(total_data_size_bytes)
-        cores.raw_value = adjusted_core_count
+        matmul = analyze_matmul(row, csv_format, arch_spec, active_experts)
+        is_dram_sharded = matmul.is_dram_sharded
+        is_sparse_matmul = matmul.is_sparse_matmul
+        sparse_active_batches_missing = matmul.sparse_active_batches_missing
+        sparse_active_source = matmul.sparse_active_source
+        math_fidelity = matmul.math_fidelity
+
+        op_code = Cell(f"{op_code.raw_value} {matmul.size}")
+        dram_speed = Cell(matmul.dram_speed_gb_s, unit="GB/s", decimals=0)
+        dram_percentage = Cell(matmul.dram_percentage, unit="%", decimals=1)
+        flops = Cell(
+            matmul.flops / 1e12 if matmul.flops is not None and pd.notna(matmul.flops) else None,
+            unit="TFLOPs",
+            decimals=1,
+        )
+        flops_percentage = Cell(matmul.flops_percentage, unit="%", decimals=1)
+        dram_bytes = Cell(matmul.total_data_size_bytes)
+        # The potentially adjusted core count: a DRAM-sharded matmul runs on the
+        # DRAM-interface workers rather than the grid CORE COUNT reports.
+        cores.raw_value = matmul.core_count
 
         math_fidelity_cell = Cell(
             f"{math_fidelity} {short_name(input_0_datatype)} x {short_name(input_1_datatype)} => {short_name(output_datatype)}".strip()
@@ -2062,28 +2185,34 @@ def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
             sys.exit(1)
 
         df["DEVICE ID"] = pd.to_numeric(df["DEVICE ID"], errors="coerce")
-        # Only whole, finite ids can name a device. An unusable cell must not
-        # decide the device count, nor abort the run on the conversion below.
-        device_ids = [
-            device_id
-            for device_id in (whole_number(value) for value in df["DEVICE ID"].dropna())
-            if device_id is not None
-        ]
-        max_device_id = max(device_ids) if device_ids else -1
-        current_num_devices = max_device_id + 1 if max_device_id >= 0 else 0
+        # Only whole, non-negative, finite ids can name a device. to_numeric has
+        # already coerced the column, so the policy is a mask rather than a
+        # per-row loop: this runs over every row of every input file. Both NaN
+        # and infinity give NaN from the modulo, so neither passes the test.
+        device_ids = df["DEVICE ID"]
+        usable_ids = device_ids[(device_ids % 1 == 0) & (device_ids >= 0)]
+        max_device_id = int(usable_ids.max()) if not usable_ids.empty else None
+        current_num_devices = max_device_id + 1 if max_device_id is not None else 0
 
-        if num_devices_per_system is None:
+        if max_device_id is None:
+            # A file naming no device cannot disagree about how many there are,
+            # and must not define the count either: taking 0 from here would
+            # zero the offset applied to every later file, silently merging
+            # their devices together.
+            print(colored(f"CSV '{csv_path}' reports no usable 'DEVICE ID' values.", "yellow"))
+        elif num_devices_per_system is None:
             num_devices_per_system = current_num_devices
         elif current_num_devices != num_devices_per_system:
             print(
                 colored(
-                    f"CSV '{csv_path}' reports max device ID {max_device_id}, expected {num_devices_per_system - 1}",
+                    f"CSV '{csv_path}' reports {current_num_devices} device(s) "
+                    f"(max DEVICE ID {max_device_id}), expected {num_devices_per_system}",
                     "red",
                 )
             )
             sys.exit(1)
 
-        device_offset = file_index * num_devices_per_system
+        device_offset = file_index * (num_devices_per_system or 0)
         if device_offset:
             df.loc[df["DEVICE ID"].notna(), "DEVICE ID"] = (
                 df.loc[df["DEVICE ID"].notna(), "DEVICE ID"] + device_offset
@@ -2116,7 +2245,11 @@ def _restore_report_order(result_df):
 
 
 def merge_device_rows(df):
-    block_by_device = defaultdict(list)
+    # A deque, not a list: the loop below drains each device's block from the
+    # front, and list.pop(0) shifts every remaining element on each call, which
+    # makes merging quadratic in the ops per device. Only len(), [0] and append
+    # are used besides, all of which a deque supports unchanged.
+    block_by_device = defaultdict(deque)
     # Preserve non-device ops (host ops, signposts, etc.)
     non_device_rows = []
 
@@ -2161,7 +2294,7 @@ def merge_device_rows(df):
                 missing_devices.append(device_id)
                 continue
 
-            blocks.append(block_by_device[device_id].pop(0))
+            blocks.append(block_by_device[device_id].popleft())
 
         if missing_devices:
             print(colored(f"Warning: {op_name} at index {global_index} not present in CSV for {len(missing_devices)} devices {missing_devices} - do not trust data for this op or directly subsequent ops with the same name", "yellow"))
@@ -2408,7 +2541,18 @@ def generate_perf_report(
         # For v1 and v2, use the arch parameter (either default or user-specified)
         arch_spec = ArchitectureSpec.from_name(arch)
     
-    print(colored(f"Architecture: {arch_spec.name}, Worker cores: {arch_spec.worker_cores}", "cyan"))
+    # On a partitioned capture no row reports the real grid, so this number is
+    # the largest budget observed rather than a fact about the chip - it can even
+    # exceed the architecture's registered grid. Naming it "Worker cores" under
+    # the architecture's own name would assert a grid size the file never
+    # reported, so say which of the two it is.
+    # The budgets themselves are listed by _get_worker_core_count_from_df, so
+    # naming the largest is enough here.
+    if len(arch_spec.observed_budgets) > 1:
+        cores_description = f"largest observed worker core budget: {arch_spec.worker_cores}"
+    else:
+        cores_description = f"Worker cores: {arch_spec.worker_cores}"
+    print(colored(f"Architecture: {arch_spec.name}, {cores_description}", "cyan"))
 
     # Add a column for original row numbers
     df["ORIGINAL_ROW"] = df.index + 2  # +2 to match Excel row numbers (1-based + header)
@@ -2523,8 +2667,12 @@ def generate_perf_report(
         # read DEVICE FW START/END CYCLE, so it cannot tell which ops overlapped.
         print(colored(
             "Warning: totals assume ops ran sequentially. Ops on disjoint subdevices can run "
-            "concurrently, so summed device time, Total %, the op-to-op gap totals and the "
-            "overall DRAM roofline overcount overlapped work.",
+            "concurrently, so every figure that sums durations overcounts overlapped work: "
+            "summed device time, Total %, the op-to-op gap totals, the overall DRAM roofline "
+            "(so its achieved GB/s is understated), the tracing-savings estimate, and the "
+            "summary report's Device Time Sum, its Total % and its device-time-weighted mean "
+            "FLOPs %. Per-op FLOPs % is unaffected: it is a rate against the cores the op "
+            "actually used, which concurrency does not enter.",
             "yellow"
         ))
 
@@ -2581,10 +2729,14 @@ def generate_perf_report(
             csv_writer = csv.DictWriter(f, fieldnames=all_headers)
             csv_writer.writeheader()
             for op_data in rows:
-                row = {header: op_data[header].raw_value for header in all_headers if header in op_data}
+                row = {
+                    header: escape_csv_formula(op_data[header].raw_value)
+                    for header in all_headers
+                    if header in op_data
+                }
                 if not no_advice:
                     advice = generate_matmul_advice(op_data) if is_matmul_op(op_data) else ""
-                    row["Advice"] = " • ".join(advice)
+                    row["Advice"] = escape_csv_formula(" • ".join(advice))
                 csv_writer.writerow(row)
         overall_dram_speed, overall_dram_percentage = calculate_overall_dram_roofline(rows)
         if overall_dram_percentage is not None:

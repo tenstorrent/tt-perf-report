@@ -17,6 +17,7 @@ metric that depended on it.
 """
 
 import math
+import re
 
 import pandas as pd
 
@@ -36,6 +37,30 @@ MAX_PLAUSIBLE_CORE_COUNT = 1 << 20
 # duration, aborting the report. Capping each dimension keeps every such
 # product comfortably inside the float range.
 MAX_PLAUSIBLE_TENSOR_DIM = 1 << 32
+
+
+# Control characters, except tab: C0, DEL, and the C1 range that begins the
+# escape sequences a terminal acts on.
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f]")
+
+
+def sanitize_text(value):
+    """
+    Strip control characters from a cell carrying text the profiler wrote.
+
+    Several columns - the op code, and a subdevice id that was not a whole
+    number - are reported verbatim, and the report's sinks are line- and
+    column-oriented. A newline in such a cell ends a table row early and renders
+    its tail as an op that never ran; a bare escape byte recolours or overwrites
+    every column after it. No real profiler output has that shape, so the
+    characters are dropped rather than escaped, at the point the cell is read,
+    so that the terminal table, the stacked report and --csv all agree.
+
+    Non-text values are returned unchanged, so this is safe on any cell.
+    """
+    if not isinstance(value, str):
+        return value
+    return _CONTROL_CHARACTERS.sub("", value)
 
 
 def finite_float(value):

@@ -19,11 +19,19 @@ import pandas as pd
 
 from tt_perf_report.csv_values import (
     AVAILABLE_WORKER_CORE_COUNT_COLUMN,
-    finite_float,
     get_core_count,
+    sanitize_text,
+    whole_number,
 )
 
 SUB_DEVICE_ID_COLUMN = "SUB DEVICE ID"
+
+# An id that is not a whole number is reported as text, so its length is the
+# CSV's to choose. The terminal table sizes each column to its widest cell, so
+# one long id would set the width of the whole column for every row and push the
+# rest of the table off screen. No real id needs this many characters; a value
+# that does is corrupt, and enough of it survives to show that.
+MAX_SUB_DEVICE_ID_LENGTH = 32
 
 
 def get_op_sub_device_id(row):
@@ -42,7 +50,10 @@ def get_op_sub_device_id(row):
     Anything that is not a whole number is passed through as text rather than
     normalised, so that unexpected profiler output stays visible in the report.
     In particular a fractional id is not truncated: reading "1.5" as subdevice 1
-    would silently merge a malformed row into a real subdevice.
+    would silently merge a malformed row into a real subdevice. Such text has
+    its control characters stripped, and is clipped to MAX_SUB_DEVICE_ID_LENGTH,
+    which keeps it visible without letting one corrupt cell break a table row or
+    size the column for every row.
     """
     if SUB_DEVICE_ID_COLUMN not in row:
         return None
@@ -51,15 +62,15 @@ def get_op_sub_device_id(row):
     if pd.isna(value):
         return None
 
-    text = str(value).strip()
+    text = sanitize_text(str(value)).strip()
     if not text:
         return None
 
-    number = finite_float(text)
-    if number is None or not number.is_integer():
-        return text
+    number = whole_number(text)
+    if number is None:
+        return text[:MAX_SUB_DEVICE_ID_LENGTH]
 
-    return int(number)
+    return number
 
 
 def get_op_available_cores(row, fallback_cores: int) -> int:
