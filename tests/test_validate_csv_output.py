@@ -1671,6 +1671,24 @@ def test_fractional_subdevice_id_is_not_merged_into_a_real_subdevice(mocker):
     assert "Subdevices: 2" in stdout
 
 
+def test_terminal_preserves_unexpected_numeric_subdevice_ids(mocker):
+    # Include a non-numeric label so pandas preserves this column as text.
+    csv_content = _rows_to_csv([
+        _subdevice_row("BinaryNgDeviceOperation", sub_device_id, "12", "6", 1000 + index)
+        for index, sub_device_id in enumerate(["1.5", "2", "1e999", "compute"])
+    ])
+    _, _, stdout = _run_report(mocker, csv_content, csv_output_file=None, no_advice=True)
+
+    header = next(line for line in stdout.splitlines() if line.startswith("ID") and "Sub Device ID" in line)
+    start, end = header.index("Sub Device ID"), header.index("Device Time")
+    displayed_ids = [
+        line[start:end].strip()
+        for line in stdout.splitlines()
+        if "BinaryNgDeviceOperation" in line
+    ]
+    assert displayed_ids == ["1.5", "2", "1e999", "compute"]
+
+
 @pytest.mark.parametrize("column", ["INPUT_0_Y_PAD[LOGICAL]", "INPUT_1_X_PAD[LOGICAL]", "OUTPUT_0_X_PAD[LOGICAL]"])
 @pytest.mark.parametrize("value", ["unknown", "inf", "", "512.5[512]"])
 def test_malformed_tensor_dimension_omits_metrics_without_aborting(mocker, column, value):
@@ -2007,6 +2025,28 @@ def test_merge_perf_traces_tolerates_a_file_that_names_no_device(tmp_path, capsy
     # the first. The unusable id is passed through untouched for the report to
     # handle per row, which it does by leaving that row's Device cell blank.
     assert sorted(merged["DEVICE ID"].dropna().tolist()) == [1.5, 2.0, 3.0]
+
+
+@pytest.mark.parametrize("later_ids,expected_devices", [
+    (["-1"], ["0", "1", ""]),
+    (["0", "1", "-1", "1.5"], ["0", "1", "2", "3", "", ""]),
+])
+def test_multi_file_report_keeps_invalid_device_ids_unknown(tmp_path, later_ids, expected_devices):
+    first = _write_csv(tmp_path, "a.csv", ["0", "1"])
+    second = _write_csv(tmp_path, "b.csv", later_ids)
+    output = tmp_path / "report.csv"
+
+    generate_perf_report(
+        csv_files=[first, second],
+        csv_output_file=str(output),
+        **{**_REPORT_DEFAULTS, "no_merge_devices": True, "tracing_mode": True},
+    )
+
+    with output.open() as stream:
+        rows = list(csv.DictReader(stream))
+    # Only validated IDs get the second file's offset; malformed rows survive
+    # with an unknown device rather than being reassigned to a real device.
+    assert [row["Device"] for row in rows] == expected_devices
 
 
 def test_merge_perf_traces_rejects_files_that_disagree_on_device_count(tmp_path, capsys):

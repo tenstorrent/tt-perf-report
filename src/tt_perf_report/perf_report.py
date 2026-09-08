@@ -548,11 +548,12 @@ def escape_csv_formula(value):
 
 
 class Cell:
-    def __init__(self, value: Any, unit: Optional[str] = None, decimals=0, color=None):
+    def __init__(self, value: Any, unit: Optional[str] = None, decimals=0, color=None, *, as_text=False):
         self.raw_value = value
         self.unit = unit
         self.decimals = decimals
         self.color = color
+        self.as_text = as_text
 
     def format(self):
         if self.raw_value is None or pd.isna(self.raw_value):
@@ -563,7 +564,11 @@ class Cell:
         # that - an op code with its shape and config appended, for instance.
         raw_value = sanitize_text(self.raw_value)
 
-        if isinstance(raw_value, str) and (
+        if self.as_text:
+            formatted = str(raw_value)
+            if self.color:
+                formatted = colored(formatted, self.color)
+        elif isinstance(raw_value, str) and (
             "Matmul" in raw_value
             or "OptimizedConvNew" in raw_value
             or "Conv2dDeviceOperation" in raw_value
@@ -1209,7 +1214,9 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     # the stacked report and --csv. Sanitize it once, here, rather than at each.
     op_code = Cell(sanitize_text(row["OP CODE"]))
     cores = Cell(get_core_count(row, "CORE COUNT"))
-    sub_device_id = Cell(get_op_sub_device_id(row))
+    # Unexpected numeric-looking IDs are preserved as text by the reader;
+    # formatting must not round them into a different, valid-looking ID.
+    sub_device_id = Cell(get_op_sub_device_id(row), as_text=True)
     available_cores = Cell(get_op_available_cores(row, arch_spec.worker_cores))
     duration_ns, invalid_device_duration = get_analysis_duration_ns(row)
     device_time = Cell(
@@ -2198,7 +2205,8 @@ def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
         # per-row loop: this runs over every row of every input file. Both NaN
         # and infinity give NaN from the modulo, so neither passes the test.
         device_ids = df["DEVICE ID"]
-        usable_ids = device_ids[(device_ids % 1 == 0) & (device_ids >= 0)]
+        usable_id_mask = (device_ids % 1 == 0) & (device_ids >= 0)
+        usable_ids = device_ids[usable_id_mask]
         max_device_id = int(usable_ids.max()) if not usable_ids.empty else None
         current_num_devices = max_device_id + 1 if max_device_id is not None else 0
 
@@ -2222,8 +2230,10 @@ def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
 
         device_offset = file_index * (num_devices_per_system or 0)
         if device_offset:
-            df.loc[df["DEVICE ID"].notna(), "DEVICE ID"] = (
-                df.loc[df["DEVICE ID"].notna(), "DEVICE ID"] + device_offset
+            # Leave invalid IDs untouched for the per-row reader to reject.
+            # Offsetting a negative ID could otherwise turn it into a real one.
+            df.loc[usable_id_mask, "DEVICE ID"] = (
+                df.loc[usable_id_mask, "DEVICE ID"] + device_offset
             )
 
         merged_frames.append(df)
