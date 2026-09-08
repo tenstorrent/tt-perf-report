@@ -128,13 +128,14 @@ def get_int(row, column, default=None):
     """
     Read one cell as a whole int, or default.
 
-    Zero and negatives are allowed: this is for quantities like DEVICE ID where
-    zero is a legal value. Use get_core_count for counts that must be positive.
+    Zero is allowed: it is a legal DEVICE ID. Negative values are rejected
+    because every current caller reads identifiers, and a negative identifier
+    cannot name a device in a profiler report.
     """
     if column not in row:
         return default
     count = whole_number(row[column])
-    return default if count is None else count
+    return default if count is None or count < 0 else count
 
 
 def get_core_count(row, column, default=None):

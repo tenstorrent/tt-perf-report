@@ -280,8 +280,10 @@ class ArchitectureSpec:
         """
         Get the file-wide available worker core count from CSV if available (v2.1+).
         Returns the largest non-zero value from AVAILABLE WORKER CORE COUNT column,
-        which is the full worker grid; ops confined to a subdevice report a smaller
-        budget and are measured against their own value, not this one.
+        which is the best available fallback budget; it is not necessarily the
+        full worker grid when every operation in a capture is confined to a
+        subdevice. Ops confined to a subdevice report a smaller budget and are
+        measured against their own value, not this one.
         Defaults to the selected architecture's worker-core count if unavailable.
 
         Returns a WorkerCoreBudgets, so that a caller naming the number can say
@@ -2017,7 +2019,13 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
 
 
 def dump_stacked_report(stacked_df: pd.DataFrame, output_file: str):
-    stacked_df.rename(columns=stacked_report_csv_column_labels).to_csv(output_file, index=False, float_format="%.2f")
+    csv_df = stacked_df.rename(columns=stacked_report_csv_column_labels).copy()
+    # OP Code Joined is derived from profiler text and is written directly by
+    # pandas, so it bypasses the primary report's CSV writer. Neutralize formula
+    # prefixes in every text column before a spreadsheet can evaluate them.
+    for column in csv_df.select_dtypes(include=["object", "string"]).columns:
+        csv_df[column] = csv_df[column].map(escape_csv_formula)
+    csv_df.to_csv(output_file, index=False, float_format="%.2f")
 
 
 def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_category: bool = False, use_category_colors: bool = True, threshold: float = 0.02, no_merge_devices: bool = False):

@@ -84,6 +84,9 @@ def test_getters_honour_absent_columns_and_defaults():
     assert get_core_count({"CORE COUNT": 0}, "CORE COUNT") is None
     # A device id pandas typed as text is still readable.
     assert get_int({"DEVICE ID": "3"}, "DEVICE ID") == 3
+    # Negative identifiers cannot name a profiler device.
+    assert get_int({"DEVICE ID": -1}, "DEVICE ID") is None
+    assert get_int({"DEVICE ID": "-1"}, "DEVICE ID", default=7) == 7
 
 
 def test_get_value_physical_logical_reads_both_parts():

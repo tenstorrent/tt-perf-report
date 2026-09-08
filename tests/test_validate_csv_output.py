@@ -19,6 +19,7 @@ from tt_perf_report.perf_report import (
     calculate_overall_dram_roofline,
     analyze_conv,
     color_row,
+    dump_stacked_report,
     escape_csv_formula,
     generate_matmul_advice,
     get_conv_window_hw,
@@ -1870,6 +1871,20 @@ def test_csv_output_neutralises_a_formula_in_a_sub_device_id(mocker):
     _, rows, _ = _run_report(mocker, _rows_to_csv([row]))
 
     assert rows[0]["Sub Device ID"] == "'=cmd|' /C calc'!A0"
+
+
+def test_stacked_csv_output_neutralises_formula_text(tmp_path):
+    stacked = pd.DataFrame({
+        "OP Code Joined": ["=1+1", "MatmulDeviceOperation"],
+        "Device_Time_Sum_us": [1.0, 2.0],
+    })
+    output = tmp_path / "stacked.csv"
+
+    dump_stacked_report(stacked, str(output))
+
+    rows = list(csv.DictReader(output.open()))
+    assert rows[0]["Op Code"] == "'=1+1"
+    assert rows[1]["Op Code"] == "MatmulDeviceOperation"
 
 
 # --- Conv attribute parsing --------------------------------------------------
