@@ -240,7 +240,7 @@ def _colorable_op(core_count, worker_cores, dram_sharded=False):
     return {
         "OP Code": Cell("CopyDeviceOperation"),
         "Cores": Cell(core_count),
-        "Architecture Worker Cores": Cell(worker_cores),
+        "Available Cores": Cell(worker_cores),
         "DRAM Sharded": Cell(dram_sharded),
         "Bound": Cell(""),
         "Op-to-Op Gap": Cell(None),
@@ -267,7 +267,7 @@ def _flop_bound_matmul_op(core_count, worker_cores, dram_sharded=False):
         "Input 0 Datatype": Cell("BFLOAT16"),
         "Input 1 Datatype": Cell("BFLOAT4_B"),
         "Cores": Cell(core_count),
-        "Architecture Worker Cores": Cell(worker_cores),
+        "Available Cores": Cell(worker_cores),
         "Bound": Cell("FLOP"),
         "DRAM Sharded": Cell(dram_sharded),
         "FLOPs %": Cell(70),
@@ -279,7 +279,9 @@ def test_grid_advice_uses_architecture_ceiling_and_skips_dram_sharded_matmuls():
     full_bh = generate_matmul_advice(_flop_bound_matmul_op(110, 110))
     dram_sharded_bh = generate_matmul_advice(_flop_bound_matmul_op(8, 110, True))
 
-    assert "Increase grid size (currently using 80)" in partial_bh
+    # The advice now names the ceiling it measured against, which on a subdevice
+    # run is that subdevice's budget rather than the architecture grid.
+    assert "Increase grid size (currently using 80 of 110)" in partial_bh
     assert not any("Increase grid size" in advice for advice in full_bh)
     assert not any("Increase grid size" in advice for advice in dram_sharded_bh)
 

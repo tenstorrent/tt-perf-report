@@ -90,8 +90,14 @@ The performance report provides several key metrics for analyzing operation perf
 - **Device Time**: Time spent executing the operation on device (in microseconds)
 - **Op-to-op Gap**: Time between operations, including host overhead and kernel dispatch (in microseconds)
 - **Total %**: Percentage of total execution time spent on this operation
-- **Cores**: Number of compute cores used by the operation. The available-worker ceiling is read from newer profiler CSVs.
+- **Cores**: Number of compute cores used by the operation.
   DRAM-sharded matmuls use the architecture's DRAM-interface workers: 12 on Wormhole, 8 on Blackhole P150, and 7 on Blackhole P100.
+- **Available Cores**: Worker cores the operation could have used, read per operation from newer profiler CSVs. On a run that partitions the chip into subdevices this is that subdevice's own budget; otherwise it is the full worker grid the profiler reports. When the whole column is absent it falls back to the architecture's registered grid (e.g. 64 on Wormhole, 110 on Blackhole, 20 on `bh20` and `n1`); when only an individual cell is blank or malformed, it falls back to the largest budget the file does report, which on a partitioned run may be another subdevice's. Grid-size advice and the **Cores** coloring are measured against this value rather than against the whole chip; **FLOPs %** is unaffected, since utilization is based on the cores the operation actually used
+- **Sub Device ID**: Subdevice the operation ran on. Blank means the full worker grid *only* when the input carries the `SUB DEVICE ID` column. On a capture that predates that column every cell is blank because no id was recorded, so a blank there means unknown rather than full-grid — including on a run whose differing **Available Cores** budgets show the chip was partitioned. The terminal table hides the column in that case, but `--csv` always emits it, so downstream consumers should read an entirely blank column as absent data, not as confirmed full-grid operation
+
+**Sub Device ID** appears in the terminal table only when the run reports subdevices, and **Available Cores** only when subdevices or differing core budgets are reported — otherwise they would be columns of blanks or of one repeated value. Both are always present in `--csv` output, whose column set and order do not vary with the input.
+
+> **Upgrading from 1.2.x:** the two new columns are appended after **Global Call Count**, which shifts **Advice** and **Raw OP Code** two positions to the right. Read `--csv` output by header name rather than by column index. A cell whose text would otherwise be evaluated as a spreadsheet formula (one opening with `=`, `+`, `-` or `@`) is written with a leading apostrophe.
 
 ### Performance Metrics
 
@@ -117,8 +123,9 @@ The performance report provides several key metrics for analyzing operation perf
 
 The tool automatically highlights potential optimization opportunities:
 - Red op-to-op times indicate high host or kernel launch overhead (>6.5μs)
-- Red core counts indicate underutilization (<10 cores), excluding architecture-standard DRAM-sharded matmuls
-- Green core counts indicate either all available workers or the expected DRAM-sharded worker count
+- Red core counts indicate underutilization (fewer than 10 cores, and less than half of the cores the operation was given), excluding DRAM-sharded matmuls
+- Green core counts indicate either all the cores the operation was given — the subdevice's budget on a partitioned run — or a DRAM-sharded matmul, which runs on a fixed set of DRAM-interface workers rather than on a grid it could grow into
+- Green DRAM % and FLOPs % indicate good utilization of available resources
 - Yellow metrics indicate room for optimization
 
 ## Examples
