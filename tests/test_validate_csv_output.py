@@ -2086,3 +2086,36 @@ def test_merge_device_rows_keeps_rows_when_there_is_nothing_to_merge():
     result = merge_device_rows(_merge_frame(rows))
 
     assert result["OP CODE"].tolist() == ["Sum (torch)", "start"]
+
+
+@pytest.mark.parametrize("tracing_mode", [False, True])
+def test_merge_device_rows_preserves_order_when_slowest_device_changes(tracing_mode):
+    rows = [{"OP CODE": "start", "OP TYPE": "signpost", "HOST START TS": 0}]
+    for device_id, durations in [(0, [10, 40, 20]), (1, [30, 20, 40])]:
+        for index, (op, duration) in enumerate(zip(
+            ["MatmulDeviceOperation", "MatmulDeviceOperation", "AllGatherDeviceOperation"], durations
+        )):
+            rows.append({
+                "OP CODE": op,
+                "OP TYPE": "tt_dnn_device",
+                "DEVICE ID": device_id,
+                "HOST START TS": 100 * (index + 1) + device_id,
+                "DEVICE KERNEL DURATION [ns]": duration,
+            })
+    rows.append({"OP CODE": "stop", "OP TYPE": "signpost", "HOST START TS": 1000})
+    df = _merge_frame(rows)
+    if not tracing_mode:
+        df = df.sort_values("HOST START TS")
+    original = df.copy(deep=True)
+
+    result = merge_device_rows(df)
+
+    assert result["OP CODE"].tolist() == [
+        "start", "MatmulDeviceOperation", "MatmulDeviceOperation", "AllGatherDeviceOperation", "stop"
+    ]
+    ops = result[result["OP TYPE"] == "tt_dnn_device"]
+    assert ops["DEVICE KERNEL DURATION [ns]"].tolist() == [30, 40, 30]
+    assert ops["DEVICE ID"].tolist() == [1, 0, 0]
+    assert result["ORIGINAL_ROW"].tolist() == [2, 6, 4, 5, 9]
+    assert set(result.columns) == set(df.columns)
+    pd.testing.assert_frame_equal(df, original)
