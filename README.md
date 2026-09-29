@@ -110,8 +110,31 @@ The performance report provides several key metrics for analyzing operation perf
   - `DRAM`: Memory bandwidth bound (>65% of peak DRAM)
   - `FLOP`: Compute bound (>65% of peak FLOPs)
   - `BOTH`: Both memory and compute bound
-  - `SLOW`: Neither memory nor compute bound
+  - `SLOW`: Analysed, but neither DRAM nor FLOPs explains the duration (both below 65%)
   - `HOST`: Operation running on host CPU
+
+  **Bound** is only derived for matmuls. A blank **Bound**, **DRAM %** or **FLOPs %** does not mean the op is fine: for most op types those figures are never modelled. `--csv` records which model ran in **Bound Analysis**, so read that before concluding an op is not a bottleneck.
+
+### Classification Fields
+
+These are written to `--csv` output only; the terminal table is unchanged.
+
+- **Op Category**: The operation's category, as used by the stacked report. One of:
+  - `Compute`: Matmuls, convolutions, eltwise, normalisation, attention and reductions. Ops that fuse a collective with real compute (for example `AllGatherMatmul`, `RMSAllGather`) are counted here.
+  - `CCL`: Collective communication between devices over the fabric (all-gather, reduce-scatter, all-reduce, all-to-all, broadcast, send/receive, and the DeepSeek MoE `Dispatch`/`Combine` pair)
+  - `DM`: Data movement within a device (sharding, copies, halo)
+  - `TM`: Tensor manipulation (reshape, transpose, slice, concat, tilize)
+  - `Other`: Not yet classified. The tool prints a warning naming each such op
+  - Blank for signposts
+- **Bound Analysis**: Which roofline model produced **DRAM %**, **FLOPs %** and **Bound**:
+  - `full`: DRAM and FLOPs (matmuls)
+  - `flops_only`: FLOPs only (convolutions), so **DRAM %** is always blank and **Bound** is never set
+  - `none`: Not analysed; all three are blank whatever the op's real behaviour
+
+> **Upgrading from 1.3.0:**
+> - **Op Category** and **Bound Analysis** are appended after **Available Cores**, which shifts **Advice** and **Raw OP Code** two positions to the right.
+> - `AllGather` and `ReduceScatter` moved from `DM` to the new `CCL` category, so `DM` shares drop on multi-chip reports.
+> - A matmul whose DRAM % or FLOPs % is exactly 0 now gets a **Bound** instead of a blank.
 
 ### Additional Fields
 

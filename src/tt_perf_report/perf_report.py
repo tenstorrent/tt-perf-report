@@ -470,8 +470,21 @@ OPERATION_CATEGORIES = {
         "Move", "Copy", "InterleavedToSharded",
         "ShardedToInterleaved", "InterleavedToShardedPartial",
         "ShardedToInterleavedPartial", "Halo", "Where", "CloneOperation", "Reshard",
-        # TODO: move AllGather / ReduceScatter to a CCL category when one exists
-        "ReduceScatter", "AllGather",
+    },
+    # Collective communication: inter-device traffic over the fabric. Ops that fuse a collective
+    # with real compute (AllGatherMatmul, RMSAllGather) stay in Compute.
+    "CCL": {
+        "AllGather", "AllGatherAsync", "AllGatherConcat",
+        "ReduceScatter", "ReduceScatterMinimalAsync", "ReduceScatterMinimalDirect",
+        "StridedReduceScatterAsync", "LlamaReduceScatter", "DeepseekMoEReduceScatter",
+        "AllReduceAsync",
+        "AllToAllAsync", "AllToAllAsyncGeneric", "AllToAllDispatch", "AllToAllDispatchMetadata",
+        "AllToAllCombine",
+        "AllBroadcast", "Broadcast",
+        "SendAsync", "RecvAsync", "SendDirectAsync", "RecvDirectAsync",
+        # DeepSeek prefill MoE dispatch/combine (tt-metal experimental/deepseek_prefill/): both
+        # take a fabric topology, so they are all-to-all collectives despite the generic names.
+        "Dispatch", "Combine",
     },
     # Tensor Manipulation
     "TM": {
@@ -486,6 +499,10 @@ OPERATION_CATEGORIES = {
         "(torch)"
     }
 }
+
+# Chart and stacked-report order. pd.Categorical turns any category missing here into NaN, so
+# every category classify_operation can return for a device op must be listed.
+CATEGORY_ORDER = ["Compute", "CCL", "TM", "DM", "Other"]
 
 OPERATION_CATEGORIES_EXTENDED = None
 
@@ -508,8 +525,11 @@ def classify_operation(op_code):
                     OPERATION_CATEGORIES_EXTENDED[category].add(f"{operation}DeviceOperation")
 
     # Extract the base operation name (before any spaces or configuration info)
-    base_op = op_code.split()[0] if isinstance(op_code, str) else str(op_code).split()[0]
-    
+    tokens = op_code.split() if isinstance(op_code, str) else str(op_code).split()
+    if not tokens:
+        return "Other"
+    base_op = tokens[0]
+
     # Check each category for the operation
     for category, operations in OPERATION_CATEGORIES_EXTENDED.items():
         if base_op in operations:
@@ -1281,8 +1301,13 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     math_fidelity_cell = Cell(math_fidelity.strip())
 
     is_dram_sharded = False
+    # Which roofline model ran for this op. Downstream consumers need it to tell an op that was
+    # never analysed apart from one whose DRAM/FLOPs figures were measured and found low: both
+    # otherwise leave the same blank cells.
+    bound_analysis = "none"
 
     if "Matmul" in op_code.raw_value:
+        bound_analysis = "full"
         matmul = analyze_matmul(row, csv_format, arch_spec, active_experts)
         is_dram_sharded = matmul.is_dram_sharded
         is_sparse_matmul = matmul.is_sparse_matmul
@@ -1310,6 +1335,7 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
             else None
         )
     elif any(x in op_code.raw_value for x in ["OptimizedConvNew", "Conv2d"]):
+        bound_analysis = "flops_only"
         (
             flops,
             flops_percentage,
@@ -1361,6 +1387,10 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         "Sparse Active Batches Missing": Cell(sparse_active_batches_missing),
         "Sparse Active Source": Cell(sparse_active_source),
         "Invalid Device Duration": Cell(invalid_device_duration),
+        # Set by the caller, which knows whether the row is a signpost: classifying a signpost
+        # name would only print an unclassified-operation warning.
+        "Op Category": Cell(None),
+        "Bound Analysis": Cell(bound_analysis),
     }
 
     input_0_memory = Cell(row["INPUT_0_MEMORY"] if pd.notna(row["INPUT_0_MEMORY"]) else None)
@@ -1409,7 +1439,8 @@ def add_derived_columns(rows):
         if "Matmul" in op_data["OP Code"].raw_value:
             dram_percentage = op_data["DRAM %"].raw_value
             flops_percentage = op_data["FLOPs %"].raw_value
-            if dram_percentage and flops_percentage:
+            # 0.0% is a measurement, not a missing value, so test for None rather than truthiness.
+            if dram_percentage is not None and flops_percentage is not None:
                 if dram_percentage >= 65 and flops_percentage >= 65:
                     op_data["Bound"] = Cell("BOTH")
                 elif dram_percentage >= 65:
@@ -1803,6 +1834,7 @@ def _get_category_color_palettes():
         "Compute": [plt.cm.Purples(i) for i in np.arange(1.0, 0.4, -0.05)],
         "TM": [plt.cm.Greens(i) for i in np.arange(1.0, 0.4, -0.05)],
         "DM": [plt.cm.Oranges(i) for i in np.arange(0.8, 0.2, -0.05)],
+        "CCL": [plt.cm.Blues(i) for i in np.arange(1.0, 0.4, -0.05)],
         "Other": [plt.cm.Greys(i) for i in np.arange(1.0, 0.4, -0.05)],
     }
 
@@ -1813,16 +1845,15 @@ def _get_category_border_colors():
         "Compute": "black",
         "TM": "black", 
         "DM": "black",
+        "CCL": "black",
         "Other": "black"
     }
 
 
 def _sort_dataframe_by_category(stacked_df: pd.DataFrame) -> pd.DataFrame:
     """Sort DataFrame by category order when using category-based visualization."""
-    category_order = ["Compute", "TM", "DM", "Other"]
-    
     # Create a categorical column with the desired order
-    stacked_df["category_sort"] = pd.Categorical(stacked_df["Op_Category"], categories=category_order, ordered=True)
+    stacked_df["category_sort"] = pd.Categorical(stacked_df["Op_Category"], categories=CATEGORY_ORDER, ordered=True)
     
     # Sort by category first, then by Device_Time_Sum_us descending within each category
     stacked_df = stacked_df.sort_values(["category_sort", "Device_Time_Sum_us"], ascending=[True, False])
@@ -2046,9 +2077,8 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_cat
     # Sort data appropriately based on stacking mode
     if stack_by_category:
         # When stacking by category, sort by predefined category order
-        category_order = ["Compute", "TM", "DM", "Other"]
         if use_category_colors:
-            stacked_df["category_sort"] = pd.Categorical(stacked_df["OP Code Joined"], categories=category_order, ordered=True)
+            stacked_df["category_sort"] = pd.Categorical(stacked_df["OP Code Joined"], categories=CATEGORY_ORDER, ordered=True)
             stacked_df = stacked_df.sort_values(["category_sort", "Device_Time_Sum_us"], ascending=[True, False])
             stacked_df = stacked_df.drop("category_sort", axis=1)
     else:
@@ -2621,6 +2651,7 @@ def generate_perf_report(
             # Update prev_non_signpost_row only for non-signpost operations
             prev_non_signpost_row = row
             prev_non_signpost_invalid_duration = op_data["Invalid Device Duration"].raw_value
+            op_data["Op Category"] = Cell(classify_operation(row["OP CODE"]))
 
         rows.append(op_data)
 
@@ -2722,6 +2753,8 @@ def generate_perf_report(
         "Global Call Count",
         "Sub Device ID",
         "Available Cores",
+        "Op Category",
+        "Bound Analysis",
     ]
 
     # The CSV is a machine-readable contract for downstream consumers, so its
