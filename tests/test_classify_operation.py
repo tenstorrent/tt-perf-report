@@ -9,7 +9,7 @@ from tt_perf_report import perf_report
 from tt_perf_report.perf_report import classify_operation
 
 
-# Ops newly classified for issue #61 / PR #63 (base names; DeviceOperation aliases auto-added).
+# Ops newly classified in PR #63 (issue #61) and PR #68 (base names; DeviceOperation aliases auto-added).
 NEWLY_CLASSIFIED_OPS = [
     ("RMSAllGather", "Compute"),
     ("SdpaDecode", "Compute"),
@@ -21,6 +21,11 @@ NEWLY_CLASSIFIED_OPS = [
     ("Repeat", "TM"),
     ("PaddedSlice", "TM"),
     ("SliceWrite", "TM"),
+    ("MoeGroupedTopk", "Compute"),
+    ("MaskedBincount", "Compute"),
+    ("OffsetCumsum", "Compute"),
+    ("UnifiedRoutedExpertFfn", "Compute"),
+    ("PostCombineReduce", "Compute"),
 ]
 
 

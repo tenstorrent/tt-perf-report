@@ -471,6 +471,11 @@ OPERATION_CATEGORIES = {
         "Unary", "Pool2D", "UpSample", "UpsampleOperation", "GroupNorm", "GridSample", "Accumulation",
         "LayerNorm", "ScaledDotProductAttention", "Reduce", "FastReduceNC", "ArgMax", "Softmax",
         "Embeddings", "MinimalMatmulOp", "SparseMatmul", "IntImg", "GridSampleOperation",
+        # DeepSeek prefill MoE routing and expert maths (tt-metal experimental/deepseek_prefill/).
+        # None moves data between devices; MaskedBincount and OffsetCumsum run on the
+        # data-movement RISCs but compute counts and offsets rather than moving tensors.
+        "MoeGroupedTopk", "MaskedBincount", "OffsetCumsum", "UnifiedRoutedExpertFfn",
+        "PostCombineReduce",
     },
     # Data Movement
     "DM": {
