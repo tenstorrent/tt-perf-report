@@ -472,11 +472,15 @@ OPERATION_CATEGORIES = {
         "ShardedToInterleavedPartial", "Halo", "Where", "CloneOperation", "Reshard",
     },
     # Collective communication: inter-device traffic over the fabric. Ops that fuse a collective
-    # with real compute (AllGatherMatmul, RMSAllGather) stay in Compute.
+    # with real compute (AllGatherMatmul, RMSAllGather) stay in Compute; their async and
+    # attention-fused variants (e.g. RingAttentionAllGatherAsync) are not classified yet.
     "CCL": {
         "AllGather", "AllGatherAsync", "AllGatherConcat",
         "ReduceScatter", "ReduceScatterMinimalAsync", "ReduceScatterMinimalDirect",
         "StridedReduceScatterAsync", "LlamaReduceScatter", "DeepseekMoEReduceScatter",
+        "StridedAllGatherAsync", "SliceReshardAsync", "SelectiveReduceCombine",
+        # Its tt-metal type is ReduceToRootOp, which the DeviceOperation alias does not cover.
+        "ReduceToRootOp",
         "AllReduceAsync",
         "AllToAllAsync", "AllToAllAsyncGeneric", "AllToAllDispatch", "AllToAllDispatchMetadata",
         "AllToAllCombine",
@@ -501,8 +505,8 @@ OPERATION_CATEGORIES = {
 }
 
 # Chart and stacked-report order. pd.Categorical turns any category missing here into NaN, so
-# every category classify_operation can return for a device op must be listed.
-CATEGORY_ORDER = ["Compute", "CCL", "TM", "DM", "Other"]
+# every category a row can carry must be listed.
+CATEGORY_ORDER = ["Compute", "CCL", "TM", "DM", "Host", "Other"]
 
 OPERATION_CATEGORIES_EXTENDED = None
 
@@ -1436,7 +1440,8 @@ def add_derived_columns(rows):
         if op_data["Device Time"].raw_value is None and op_data["Op-to-Op Gap"].raw_value is None:
             op_data["Total %"].raw_value = None
 
-        if "Matmul" in op_data["OP Code"].raw_value:
+        # Only the full roofline model yields both figures; analyze_op records which model ran.
+        if op_data["Bound Analysis"].raw_value == "full":
             dram_percentage = op_data["DRAM %"].raw_value
             flops_percentage = op_data["FLOPs %"].raw_value
             # 0.0% is a measurement, not a missing value, so test for None rather than truthiness.
@@ -1835,6 +1840,7 @@ def _get_category_color_palettes():
         "TM": [plt.cm.Greens(i) for i in np.arange(1.0, 0.4, -0.05)],
         "DM": [plt.cm.Oranges(i) for i in np.arange(0.8, 0.2, -0.05)],
         "CCL": [plt.cm.Blues(i) for i in np.arange(1.0, 0.4, -0.05)],
+        "Host": [plt.cm.Reds(i) for i in np.arange(1.0, 0.4, -0.05)],
         "Other": [plt.cm.Greys(i) for i in np.arange(1.0, 0.4, -0.05)],
     }
 
@@ -1846,6 +1852,7 @@ def _get_category_border_colors():
         "TM": "black", 
         "DM": "black",
         "CCL": "black",
+        "Host": "black",
         "Other": "black"
     }
 
@@ -1909,8 +1916,8 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
 
     data = {header: [row[header].raw_value for row in filtered_rows] for header in visible_headers}
     
-    # Always add Op Category column
-    data["Op Category"] = [classify_operation(row["OP Code"].raw_value) for row in filtered_rows]
+    # Reuse the per-op category so the stacked report and the --csv column cannot disagree.
+    data["Op Category"] = [row["Op Category"].raw_value for row in filtered_rows]
     
     df = pd.DataFrame(data)
 
@@ -2651,7 +2658,12 @@ def generate_perf_report(
             # Update prev_non_signpost_row only for non-signpost operations
             prev_non_signpost_row = row
             prev_non_signpost_invalid_duration = op_data["Invalid Device Duration"].raw_value
-            op_data["Op Category"] = Cell(classify_operation(row["OP CODE"]))
+            # Classify the sanitised op code: classify_operation echoes unknown names to the
+            # terminal, and the raw cell is untrusted text. Host ops carry "(torch)" anywhere in
+            # the code, which the first-token match would miss.
+            op_data["Op Category"] = Cell(
+                "Host" if is_host_op(op_data) else classify_operation(op_data["OP Code"].raw_value)
+            )
 
         rows.append(op_data)
 

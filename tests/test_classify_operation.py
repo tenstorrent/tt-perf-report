@@ -24,14 +24,7 @@ NEWLY_CLASSIFIED_OPS = [
 ]
 
 
-@pytest.fixture(autouse=True)
-def _reset_classification_cache():
-    """Rebuild category cache and unclassified warning set around each test."""
-    perf_report.OPERATION_CATEGORIES_EXTENDED = None
-    perf_report._UNCLASSIFIED_OPS_WARNED.clear()
-    yield
-    perf_report.OPERATION_CATEGORIES_EXTENDED = None
-    perf_report._UNCLASSIFIED_OPS_WARNED.clear()
+pytestmark = pytest.mark.usefixtures("reset_classification_cache")
 
 
 @pytest.mark.parametrize("op_code,expected_category", NEWLY_CLASSIFIED_OPS)
@@ -60,11 +53,13 @@ def test_unknown_op_warns_once_and_returns_other(capsys):
 
 
 # Collectives from tt-metal's ttnn/operations/ccl and experimental/ccl, plus the DeepSeek prefill
-# MoE dispatch/combine pair, which also run over the fabric.
+# MoE dispatch/combine pair, which also run over the fabric. Deliberately a copy of the shipped
+# set rather than OPERATION_CATEGORIES["CCL"]: dropping an op from the source must fail here.
 CCL_OPS = [
     "AllGather", "AllGatherAsync", "AllGatherConcat",
     "ReduceScatter", "ReduceScatterMinimalAsync", "ReduceScatterMinimalDirect",
     "StridedReduceScatterAsync", "LlamaReduceScatter", "DeepseekMoEReduceScatter",
+    "StridedAllGatherAsync", "SliceReshardAsync", "SelectiveReduceCombine", "ReduceToRootOp",
     "AllReduceAsync",
     "AllToAllAsync", "AllToAllAsyncGeneric", "AllToAllDispatch", "AllToAllDispatchMetadata",
     "AllToAllCombine",
@@ -100,11 +95,11 @@ def test_empty_op_code_is_other_without_warning(op_code, capsys):
     assert "Unclassified operation" not in captured.out
 
 
-def test_every_device_category_has_a_chart_order_and_colours():
-    # Host ops are never charted; everything else classify_operation returns must be orderable and
-    # coloured, or pd.Categorical sorts it as NaN and the plot falls back to generic colours.
-    device_categories = (set(perf_report.OPERATION_CATEGORIES) - {"Host"}) | {"Other"}
+def test_every_category_has_a_chart_order_and_colours():
+    # Every category a row can carry must be orderable and coloured, or pd.Categorical sorts it as
+    # NaN and the plot falls back to generic colours.
+    categories = set(perf_report.OPERATION_CATEGORIES) | {"Other"}
 
-    assert set(perf_report.CATEGORY_ORDER) == device_categories
-    assert set(perf_report._get_category_color_palettes()) == device_categories
-    assert set(perf_report._get_category_border_colors()) == device_categories
+    assert set(perf_report.CATEGORY_ORDER) == categories
+    assert set(perf_report._get_category_color_palettes()) == categories
+    assert set(perf_report._get_category_border_colors()) == categories

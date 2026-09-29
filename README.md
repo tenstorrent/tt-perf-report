@@ -111,7 +111,7 @@ The performance report provides several key metrics for analyzing operation perf
   - `SLOW`: Analysed, but neither DRAM nor FLOPs explains the duration (both below 65%)
   - `HOST`: Operation running on host CPU
 
-  **Bound** is only derived for matmuls. A blank **Bound**, **DRAM %** or **FLOPs %** does not mean the op is fine: for most op types those figures are never modelled. `--csv` records which model ran in **Bound Analysis**, so read that before concluding an op is not a bottleneck.
+  `DRAM`, `FLOP`, `BOTH` and `SLOW` are only derived for matmuls. A blank **Bound**, **DRAM %** or **FLOPs %** does not mean the op is fine: for most op types those figures are never modelled. `--csv` records which model ran in **Bound Analysis**, so read that before concluding an op is not a bottleneck.
 
 ### Classification Fields
 
@@ -122,10 +122,11 @@ These are written to `--csv` output only; the terminal table is unchanged.
   - `CCL`: Collective communication between devices over the fabric (all-gather, reduce-scatter, all-reduce, all-to-all, broadcast, send/receive, and the DeepSeek MoE `Dispatch`/`Combine` pair)
   - `DM`: Data movement within a device (sharding, copies, halo)
   - `TM`: Tensor manipulation (reshape, transpose, slice, concat, tilize)
+  - `Host`: Operations running on the host CPU (`(torch)` ops)
   - `Other`: Not yet classified. The tool prints a warning naming each such op
   - Blank for signposts
 - **Bound Analysis**: Which roofline model produced **DRAM %**, **FLOPs %** and **Bound**:
-  - `full`: DRAM and FLOPs (matmuls)
+  - `full`: DRAM and FLOPs (matmuls). Either figure can still be blank when the trace lacks the inputs the model needs
   - `flops_only`: FLOPs only (convolutions), so **DRAM %** is always blank and **Bound** is never set
   - `none`: Not analysed; all three are blank whatever the op's real behaviour
 
