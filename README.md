@@ -131,11 +131,6 @@ These are written to `--csv` output only; the terminal table is unchanged.
   - `flops_only`: FLOPs only (convolutions), so **DRAM %** is always blank and **Bound** is never set
   - `none`: Not analysed; all three are blank whatever the op's real behaviour
 
-> **Upgrading from 1.3.0:**
-> - **Op Category** and **Bound Analysis** are appended after **Available Cores**, which shifts **Advice** and **Raw OP Code** two positions to the right.
-> - `AllGather` and `ReduceScatter` moved from `DM` to the new `CCL` category, so `DM` shares drop on multi-chip reports.
-> - A matmul whose DRAM % or FLOPs % is exactly 0 now gets a **Bound** instead of a blank.
-
 ### Additional Fields
 
 - **Math Fidelity**: Precision configuration used for matrix operations. Utilization is based on the operation's actual core count. Blackhole-family per-core peaks use phase divisors (HiFi4=/4, HiFi3=/3, HiFi2=/2, LoFi=/1). Wormhole uses published chip peaks; HiFi3 is HiFi4×4/3 (LoFi is empirical). Full-chip reference peaks are:
