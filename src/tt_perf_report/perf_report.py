@@ -454,6 +454,14 @@ ArchitectureSpec.register(ArchitectureSpec(
     tflops_lofi=4096 * 0.65 / 1000,
 ))
 
+# Host fallback ops carry this marker anywhere in the op code, not as its first token.
+HOST_OP_MARKER = "(torch)"
+
+# Which roofline model analyze_op ran for an op, written to the "Bound Analysis" CSV column.
+BOUND_ANALYSIS_FULL = "full"
+BOUND_ANALYSIS_FLOPS_ONLY = "flops_only"
+BOUND_ANALYSIS_NONE = "none"
+
 # Operation category classification - single source of truth
 OPERATION_CATEGORIES = {
     "Compute": {
@@ -499,8 +507,10 @@ OPERATION_CATEGORIES = {
         "NLPConcatHeads", "NlpCreateHeads", "Ternary", "FillPad", "PadDeviceOperation",
     },
 
+    # Matched by classify_operation's HOST_OP_MARKER check, since the marker is never the first
+    # token; listed so Host is a category like any other (chart order, colours, tests).
     "Host": {
-        "(torch)"
+        HOST_OP_MARKER
     }
 }
 
@@ -508,7 +518,12 @@ OPERATION_CATEGORIES = {
 # every category a row can carry must be listed.
 CATEGORY_ORDER = ["Compute", "CCL", "TM", "DM", "Host", "Other"]
 
+# Flat {base op name: category} lookup, built on first use; includes each op's DeviceOperation
+# alias.
 OPERATION_CATEGORIES_EXTENDED = None
+
+# Unclassified-op warnings echo a name taken from an untrusted trace, so bound what one prints.
+MAX_WARNED_OP_NAME_CHARS = 80
 
 
 # Global set to track unclassified operations to avoid duplicate warnings
@@ -523,27 +538,31 @@ def classify_operation(op_code):
     if OPERATION_CATEGORIES_EXTENDED is None:
         OPERATION_CATEGORIES_EXTENDED = {}
         for category, operations in OPERATION_CATEGORIES.items():
-            OPERATION_CATEGORIES_EXTENDED[category] = set(operations)
             for operation in operations:
-                if operation is not None:
-                    OPERATION_CATEGORIES_EXTENDED[category].add(f"{operation}DeviceOperation")
+                OPERATION_CATEGORIES_EXTENDED[operation] = category
+                OPERATION_CATEGORIES_EXTENDED[f"{operation}DeviceOperation"] = category
+
+    text = op_code if isinstance(op_code, str) else str(op_code)
+    if HOST_OP_MARKER in text:
+        return "Host"
 
     # Extract the base operation name (before any spaces or configuration info)
-    tokens = op_code.split() if isinstance(op_code, str) else str(op_code).split()
+    tokens = text.split(maxsplit=1)
     if not tokens:
         return "Other"
     base_op = tokens[0]
 
-    # Check each category for the operation
-    for category, operations in OPERATION_CATEGORIES_EXTENDED.items():
-        if base_op in operations:
-            return category
-    
+    category = OPERATION_CATEGORIES_EXTENDED.get(base_op)
+    if category is not None:
+        return category
+
     # If not found in any category, warn about unclassified operation (only once per operation type)
-    if base_op not in _UNCLASSIFIED_OPS_WARNED:
-        print(colored(f"Warning: Unclassified operation '{base_op}' found. Please add to OPERATION_CATEGORIES for proper classification.", "yellow"))
-        _UNCLASSIFIED_OPS_WARNED.add(base_op)
-    
+    warned_name = base_op[:MAX_WARNED_OP_NAME_CHARS]
+    if warned_name not in _UNCLASSIFIED_OPS_WARNED:
+        shown = warned_name if len(base_op) <= MAX_WARNED_OP_NAME_CHARS else f"{warned_name}…"
+        print(colored(f"Warning: Unclassified operation '{shown}' found. Please add to OPERATION_CATEGORIES for proper classification.", "yellow"))
+        _UNCLASSIFIED_OPS_WARNED.add(warned_name)
+
     return "Other"
 
 
@@ -1308,10 +1327,10 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     # Which roofline model ran for this op. Downstream consumers need it to tell an op that was
     # never analysed apart from one whose DRAM/FLOPs figures were measured and found low: both
     # otherwise leave the same blank cells.
-    bound_analysis = "none"
+    bound_analysis = BOUND_ANALYSIS_NONE
 
     if "Matmul" in op_code.raw_value:
-        bound_analysis = "full"
+        bound_analysis = BOUND_ANALYSIS_FULL
         matmul = analyze_matmul(row, csv_format, arch_spec, active_experts)
         is_dram_sharded = matmul.is_dram_sharded
         is_sparse_matmul = matmul.is_sparse_matmul
@@ -1339,7 +1358,7 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
             else None
         )
     elif any(x in op_code.raw_value for x in ["OptimizedConvNew", "Conv2d"]):
-        bound_analysis = "flops_only"
+        bound_analysis = BOUND_ANALYSIS_FLOPS_ONLY
         (
             flops,
             flops_percentage,
@@ -1441,7 +1460,7 @@ def add_derived_columns(rows):
             op_data["Total %"].raw_value = None
 
         # Only the full roofline model yields both figures; analyze_op records which model ran.
-        if op_data["Bound Analysis"].raw_value == "full":
+        if op_data["Bound Analysis"].raw_value == BOUND_ANALYSIS_FULL:
             dram_percentage = op_data["DRAM %"].raw_value
             flops_percentage = op_data["FLOPs %"].raw_value
             # 0.0% is a measurement, not a missing value, so test for None rather than truthiness.
@@ -1454,7 +1473,7 @@ def add_derived_columns(rows):
                     op_data["Bound"] = Cell("FLOP")
                 else:
                     op_data["Bound"] = Cell("SLOW")
-        elif "(torch)" in op_data["OP Code"].raw_value:
+        elif is_host_op(op_data):
             op_data["Bound"] = Cell("HOST")
             op_data["Device Time"] = Cell(None)
 
@@ -1674,7 +1693,7 @@ def print_advice_section(rows, headers, col_widths):
 
 
 def print_fallback_advice(rows, headers, col_widths):
-    host_ops = [op_data for op_data in rows if "(torch)" in op_data["OP Code"].raw_value]
+    host_ops = [op_data for op_data in rows if is_host_op(op_data)]
     if host_ops:
         print("Fallback\n--------")
         for op_data in host_ops:
@@ -1847,20 +1866,13 @@ def _get_category_color_palettes():
 
 def _get_category_border_colors():
     """Define border colors for each operation category."""
-    return {
-        "Compute": "black",
-        "TM": "black", 
-        "DM": "black",
-        "CCL": "black",
-        "Host": "black",
-        "Other": "black"
-    }
+    return dict.fromkeys(CATEGORY_ORDER, "black")
 
 
-def _sort_dataframe_by_category(stacked_df: pd.DataFrame) -> pd.DataFrame:
+def _sort_dataframe_by_category(stacked_df: pd.DataFrame, category_column: str = "Op_Category") -> pd.DataFrame:
     """Sort DataFrame by category order when using category-based visualization."""
     # Create a categorical column with the desired order
-    stacked_df["category_sort"] = pd.Categorical(stacked_df["Op_Category"], categories=CATEGORY_ORDER, ordered=True)
+    stacked_df["category_sort"] = pd.Categorical(stacked_df[category_column], categories=CATEGORY_ORDER, ordered=True)
     
     # Sort by category first, then by Device_Time_Sum_us descending within each category
     stacked_df = stacked_df.sort_values(["category_sort", "Device_Time_Sum_us"], ascending=[True, False])
@@ -2085,9 +2097,8 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_cat
     if stack_by_category:
         # When stacking by category, sort by predefined category order
         if use_category_colors:
-            stacked_df["category_sort"] = pd.Categorical(stacked_df["OP Code Joined"], categories=CATEGORY_ORDER, ordered=True)
-            stacked_df = stacked_df.sort_values(["category_sort", "Device_Time_Sum_us"], ascending=[True, False])
-            stacked_df = stacked_df.drop("category_sort", axis=1)
+            # Each bar is a category, so the joined op code is the category name.
+            stacked_df = _sort_dataframe_by_category(stacked_df, category_column="OP Code Joined")
     else:
         # For non-category stacking, use category-based sorting if enabled
         if use_category_colors and "Op_Category" in stacked_df.columns:
@@ -2659,11 +2670,8 @@ def generate_perf_report(
             prev_non_signpost_row = row
             prev_non_signpost_invalid_duration = op_data["Invalid Device Duration"].raw_value
             # Classify the sanitised op code: classify_operation echoes unknown names to the
-            # terminal, and the raw cell is untrusted text. Host ops carry "(torch)" anywhere in
-            # the code, which the first-token match would miss.
-            op_data["Op Category"] = Cell(
-                "Host" if is_host_op(op_data) else classify_operation(op_data["OP Code"].raw_value)
-            )
+            # terminal, and the raw cell is untrusted text.
+            op_data["Op Category"] = Cell(classify_operation(op_data["OP Code"].raw_value))
 
         rows.append(op_data)
 
@@ -2842,7 +2850,7 @@ def generate_perf_report(
 
 
 def is_host_op(op_data):
-    return "(torch)" in op_data["OP Code"].raw_value
+    return HOST_OP_MARKER in op_data["OP Code"].raw_value
 
 
 def is_signpost_op(op_data):

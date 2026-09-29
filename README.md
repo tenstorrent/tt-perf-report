@@ -115,7 +115,7 @@ The performance report provides several key metrics for analyzing operation perf
 
 ### Classification Fields
 
-These are written to `--csv` output only; the terminal table is unchanged.
+Added to the per-op `--csv` output; the terminal table is unchanged. The stacked report's **Op Category** uses the same values.
 
 - **Op Category**: The operation's category, as used by the stacked report. One of:
   - `Compute`: Matmuls, convolutions, eltwise, normalisation, attention and reductions. Ops that fuse a collective with real compute (for example `AllGatherMatmul`, `RMSAllGather`) are counted here.

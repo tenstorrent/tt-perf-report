@@ -103,3 +103,9 @@ def test_every_category_has_a_chart_order_and_colours():
     assert set(perf_report.CATEGORY_ORDER) == categories
     assert set(perf_report._get_category_color_palettes()) == categories
     assert set(perf_report._get_category_border_colors()) == categories
+
+
+def test_host_ops_are_host_wherever_the_marker_appears(capsys):
+    # The marker trails the op name, so a first-token lookup alone would return Other.
+    assert classify_operation("ttnn.to_torch (torch)") == "Host"
+    assert "Unclassified operation" not in capsys.readouterr().out
