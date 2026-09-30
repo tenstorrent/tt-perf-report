@@ -72,6 +72,8 @@ def expected_headers():
         "Global Call Count",
         "Sub Device ID",
         "Available Cores",
+        "Op Category",
+        "Bound Analysis",
         "Advice",
         "Raw OP Code",
     ]

@@ -97,8 +97,6 @@ The performance report provides several key metrics for analyzing operation perf
 
 **Sub Device ID** appears in the terminal table only when the run reports subdevices, and **Available Cores** only when subdevices or differing core budgets are reported — otherwise they would be columns of blanks or of one repeated value. Both are always present in `--csv` output, whose column set and order do not vary with the input.
 
-> **Upgrading from 1.2.x:** the two new columns are appended after **Global Call Count**, which shifts **Advice** and **Raw OP Code** two positions to the right. Read `--csv` output by header name rather than by column index. A cell whose text would otherwise be evaluated as a spreadsheet formula (one opening with `=`, `+`, `-` or `@`) is written with a leading apostrophe.
-
 ### Performance Metrics
 
 - **DRAM**: Memory bandwidth achieved (in GB/s)
@@ -110,8 +108,27 @@ The performance report provides several key metrics for analyzing operation perf
   - `DRAM`: Memory bandwidth bound (>65% of peak DRAM)
   - `FLOP`: Compute bound (>65% of peak FLOPs)
   - `BOTH`: Both memory and compute bound
-  - `SLOW`: Neither memory nor compute bound
+  - `SLOW`: Analysed, but neither DRAM nor FLOPs explains the duration (both below 65%)
   - `HOST`: Operation running on host CPU
+
+  `DRAM`, `FLOP`, `BOTH` and `SLOW` are only derived for matmuls. A blank **Bound**, **DRAM %** or **FLOPs %** does not mean the op is fine: for most op types those figures are never modelled. `--csv` records which model ran in **Bound Analysis**, so read that before concluding an op is not a bottleneck.
+
+### Classification Fields
+
+Added to the per-op `--csv` output; the terminal table is unchanged. The stacked report's **Op Category** uses the same values.
+
+- **Op Category**: The operation's category, as used by the stacked report. One of:
+  - `Compute`: Matmuls, convolutions, eltwise, normalisation, attention and reductions. Ops that fuse a collective with real compute (for example `AllGatherMatmul`, `RMSAllGather`) are counted here.
+  - `CCL`: Collective communication between devices over the fabric (all-gather, reduce-scatter, all-reduce, all-to-all, broadcast, send/receive, and the DeepSeek MoE `Dispatch`/`Combine` pair)
+  - `DM`: Data movement within a device (sharding, copies, halo)
+  - `TM`: Tensor manipulation (reshape, transpose, slice, concat, tilize)
+  - `Host`: Operations running on the host CPU (`(torch)` ops)
+  - `Other`: Not yet classified. The tool prints a warning naming each such op
+  - Blank for signposts
+- **Bound Analysis**: Which roofline model produced **DRAM %**, **FLOPs %** and **Bound**:
+  - `full`: DRAM and FLOPs (matmuls). Either figure can still be blank when the trace lacks the inputs the model needs
+  - `flops_only`: FLOPs only (convolutions), so **DRAM %** is always blank and **Bound** is never set
+  - `none`: Not analysed; **DRAM %** and **FLOPs %** are blank whatever the op's real behaviour, and so is **Bound**, except `HOST` for host (`(torch)`) ops
 
 ### Additional Fields
 
