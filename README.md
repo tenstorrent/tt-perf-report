@@ -128,7 +128,7 @@ Added to the per-op `--csv` output; the terminal table is unchanged. The stacked
 - **Bound Analysis**: Which roofline model produced **DRAM %**, **FLOPs %** and **Bound**:
   - `full`: DRAM and FLOPs (matmuls). Either figure can still be blank when the trace lacks the inputs the model needs
   - `flops_only`: FLOPs only (convolutions), so **DRAM %** is always blank and **Bound** is never set
-  - `none`: Not analysed; all three are blank whatever the op's real behaviour
+  - `none`: Not analysed; **DRAM %** and **FLOPs %** are blank whatever the op's real behaviour, and so is **Bound**, except `HOST` for host (`(torch)`) ops
 
 ### Additional Fields
 
