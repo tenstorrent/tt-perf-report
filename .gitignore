@@ -3,3 +3,5 @@
 build
 *egg-info
 .idea
+/perf_env
+uv.lock
