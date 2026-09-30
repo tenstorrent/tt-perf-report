@@ -19,6 +19,7 @@ metric that depended on it.
 import math
 import re
 
+import numpy as np
 import pandas as pd
 
 AVAILABLE_WORKER_CORE_COUNT_COLUMN = "AVAILABLE WORKER CORE COUNT"
@@ -78,6 +79,26 @@ def finite_float(value):
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def finite_float_column(df, column):
+    """
+    finite_float over a whole column, as a float64 array with NaN where unusable.
+
+    Every row is NaN when the column is absent. A numeric column is converted
+    directly; any other is coerced cell by cell through finite_float, so that
+    the two agree on every value rather than only on the ones pd.to_numeric
+    happens to parse the same way.
+    """
+    if column not in df.columns:
+        return np.full(len(df), np.nan)
+    series = df[column]
+    if pd.api.types.is_numeric_dtype(series):
+        values = series.to_numpy(dtype="float64", na_value=np.nan, copy=True)
+    else:
+        values = series.map(finite_float).to_numpy(dtype="float64", na_value=np.nan)
+    values[~np.isfinite(values)] = np.nan
+    return values
 
 
 def whole_number(value):
