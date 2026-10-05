@@ -2307,7 +2307,13 @@ def _merge_sort_duration_ns(block):
 
 
 def _restore_report_order(result_df):
-    """Restore chronological order by original row position, else by timestamp."""
+    """Restore group order while retaining source row IDs."""
+    if "_REPORT_ORDER" in result_df.columns:
+        return (
+            result_df.sort_values(by="_REPORT_ORDER", kind="stable")
+            .drop(columns="_REPORT_ORDER")
+            .reset_index(drop=True)
+        )
     if "ORIGINAL_ROW" in result_df.columns:
         return result_df.sort_values(by="ORIGINAL_ROW").reset_index(drop=True)
     if "HOST START TS" in result_df.columns:
@@ -2324,13 +2330,15 @@ def merge_device_rows(df):
     # Preserve non-device ops (host ops, signposts, etc.)
     non_device_rows = []
 
-    for _, row in df.iterrows():
+    for report_order, (_, row) in enumerate(df.iterrows()):
+        row_data = row.to_dict()
+        row_data["_REPORT_ORDER"] = report_order
         op_name = row["OP CODE"]
         op_type = row["OP TYPE"]
 
         device_id = get_int(row, "DEVICE ID")
         if op_type == "tt_dnn_device" and device_id is not None:
-            block_by_device[device_id].append((op_name, row.to_dict()))
+            block_by_device[device_id].append((op_name, row_data))
         else:
             # A device op with no usable device id cannot take part in per-device
             # merging, so it is reported unmerged rather than aborting the run.
@@ -2339,7 +2347,7 @@ def merge_device_rows(df):
                     f"Warning: {op_name} has no usable DEVICE ID and was not merged across devices.",
                     "yellow",
                 ))
-            non_device_rows.append(row.to_dict())
+            non_device_rows.append(row_data)
 
     device_ids = sorted(block_by_device.keys())
     merged_blocks = []
@@ -2386,11 +2394,14 @@ def merge_device_rows(df):
             base_block["DEVICE KERNEL DURATION [ns]"] = (
                 sum(device_kernel_durations) / len(device_kernel_durations) if device_kernel_durations else None
             )
-            merged_blocks.append(base_block)
         else:
             # For non-collective ops, take the row with maximum duration
             max_duration_block = max(blocks, key=_merge_sort_duration_ns)
-            merged_blocks.append(max_duration_block[1])
+            base_block = max_duration_block[1].copy()
+
+        # Keep execution order independent of the device supplying the timing.
+        base_block["_REPORT_ORDER"] = min(data["_REPORT_ORDER"] for _, data in blocks)
+        merged_blocks.append(base_block)
 
         global_index += 1
 
