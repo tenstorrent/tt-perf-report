@@ -2419,6 +2419,8 @@ def parse_id_range(id_range_str):
 
     start = int(parts[0].replace(",", "")) if parts[0] else None
     end = int(parts[1].replace(",", "")) if parts[1] else None
+    if start is None and end is None:
+        raise ValueError("Invalid ID range format")
 
     return (start, end)
 
