@@ -31,6 +31,8 @@ again. That holds only while the ops doing the covering stay in the report: a
 filter that drops them must rerun the sweep without them.
 """
 
+from typing import Dict, NamedTuple, Tuple
+
 import numpy as np
 
 from tt_perf_report.csv_values import finite_float_column
@@ -42,6 +44,7 @@ KERNEL_DURATION_COLUMN = "DEVICE KERNEL DURATION [ns]"
 
 OVERLAP_BUSY_COLUMN = "OVERLAP BUSY [ns]"
 OVERLAP_COLUMN = "OVERLAP [ns]"
+OVERLAP_IDLE_COLUMN = "OVERLAP IDLE [ns]"
 
 # Below one cycle at any supported clock. Intervals are rebuilt from a cycle
 # count and a separately rounded nanosecond duration, so back-to-back ops can
@@ -77,14 +80,27 @@ def split_duration(duration_ns, overlap_ns):
     return overlap_ns, duration_ns - overlap_ns
 
 
+class OverlapMeasurement(NamedTuple):
+    """Per-row results of measure_overlap, in ns, as float arrays aligned with df."""
+
+    busy: np.ndarray
+    overlap: np.ndarray
+    # Time the device sat idle before this op started: the part of the gap since
+    # the latest earlier interval ended that no op on the device covered. NaN
+    # for the device's first measured op, which has nothing to measure from.
+    idle: np.ndarray
+
+
 def measure_overlap(df, valid_duration):
     """
-    Return (busy, overlap) in ns per row of df, as float arrays aligned with it.
+    Return busy, overlap and idle in ns per row of df, as an OverlapMeasurement.
 
     valid_duration is a boolean sequence aligned with df's rows, false where the
     row's kernel duration is not to be trusted; the caller owns that rule. Rows
     that are not device ops, have an invalid duration, or lack usable cycle
-    data get NaN in both, as does every row when an input column is absent.
+    data get NaN throughout, as does every row when an input column is absent.
+    A row whose FW end cycle does not follow its start cycle is not usable:
+    the counters contradict each other, so neither can place the op in time.
     For the rest, busy is the part of the op's interval no earlier interval on
     the same device covered, and overlap is the remainder of its kernel
     duration. Cells are read through finite_float_column, so a duration counts
@@ -96,8 +112,9 @@ def measure_overlap(df, valid_duration):
 
     busy = np.full(len(df), np.nan)
     overlap = np.full(len(df), np.nan)
+    idle = np.full(len(df), np.nan)
     if not all(column in df.columns for column in OVERLAP_INPUT_COLUMNS):
-        return busy, overlap
+        return OverlapMeasurement(busy, overlap, idle)
 
     device_ids = finite_float_column(df, "DEVICE ID")
     fw_start = finite_float_column(df, FW_START_CYCLE_COLUMN)
@@ -111,6 +128,7 @@ def measure_overlap(df, valid_duration):
             & ~np.isnan(device_ids)
             & ~np.isnan(fw_start)
             & ~np.isnan(fw_end)
+            & (fw_end > fw_start)
             & ~np.isnan(kernel_ns)
             & (kernel_ns >= 0)
         )
@@ -135,22 +153,61 @@ def measure_overlap(df, valid_duration):
                 if row_overlap < MIN_OVERLAP_NS:
                     row_overlap, row_busy = 0.0, row_kernel_ns
                 overlap[positions[index]], busy[positions[index]] = row_overlap, row_busy
+                if np.isfinite(covered_until):
+                    row_idle = max(0.0, starts[index] - covered_until)
+                    idle[positions[index]] = row_idle if row_idle >= MIN_OVERLAP_NS else 0.0
                 covered_until = max(covered_until, ends[index])
 
-    return busy, overlap
+    return OverlapMeasurement(busy, overlap, idle)
+
+
+def device_timelines(df, valid_duration, measurement) -> Dict[float, Tuple[float, float]]:
+    """
+    Return {device id: (busy ns, idle ns)} over the device ops in df.
+
+    Busy is the device's own wall-clock busy time: measured where the sweep
+    could place the op, and the op's full duration where it could not, which is
+    the sequential assumption the report makes anyway. Idle is the uncovered
+    time between its measured ops. Each device is one timeline, so these are
+    the figures to compare across devices - unlike sums over rows that
+    merge_device_rows took from different devices.
+    """
+    device_ids = finite_float_column(df, "DEVICE ID")
+    kernel_ns = finite_float_column(df, KERNEL_DURATION_COLUMN)
+    with np.errstate(invalid="ignore"):
+        timed = (
+            (df["OP TYPE"].to_numpy() == "tt_dnn_device")
+            & np.asarray(valid_duration, dtype=bool)
+            & ~np.isnan(device_ids)
+            & ~np.isnan(kernel_ns)
+            & (kernel_ns >= 0)
+        )
+    busy = np.where(np.isnan(measurement.busy), kernel_ns, measurement.busy)
+    idle = np.nan_to_num(measurement.idle)
+    return {
+        device_id: (float(busy[timed & (device_ids == device_id)].sum()),
+                    float(idle[timed & (device_ids == device_id)].sum()))
+        for device_id in np.unique(device_ids[timed])
+    }
 
 
 def annotate_overlap(df, valid_duration):
     """
-    Add OVERLAP BUSY [ns] and OVERLAP [ns] to df in place, from measure_overlap.
+    Add the OVERLAP BUSY, OVERLAP and OVERLAP IDLE columns to df in place, from
+    measure_overlap, and return the measurement.
 
     In place because df is the whole pre-merge frame: on pandas without
     copy-on-write, assign() deep-copies every column to add these two. insert()
     neither copies nor trips the chained-assignment warning on a frame that a
     signpost filter sliced.
     """
-    busy, overlap = measure_overlap(df, valid_duration)
-    for column, values in ((OVERLAP_BUSY_COLUMN, busy), (OVERLAP_COLUMN, overlap)):
+    measurement = measure_overlap(df, valid_duration)
+    for column, values in (
+        (OVERLAP_BUSY_COLUMN, measurement.busy),
+        (OVERLAP_COLUMN, measurement.overlap),
+        (OVERLAP_IDLE_COLUMN, measurement.idle),
+    ):
         if column in df.columns:
             del df[column]
         df.insert(len(df.columns), column, values)
+    return measurement

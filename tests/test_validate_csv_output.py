@@ -1895,7 +1895,7 @@ def test_stacked_report_stays_summed_and_says_so_when_ops_overlap(mocker):
     stacked = stdout[stdout.index("📊 Stacked report 📊"):]
     assert re.search(r"300\.00 μs", stacked)
     assert ("Stacked report: Device Time Sum and Total % add up summed op time (300 μs), "
-            "which counts the 100 μs of overlap once per op; wall-clock busy time was 200 μs.") in stdout
+            "in which ops overlapped for 100 μs; wall-clock busy time was 200 μs.") in stdout
 
 
 @pytest.mark.parametrize("ops", ["overlapped", "sequential"])
@@ -1949,14 +1949,14 @@ def test_overlap_is_shown_in_the_terminal_table_and_footer(mocker):
     assert lines[total_index].split()[0] == "100%*"
     assert re.search(r"signposts\s+200 μs\s+0 μs\s+100 μs", lines[total_index])
     assert lines[total_index + 1] == (
-        "* Total % adds up to 100% of summed op time (300 μs), not elapsed time: 100 μs of it overlapped. "
-        "The Device Time total is wall-clock busy time: 200 μs."
+        "* Total % adds up to 100% of summed op time (300 μs), not elapsed time; ops overlapped for 100 μs "
+        "in all. The Device Time total is wall-clock busy time: 200 μs."
     )
 
 
 def test_busy_time_of_merged_devices_follows_the_slowest_device(mocker):
-    # Each merged op takes one device's timing, so the total is not one
-    # device's wall clock either.
+    # Devices run in parallel, so the merged total is the slowest device's own
+    # busy time, not one device's wall clock and not a sum over devices.
     csv_content = _rows_to_csv(
         _concurrent_subdevice_rows(device_id="0")
         + _concurrent_subdevice_rows(device_id="1", clock_offset_us=3_000_000)
@@ -1964,7 +1964,25 @@ def test_busy_time_of_merged_devices_follows_the_slowest_device(mocker):
     _, _, stdout = _run_report(mocker, csv_content, csv_output_file=None)
 
     assert "wall-clock" not in stdout
-    assert "The Device Time total is busy time (slowest device per op): 200 μs." in _strip_ansi(stdout)
+    assert "The Device Time total is busy time of the slowest device: 200 μs." in _strip_ansi(stdout)
+
+
+def test_merged_busy_time_does_not_mix_rows_from_different_devices(mocker):
+    # A and B start together on both devices, with durations (100, 90) μs on
+    # device 0 and (90, 100) μs on device 1: each device was busy for 100 μs.
+    # Merging keeps A from device 0 and B from device 1; adding those rows'
+    # busy times would give 110 μs.
+    rows = []
+    for device_id, (a_us, b_us), offset_us in (("0", (100, 90), 0), ("1", (90, 100), 3_000_000)):
+        rows += [
+            _subdevice_row("MatmulDeviceOperation", "0", "54", "54", 1000, device_id=device_id,
+                           **_fw_timing(1000 + offset_us, duration_us=a_us)),
+            _subdevice_row("BinaryNgDeviceOperation", "1", "54", "54", 2000, device_id=device_id,
+                           **_fw_timing(1000 + offset_us, duration_us=b_us)),
+        ]
+    _, _, stdout = _run_report(mocker, _rows_to_csv(rows), csv_output_file=None)
+
+    assert "The Device Time total is busy time of the slowest device: 100 μs." in _strip_ansi(stdout)
 
 
 def test_busy_time_of_separate_devices_is_not_called_wall_clock(mocker):
@@ -1992,13 +2010,70 @@ def test_total_row_claims_100_percent_without_overlap(mocker):
     assert "200 μs" in total_line
 
 
-def test_tracing_savings_are_a_share_of_busy_time(mocker):
-    # Gaps of 20 μs on the second and third ops save (20 - 6) * 2 = 28 μs, out of
-    # 200 μs busy + 40 μs gap = 11.7%. Against summed time it would read 8.2%.
-    csv_content = _rows_to_csv(_concurrent_subdevice_rows(gap_ns="20000"))
-    _, _, stdout = _run_report(mocker, csv_content, csv_output_file=None)
+def test_tracing_savings_are_a_share_of_elapsed_time(mocker):
+    # Two concurrent 100 μs ops, then a third after 20 μs of idle: it saves
+    # 20 - 6 = 14 μs out of 200 μs busy + 20 μs idle = 6.4%. Against summed
+    # time and gaps it would read 4.5%.
+    rows = [
+        _subdevice_row("MatmulDeviceOperation", "0", "54", "54", 1000, **_fw_timing(1000)),
+        _subdevice_row("MatmulDeviceOperation", "1", "54", "54", 2000,
+                       **{**_fw_timing(1000), "OP TO OP LATENCY [ns]": "-100000"}),
+        _subdevice_row("MatmulDeviceOperation", "", "108", "108", 3000,
+                       **{**_fw_timing(1120), "OP TO OP LATENCY [ns]": "20000"}),
+    ]
+    _, _, stdout = _run_report(mocker, _rows_to_csv(rows), csv_output_file=None)
 
-    assert "could save 28 μs (11.7% of overall time)" in stdout
+    assert "could save 14 μs (6.4% of overall time)" in stdout
+
+
+def test_a_gap_covered_by_another_subdevice_is_not_tracing_savings(mocker):
+    # A runs 0-1000 μs on one subdevice; B and C run 100-200 and 300-400 μs on
+    # the other. C's 100 μs gap after B lies inside A, so removing it would not
+    # shorten the run at all.
+    rows = [
+        _subdevice_row("MatmulDeviceOperation", "0", "54", "54", 1000, **_fw_timing(1000, duration_us=1000)),
+        _subdevice_row("MatmulDeviceOperation", "1", "54", "54", 2000,
+                       **{**_fw_timing(1100), "OP TO OP LATENCY [ns]": "-900000"}),
+        _subdevice_row("MatmulDeviceOperation", "1", "54", "54", 3000,
+                       **{**_fw_timing(1300), "OP TO OP LATENCY [ns]": "100000"}),
+    ]
+    _, _, stdout = _run_report(mocker, _rows_to_csv(rows), csv_output_file=None)
+
+    assert "Running with tracing could save" not in stdout
+
+
+def test_partial_cycle_coverage_is_reported_rather_than_presented_as_measured(mocker):
+    # The second op has no FW end cycle, so only two of the three ops are
+    # measured and its overlap with the first cannot be seen.
+    rows = _concurrent_subdevice_rows()
+    rows[1]["DEVICE FW END CYCLE"] = ""
+    _, _, stdout = _run_report(mocker, _rows_to_csv(rows))
+
+    assert "No overlap detected between subdevices." not in stdout
+    assert ("No overlap detected among the ops with usable cycle data. Overlap was measured for 2 of 3 ops; "
+            "the other 1 have no usable cycle data and are assumed to run sequentially.") in stdout
+
+
+@pytest.mark.parametrize("partitioned", [True, False])
+def test_long_subdevice_overlap_is_not_mistaken_for_corrupt_timing(mocker, partitioned):
+    # Two 4 ms kernels 1 ms apart: the second's -3 ms gap exceeds half its
+    # duration, which on an unpartitioned capture marks corrupt timing. On
+    # disjoint subdevices it is overlap - the op started after its predecessor
+    # did - and must be measured, not blanked.
+    sub_devices = ("0", "1") if partitioned else ("", "")
+    rows = [
+        _subdevice_row("MatmulDeviceOperation", sub_devices[0], "54" if partitioned else "108", "54", 1000,
+                       **_fw_timing(1000, duration_us=4000)),
+        _subdevice_row("MatmulDeviceOperation", sub_devices[1], "54" if partitioned else "108", "54", 2000,
+                       **{**_fw_timing(2000, duration_us=4000), "OP TO OP LATENCY [ns]": "-3000000"}),
+    ]
+    _, report_rows, _ = _run_report(mocker, _rows_to_csv(rows))
+
+    if partitioned:
+        assert [row["Device Time"] for row in report_rows] == ["4000.0", "4000.0"]
+        assert [row["Overlap"] for row in report_rows] == ["", "3000.0"]
+    else:
+        assert report_rows[1]["Device Time"] == ""
 
 
 def test_sequential_subdevice_ops_report_no_overlap(mocker):

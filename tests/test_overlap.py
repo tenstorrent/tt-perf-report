@@ -34,7 +34,7 @@ def _op(start_us, duration_us, device_id=0, op_type="tt_dnn_device", fw_overhead
 
 def _annotate(ops, valid=None):
     df = pd.DataFrame(ops)
-    busy, overlap = measure_overlap(df, valid if valid is not None else [True] * len(df))
+    busy, overlap, _ = measure_overlap(df, valid if valid is not None else [True] * len(df))
     return list(overlap / 1000), list(busy / 1000)
 
 
@@ -94,7 +94,7 @@ def test_sub_nanosecond_touches_are_rounding_not_overlap(overlap_ns, expected_ns
         }
     df = pd.DataFrame([op(10_000), op(15_000 - overlap_ns)])
 
-    _, overlap = measure_overlap(df, [True, True])
+    _, overlap, _ = measure_overlap(df, [True, True])
 
     assert list(overlap) == pytest.approx([0, expected_ns])
 
@@ -135,7 +135,7 @@ def test_durations_are_read_as_the_rest_of_the_report_reads_them():
         op["DEVICE KERNEL DURATION [ns]"] = "100_000"
     df = pd.DataFrame(ops)
 
-    _, overlap = measure_overlap(df, valid_device_duration_mask(df))
+    _, overlap, _ = measure_overlap(df, valid_device_duration_mask(df))
 
     assert list(overlap) == [0, 100_000]
 
@@ -147,7 +147,7 @@ def test_malformed_cycle_cells_leave_overlap_bounded_or_unknown(cell):
         ops[1][column] = cell
         df = pd.DataFrame(ops).astype({column: str})
 
-        busy, overlap = measure_overlap(df, [True, True])
+        busy, overlap, _ = measure_overlap(df, [True, True])
 
         for row_overlap, row_busy in zip(overlap, busy):
             assert np.isnan(row_overlap) or 0 <= row_overlap <= 100_000
@@ -170,9 +170,31 @@ def test_overflowing_cycle_counts_stay_bounded_without_warnings():
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        busy, overlap = measure_overlap(df, [True, True])
+        busy, overlap, _ = measure_overlap(df, [True, True])
 
     assert all(np.isnan(value) or 0 <= value <= 5 for value in [*busy, *overlap])
+
+
+def test_idle_time_is_the_uncovered_gap_before_an_op():
+    # The third op starts 50 us after everything before it has finished; the
+    # second's gap is covered by the first. The first op has nothing before it.
+    df = pd.DataFrame([_op(1000, 300), _op(1100, 100), _op(1350, 50)])
+
+    idle = measure_overlap(df, [True, True, True]).idle
+
+    assert np.isnan(idle[0])
+    assert list(idle[1:] / 1000) == pytest.approx([0, 50])
+
+
+def test_a_reversed_fw_span_is_not_placed_in_time():
+    # The third row's FW end precedes its start, so its counters contradict
+    # each other; though its end lines up with the first op, it gets no overlap.
+    ops = [_op(1000, 100), _op(1200, 100), _op(1000, 100)]
+    ops[2]["DEVICE FW START CYCLE"] = ops[2]["DEVICE FW END CYCLE"] + 1
+    busy, overlap, _ = measure_overlap(pd.DataFrame(ops), [True, True, True])
+
+    assert np.isnan(overlap[2]) and np.isnan(busy[2])
+    assert list(overlap[:2]) == [0, 0]
 
 
 def test_valid_duration_must_match_the_rows():
@@ -202,7 +224,7 @@ def test_captured_sequential_runs_report_no_overlap(path):
     # Pins the interval anchoring. Raw FW spans overlap on most of these
     # captures; kernel intervals ending at FW end must not.
     df = pd.read_csv(path)
-    _, overlap = measure_overlap(df, valid_device_duration_mask(df))
+    _, overlap, _ = measure_overlap(df, valid_device_duration_mask(df))
 
     assert not np.isnan(overlap).all()
     assert (np.nan_to_num(overlap) == 0).all()
