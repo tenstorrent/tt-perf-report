@@ -36,7 +36,9 @@ from tt_perf_report.csv_values import (
 from tt_perf_report.overlap import (
     OVERLAP_BUSY_COLUMN,
     OVERLAP_COLUMN,
+    OVERLAP_INPUT_COLUMNS,
     annotate_overlap,
+    measure_overlap,
 )
 from tt_perf_report.sub_device import (
     count_sub_devices,
@@ -2578,8 +2580,12 @@ def reattribute_overlap(rows, pre_merge_df, valid_duration, merged_rows_by_id):
         for original_row in merged_rows_by_id.get(op_data["ID"].raw_value, (op_data["ID"].raw_value,))
     }
     kept = np.asarray(valid_duration) & pre_merge_df["ORIGINAL_ROW"].isin(kept_original_rows).to_numpy()
-    annotated = annotate_overlap(pre_merge_df, kept)
-    overlap_by_row = dict(zip(annotated["ORIGINAL_ROW"], annotated[OVERLAP_COLUMN]))
+    # Only the kept rows and the columns the sweep reads: rows outside the
+    # range take no part in it, and a narrow range keeps few of a large frame.
+    columns = [column for column in (*OVERLAP_INPUT_COLUMNS, "ORIGINAL_ROW") if column in pre_merge_df.columns]
+    kept_rows = pre_merge_df.loc[kept, columns]
+    _, overlap = measure_overlap(kept_rows, np.ones(len(kept_rows), dtype=bool))
+    overlap_by_row = dict(zip(kept_rows["ORIGINAL_ROW"], overlap))
     for op_data in rows:
         device_time = op_data["Device Time"].raw_value
         overlap_ns = finite_float(overlap_by_row.get(op_data["ID"].raw_value))
@@ -2800,7 +2806,7 @@ def generate_perf_report(
     # Before merging: cycle counters are per device, and a merged row keeps only
     # one device's counters, so consecutive merged rows cannot be compared.
     valid_duration = valid_device_duration_mask(df)
-    df = annotate_overlap(df, valid_duration)
+    annotate_overlap(df, valid_duration)
     # Kept only when an id range may drop ops that overlap annotation relied on.
     pre_merge_df = df if id_range else None
     unique_devices = df["DEVICE ID"].nunique()
@@ -3036,6 +3042,16 @@ def generate_perf_report(
         
         if not csv_output_file:
             print_stacked_report(stacked_report, no_merge_devices)
+        if has_overlap:
+            # The column names are a CSV contract, so the caveat goes alongside
+            # the report rather than into its headers.
+            summed = summed_op_time(rows)
+            print(colored(
+                f"Stacked report: Device Time Sum and Total % add up summed op time ({summed:,.0f} μs), "
+                f"which counts the {overlapped_time(rows):,.0f} μs of overlap once per op; the devices were "
+                f"busy for {busy_time(rows):,.0f} μs.",
+                "cyan"
+            ))
         if stacked_report_file or csv_output_file:
             base = stacked_report_file or f"{os.path.splitext(csv_output_file)[0]}_stacked"
             print(colored(f"Writing CSV stacked report to {base}.csv", "cyan"))

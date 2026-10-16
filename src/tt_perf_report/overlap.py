@@ -32,7 +32,8 @@ filter that drops them must rerun the sweep without them.
 """
 
 import numpy as np
-import pandas as pd
+
+from tt_perf_report.csv_values import finite_float_column
 
 FW_START_CYCLE_COLUMN = "DEVICE FW START CYCLE"
 FW_END_CYCLE_COLUMN = "DEVICE FW END CYCLE"
@@ -47,7 +48,8 @@ OVERLAP_COLUMN = "OVERLAP [ns]"
 # appear to touch by a fraction of a nanosecond; that is rounding, not overlap.
 MIN_OVERLAP_NS = 1.0
 
-_REQUIRED_COLUMNS = (
+# Every column measure_overlap reads; without all of them nothing is measured.
+OVERLAP_INPUT_COLUMNS = (
     "DEVICE ID",
     "OP TYPE",
     FW_START_CYCLE_COLUMN,
@@ -57,44 +59,46 @@ _REQUIRED_COLUMNS = (
 )
 
 
-def _numeric(series):
-    values = pd.to_numeric(series, errors="coerce").to_numpy(dtype="float64")
-    values[~np.isfinite(values)] = np.nan
-    return values
-
-
 def _cycles_per_ns(fw_start, fw_end, fw_duration_ns):
     usable = (fw_end > fw_start) & (fw_duration_ns > 0)
     if not usable.any():
         return None
-    ratio = float(np.median((fw_end[usable] - fw_start[usable]) / fw_duration_ns[usable]))
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        ratio = float(np.median((fw_end[usable] - fw_start[usable]) / fw_duration_ns[usable]))
     return ratio if np.isfinite(ratio) and ratio > 0 else None
 
 
-def annotate_overlap(df, valid_duration):
+def measure_overlap(df, valid_duration):
     """
-    Return df with OVERLAP BUSY [ns] and OVERLAP [ns] per row; df is not modified.
+    Return (busy, overlap) in ns per row of df, as float arrays aligned with it.
 
     valid_duration is a boolean sequence aligned with df's rows, false where the
     row's kernel duration is not to be trusted; the caller owns that rule. Rows
     that are not device ops, have an invalid duration, or lack usable cycle
-    data get NA in both columns, as does every row when a required column is
-    absent. For the rest, busy is the part of the op's interval no earlier
-    interval on the same device covered, and overlap is the remainder of its
-    kernel duration.
+    data get NaN in both, as does every row when an input column is absent.
+    For the rest, busy is the part of the op's interval no earlier interval on
+    the same device covered, and overlap is the remainder of its kernel
+    duration. Cells are read through finite_float_column, so a duration counts
+    as a number here exactly when it does everywhere else in the report.
     """
+    valid_duration = np.asarray(valid_duration, dtype=bool)
+    if valid_duration.shape != (len(df),):
+        raise ValueError(f"valid_duration has {valid_duration.size} entries for {len(df)} rows")
+
     busy = np.full(len(df), np.nan)
     overlap = np.full(len(df), np.nan)
+    if not all(column in df.columns for column in OVERLAP_INPUT_COLUMNS):
+        return busy, overlap
 
-    if all(column in df.columns for column in _REQUIRED_COLUMNS):
-        device_ids = _numeric(df["DEVICE ID"])
-        fw_start = _numeric(df[FW_START_CYCLE_COLUMN])
-        fw_end = _numeric(df[FW_END_CYCLE_COLUMN])
-        fw_duration_ns = _numeric(df[FW_DURATION_COLUMN])
-        kernel_ns = _numeric(df[KERNEL_DURATION_COLUMN])
+    device_ids = finite_float_column(df, "DEVICE ID")
+    fw_start = finite_float_column(df, FW_START_CYCLE_COLUMN)
+    fw_end = finite_float_column(df, FW_END_CYCLE_COLUMN)
+    fw_duration_ns = finite_float_column(df, FW_DURATION_COLUMN)
+    kernel_ns = finite_float_column(df, KERNEL_DURATION_COLUMN)
+    with np.errstate(invalid="ignore"):
         usable = (
             (df["OP TYPE"].to_numpy() == "tt_dnn_device")
-            & np.asarray(valid_duration, dtype=bool)
+            & valid_duration
             & ~np.isnan(device_ids)
             & ~np.isnan(fw_start)
             & ~np.isnan(fw_end)
@@ -102,25 +106,39 @@ def annotate_overlap(df, valid_duration):
             & (kernel_ns >= 0)
         )
 
-        for device_id in np.unique(device_ids[usable]):
-            on_device = usable & (device_ids == device_id)
-            cycles_per_ns = _cycles_per_ns(fw_start[on_device], fw_end[on_device], fw_duration_ns[on_device])
-            if cycles_per_ns is None:
-                continue
+    for device_id in np.unique(device_ids[usable]):
+        on_device = usable & (device_ids == device_id)
+        cycles_per_ns = _cycles_per_ns(fw_start[on_device], fw_end[on_device], fw_duration_ns[on_device])
+        if cycles_per_ns is None:
+            continue
 
-            positions = np.flatnonzero(on_device)
-            ends = fw_end[positions] / cycles_per_ns
-            starts = ends - kernel_ns[positions]
-            covered_until = -np.inf
-            for index in np.argsort(starts, kind="stable"):
-                row_kernel_ns = kernel_ns[positions[index]]
-                row_overlap = min(row_kernel_ns, max(0.0, covered_until - starts[index]))
-                if row_overlap < MIN_OVERLAP_NS:
-                    row_overlap = 0.0
-                busy[positions[index]] = row_kernel_ns - row_overlap
-                overlap[positions[index]] = row_overlap
-                covered_until = max(covered_until, ends[index])
+        positions = np.flatnonzero(on_device)
+        ends = fw_end[positions] / cycles_per_ns
+        starts = ends - kernel_ns[positions]
+        covered_until = -np.inf
+        for index in np.argsort(starts, kind="stable"):
+            row_kernel_ns = kernel_ns[positions[index]]
+            row_overlap = min(row_kernel_ns, max(0.0, covered_until - starts[index]))
+            if row_overlap < MIN_OVERLAP_NS:
+                row_overlap = 0.0
+            busy[positions[index]] = row_kernel_ns - row_overlap
+            overlap[positions[index]] = row_overlap
+            covered_until = max(covered_until, ends[index])
 
-    # assign rather than copy-and-set: the pre-merge frame is wide, and only
-    # these two columns are new.
-    return df.assign(**{OVERLAP_BUSY_COLUMN: busy, OVERLAP_COLUMN: overlap})
+    return busy, overlap
+
+
+def annotate_overlap(df, valid_duration):
+    """
+    Add OVERLAP BUSY [ns] and OVERLAP [ns] to df in place, from measure_overlap.
+
+    In place because df is the whole pre-merge frame: on pandas without
+    copy-on-write, assign() deep-copies every column to add these two. insert()
+    neither copies nor trips the chained-assignment warning on a frame that a
+    signpost filter sliced.
+    """
+    busy, overlap = measure_overlap(df, valid_duration)
+    for column, values in ((OVERLAP_BUSY_COLUMN, busy), (OVERLAP_COLUMN, overlap)):
+        if column in df.columns:
+            del df[column]
+        df.insert(len(df.columns), column, values)

@@ -4,6 +4,7 @@
 
 import glob
 import os
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -13,6 +14,7 @@ from tt_perf_report.overlap import (
     OVERLAP_BUSY_COLUMN,
     OVERLAP_COLUMN,
     annotate_overlap,
+    measure_overlap,
 )
 from tt_perf_report.perf_report import is_invalid_device_duration, valid_device_duration_mask
 
@@ -31,8 +33,8 @@ def _op(start_us, duration_us, device_id=0, op_type="tt_dnn_device", fw_overhead
 
 def _annotate(ops, valid=None):
     df = pd.DataFrame(ops)
-    out = annotate_overlap(df, valid if valid is not None else [True] * len(df))
-    return list(out[OVERLAP_COLUMN] / 1000), list(out[OVERLAP_BUSY_COLUMN] / 1000)
+    busy, overlap = measure_overlap(df, valid if valid is not None else [True] * len(df))
+    return list(overlap / 1000), list(busy / 1000)
 
 
 def test_two_concurrent_ops_count_once():
@@ -99,15 +101,64 @@ def test_invalid_durations_and_non_device_rows_are_excluded():
     assert np.isnan(overlap[2])
 
 
+def test_durations_are_read_as_the_rest_of_the_report_reads_them():
+    # finite_float accepts "1_000", so the validity rule calls it a valid
+    # duration; the sweep must measure it rather than silently skip it.
+    ops = [_op(1000, 100), _op(1000, 100)]
+    for op in ops:
+        op["DEVICE KERNEL DURATION [ns]"] = "100_000"
+    df = pd.DataFrame(ops)
+
+    _, overlap = measure_overlap(df, valid_device_duration_mask(df))
+
+    assert list(overlap) == [0, 100_000]
+
+
+@pytest.mark.parametrize("cell", ["x", "inf", "1e400", "-1", "0", "1e300"])
+def test_malformed_cycle_cells_leave_overlap_bounded_or_unknown(cell):
+    for column in ("DEVICE FW START CYCLE", "DEVICE FW END CYCLE", "DEVICE FW DURATION [ns]"):
+        ops = [_op(1000, 100), _op(1000, 100)]
+        ops[1][column] = cell
+        df = pd.DataFrame(ops).astype({column: str})
+
+        busy, overlap = measure_overlap(df, [True, True])
+
+        for row_overlap, row_busy in zip(overlap, busy):
+            assert np.isnan(row_overlap) or 0 <= row_overlap <= 100_000
+            assert np.isnan(row_busy) or 0 <= row_busy <= 100_000
+
+
+def test_valid_duration_must_match_the_rows():
+    df = pd.DataFrame([_op(1000, 100), _op(1000, 100)])
+
+    with pytest.raises(ValueError):
+        measure_overlap(df, [True])
+
+
+def test_annotate_overlap_adds_columns_in_place_on_a_filtered_frame():
+    # The report annotates whatever filter_by_signpost returned, which may be a
+    # boolean-indexed slice; adding columns there must neither copy the frame
+    # nor raise pandas' chained-assignment warning.
+    frame = pd.DataFrame([_op(1000, 100), _op(1000, 100, op_type="signpost"), _op(1000, 100)])
+    window = frame[frame["OP TYPE"] != "signpost"]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        annotate_overlap(window, [True, True])
+
+    assert list(window[OVERLAP_COLUMN]) == [0, 100_000]
+    assert list(window[OVERLAP_BUSY_COLUMN]) == [100_000, 0]
+
+
 @pytest.mark.parametrize("path", sorted(glob.glob(os.path.join(DATA_DIR, "*.csv"))), ids=os.path.basename)
 def test_captured_sequential_runs_report_no_overlap(path):
     # Pins the interval anchoring. Raw FW spans overlap on most of these
     # captures; kernel intervals ending at FW end must not.
     df = pd.read_csv(path)
-    out = annotate_overlap(df, valid_device_duration_mask(df))
+    _, overlap = measure_overlap(df, valid_device_duration_mask(df))
 
-    assert out[OVERLAP_COLUMN].notna().any()
-    assert (out[OVERLAP_COLUMN].fillna(0) == 0).all()
+    assert not np.isnan(overlap).all()
+    assert (np.nan_to_num(overlap) == 0).all()
 
 
 @pytest.mark.parametrize("path", sorted(glob.glob(os.path.join(DATA_DIR, "*.csv"))), ids=os.path.basename)
