@@ -1517,7 +1517,8 @@ def summed_op_time(rows):
 
 def busy_time(rows):
     """
-    Wall-clock time the devices were busy running these ops, in μs.
+    Time the devices were busy running these ops, in μs: wall-clock on one
+    timeline, summed over devices kept separate (see describe_busy_time).
 
     Equal to summed_op_time unless ops overlapped. A row with a device time but
     no measured busy time - no cycle data, or overlap reporting switched off -
@@ -1531,6 +1532,20 @@ def busy_time(rows):
         busy = op_data.get("Busy Time", Cell(None)).raw_value
         total += busy if busy is not None else device_time
     return total
+
+
+def describe_busy_time(device_count):
+    """
+    Name busy_time() for the reader.
+
+    On one timeline - a single device, or devices merged into one row per op -
+    it is wall-clock time. Devices kept separate run in parallel on clocks that
+    are not synchronised, so their busy times can only be summed, which is not
+    elapsed time either.
+    """
+    if device_count > 1:
+        return f"busy time summed over {device_count} devices, which ran in parallel"
+    return "wall-clock busy time"
 
 
 def overlapped_time(rows):
@@ -1753,7 +1768,7 @@ def color_row(op_data, percentage, min_percentage):
     return op_data
 
 
-def print_performance_table(rows, headers, col_widths, device_ops, host_ops, signpost_count):
+def print_performance_table(rows, headers, col_widths, device_ops, host_ops, signpost_count, device_count=1):
     print("\n🚀 Performance Report 🚀\n========================\n")
 
     print("  ".join(pad_string(header, col_widths[i], align="left") for i, header in enumerate(headers)))
@@ -1765,6 +1780,7 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
     print("-" * (sum(col_widths) + (len(headers) - 1) * 2))
 
     total_device_time = summed_op_time(rows)
+    total_overlapped_time = overlapped_time(rows)
     total_visible_gap = gap_time(rows)
     overall_dram_speed, overall_dram_percentage = calculate_overall_dram_roofline(rows)
     total_row = {
@@ -1777,6 +1793,13 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
         "DRAM": Cell(overall_dram_speed, unit="GB/s", decimals=0),
         "DRAM %": Cell(overall_dram_percentage, unit="%", decimals=1),
     }
+    if total_overlapped_time > 0:
+        # Overlapped op time counts once in busy time, so the total row gives
+        # that. The op shares still add up to 100% - of summed op time, which is
+        # not elapsed time here - so the total is marked and footnoted.
+        total_row["Total %"] = Cell("100%*")
+        total_row["Device Time"] = Cell(total_device_time - total_overlapped_time, unit="μs", decimals=0)
+        total_row["Overlap"] = Cell(total_overlapped_time, unit="μs", decimals=0)
     for header in headers:
         if header not in total_row:
             total_row[header] = Cell("")
@@ -1784,11 +1807,11 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
         {k: Cell(v.raw_value, v.unit, v.decimals, color=muted_cell_color) for k, v in total_row.items()}, col_widths, headers
     )
 
-    total_overlapped_time = overlapped_time(rows)
     if total_overlapped_time > 0:
         print(colored(
-            f"Busy time: {total_device_time - total_overlapped_time:,.0f} μs (summed op time "
-            f"{total_device_time:,.0f} μs, overlap {total_overlapped_time:,.0f} μs).",
+            f"* Total % adds up to 100% of summed op time ({total_device_time:,.0f} μs), not elapsed time: "
+            f"{total_overlapped_time:,.0f} μs of it overlapped. The Device Time total is "
+            f"{describe_busy_time(device_count)}: {total_device_time - total_overlapped_time:,.0f} μs.",
             muted_cell_color,
         ))
 
@@ -2811,7 +2834,10 @@ def generate_perf_report(
     pre_merge_df = df if id_range else None
     unique_devices = df["DEVICE ID"].nunique()
 
+    # Devices whose rows stay separate each keep their own timeline in the totals.
+    device_count = 1
     if no_merge_devices and "DEVICE ID" in df.columns and unique_devices > 1:
+        device_count = unique_devices
         print(colored(f"Detected data from {unique_devices} devices. Keeping separate device data...", "cyan"))
     elif unique_devices == 0:
         print(colored("No device operations found in the CSV data.", "yellow"))
@@ -2928,8 +2954,8 @@ def generate_perf_report(
         print(colored(
             f"Overlap: {total_overlapped_time:,.0f} μs of op time ran concurrently with other ops on the same "
             f"device ({total_overlapped_time / summed_op_time(rows) * 100:.1f}% of summed op time). The overall "
-            "DRAM roofline and the tracing-savings estimate use wall-clock busy time; Total % and the "
-            "summary report remain shares of summed op time.",
+            f"DRAM roofline and the tracing-savings estimate use {describe_busy_time(device_count)}; "
+            "Total % and the summary report remain shares of summed op time.",
             "cyan"
         ))
     elif has_overlap_data:
@@ -3028,7 +3054,7 @@ def generate_perf_report(
         dev_idx = visible_headers.index("Device")
         col_widths[dev_idx] = max(col_widths[dev_idx], 7)
 
-        print_performance_table(rows, visible_headers, col_widths, device_ops, host_ops, signpost_count)
+        print_performance_table(rows, visible_headers, col_widths, device_ops, host_ops, signpost_count, device_count)
         if not no_advice:
             print_advice_section(rows, visible_headers, col_widths)
 
@@ -3048,8 +3074,8 @@ def generate_perf_report(
             summed = summed_op_time(rows)
             print(colored(
                 f"Stacked report: Device Time Sum and Total % add up summed op time ({summed:,.0f} μs), "
-                f"which counts the {overlapped_time(rows):,.0f} μs of overlap once per op; the devices were "
-                f"busy for {busy_time(rows):,.0f} μs.",
+                f"which counts the {overlapped_time(rows):,.0f} μs of overlap once per op; "
+                f"{describe_busy_time(device_count)} was {busy_time(rows):,.0f} μs.",
                 "cyan"
             ))
         if stacked_report_file or csv_output_file:

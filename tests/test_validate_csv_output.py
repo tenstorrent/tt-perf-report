@@ -1859,6 +1859,10 @@ def test_no_overlap_messages_when_the_run_is_not_partitioned(test_csv_content, m
     assert "No overlap detected" not in stdout
 
 
+def _strip_ansi(text):
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
 def _concurrent_subdevice_rows(device_id="0", clock_offset_us=0, gap_ns="0"):
     # The issue's example: two 100 μs ops on disjoint subdevices starting
     # together, then a full-grid op once both have finished.
@@ -1891,7 +1895,7 @@ def test_stacked_report_stays_summed_and_says_so_when_ops_overlap(mocker):
     stacked = stdout[stdout.index("📊 Stacked report 📊"):]
     assert re.search(r"300\.00 μs", stacked)
     assert ("Stacked report: Device Time Sum and Total % add up summed op time (300 μs), "
-            "which counts the 100 μs of overlap once per op; the devices were busy for 200 μs.") in stdout
+            "which counts the 100 μs of overlap once per op; wall-clock busy time was 200 μs.") in stdout
 
 
 def test_stacked_report_carries_no_overlap_note_without_overlap(mocker):
@@ -1919,7 +1923,41 @@ def test_overlap_is_shown_in_the_terminal_table_and_footer(mocker):
 
     header_line = next(line for line in stdout.splitlines() if line.startswith("ID") and "Total %" in line)
     assert header_line.split()[header_line.split().index("Gap") + 1] == "Overlap"
-    assert "Busy time: 200 μs (summed op time 300 μs, overlap 100 μs)" in stdout
+    # The total row gives busy time and the total overlap, and footnotes its
+    # 100%: the op shares add up to summed op time, not elapsed time.
+    lines = [_strip_ansi(line) for line in stdout.splitlines()]
+    total_index = next(i for i, line in enumerate(lines) if "device ops" in line and "host ops" in line)
+    assert lines[total_index].split()[0] == "100%*"
+    assert re.search(r"signposts\s+200 μs\s+0 μs\s+100 μs", lines[total_index])
+    assert lines[total_index + 1] == (
+        "* Total % adds up to 100% of summed op time (300 μs), not elapsed time: 100 μs of it overlapped. "
+        "The Device Time total is wall-clock busy time: 200 μs."
+    )
+
+
+def test_busy_time_of_separate_devices_is_not_called_wall_clock(mocker):
+    # Devices run in parallel, so summing their busy times is not elapsed time.
+    csv_content = _rows_to_csv(
+        _concurrent_subdevice_rows(device_id="0")
+        + _concurrent_subdevice_rows(device_id="1", clock_offset_us=3_000_000)
+    )
+    _, _, stdout = _run_report(mocker, csv_content, csv_output_file=None, no_merge_devices=True)
+
+    assert "wall-clock" not in stdout
+    assert ("The Device Time total is busy time summed over 2 devices, which ran in parallel: 400 μs."
+            in _strip_ansi(stdout))
+
+
+def test_total_row_claims_100_percent_without_overlap(mocker):
+    csv_content = _rows_to_csv([
+        _subdevice_row("MatmulDeviceOperation", "0", "54", "54", 1000, **_fw_timing(1000)),
+        _subdevice_row("MatmulDeviceOperation", "1", "54", "54", 2000, **_fw_timing(1101)),
+    ])
+    _, _, stdout = _run_report(mocker, csv_content, csv_output_file=None)
+
+    total_line = _strip_ansi(next(line for line in stdout.splitlines() if "device ops" in line and "host ops" in line))
+    assert total_line.split()[:2] == ["100.0", "%"]
+    assert "200 μs" in total_line
 
 
 def test_tracing_savings_are_a_share_of_busy_time(mocker):
@@ -1939,7 +1977,7 @@ def test_sequential_subdevice_ops_report_no_overlap(mocker):
     _, rows, stdout = _run_report(mocker, csv_content, csv_output_file=None)
 
     assert "No overlap detected between subdevices." in stdout
-    assert "Busy time:" not in stdout
+    assert "100%*" not in stdout
     header_line = next(line for line in stdout.splitlines() if line.startswith("ID") and "Total %" in line)
     assert "Overlap" not in header_line
 
@@ -1992,7 +2030,7 @@ def test_id_range_dropping_the_covering_op_reports_no_overlap(mocker):
     assert "Overlap:" not in stdout
 
     _, _, stdout = _run_report(mocker, csv_content, csv_output_file=None, id_range=(3, None))
-    assert "Busy time:" not in stdout
+    assert "100%*" not in stdout
 
 
 def test_id_range_keeping_both_concurrent_ops_keeps_their_overlap(mocker):
