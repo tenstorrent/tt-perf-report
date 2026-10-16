@@ -68,6 +68,15 @@ def _cycles_per_ns(fw_start, fw_end, fw_duration_ns):
     return ratio if np.isfinite(ratio) and ratio > 0 else None
 
 
+def split_duration(duration_ns, overlap_ns):
+    """
+    Return (overlap, busy) for an op: overlap capped at the op's duration, and
+    busy as the rest. An op cannot have overlapped for longer than it ran.
+    """
+    overlap_ns = min(overlap_ns, duration_ns)
+    return overlap_ns, duration_ns - overlap_ns
+
+
 def measure_overlap(df, valid_duration):
     """
     Return (busy, overlap) in ns per row of df, as float arrays aligned with it.
@@ -113,17 +122,20 @@ def measure_overlap(df, valid_duration):
             continue
 
         positions = np.flatnonzero(on_device)
-        ends = fw_end[positions] / cycles_per_ns
-        starts = ends - kernel_ns[positions]
-        covered_until = -np.inf
-        for index in np.argsort(starts, kind="stable"):
-            row_kernel_ns = kernel_ns[positions[index]]
-            row_overlap = min(row_kernel_ns, max(0.0, covered_until - starts[index]))
-            if row_overlap < MIN_OVERLAP_NS:
-                row_overlap = 0.0
-            busy[positions[index]] = row_kernel_ns - row_overlap
-            overlap[positions[index]] = row_overlap
-            covered_until = max(covered_until, ends[index])
+        # A crafted file can push these past the float range. The result stays
+        # bounded - each op's overlap is capped at its own duration - so only
+        # the warnings are silenced, not the arithmetic changed.
+        with np.errstate(over="ignore", invalid="ignore"):
+            ends = fw_end[positions] / cycles_per_ns
+            starts = ends - kernel_ns[positions]
+            covered_until = -np.inf
+            for index in np.argsort(starts, kind="stable"):
+                row_kernel_ns = kernel_ns[positions[index]]
+                row_overlap, row_busy = split_duration(row_kernel_ns, max(0.0, covered_until - starts[index]))
+                if row_overlap < MIN_OVERLAP_NS:
+                    row_overlap, row_busy = 0.0, row_kernel_ns
+                overlap[positions[index]], busy[positions[index]] = row_overlap, row_busy
+                covered_until = max(covered_until, ends[index])
 
     return busy, overlap
 

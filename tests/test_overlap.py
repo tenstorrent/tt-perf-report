@@ -15,6 +15,7 @@ from tt_perf_report.overlap import (
     OVERLAP_COLUMN,
     annotate_overlap,
     measure_overlap,
+    split_duration,
 )
 from tt_perf_report.perf_report import is_invalid_device_duration, valid_device_duration_mask
 
@@ -73,6 +74,31 @@ def test_row_order_does_not_matter():
     assert sum(busy) == pytest.approx(130)
 
 
+@pytest.mark.parametrize("overlap_ns,expected_ns", [
+    (0.5, 0),     # rounding when intervals are rebuilt from cycles: not overlap
+    (0.99, 0),
+    (1.0, 1.0),   # one cycle or more is kept
+    (2.0, 2.0),
+])
+def test_sub_nanosecond_touches_are_rounding_not_overlap(overlap_ns, expected_ns):
+    # One cycle per ns, so each interval is exactly [end - kernel, end] and the
+    # overlap is exactly what the test asks for.
+    def op(end_ns, kernel_ns=5000):
+        return {
+            "DEVICE ID": 0,
+            "OP TYPE": "tt_dnn_device",
+            "DEVICE FW START CYCLE": end_ns - kernel_ns - 1000,
+            "DEVICE FW END CYCLE": end_ns,
+            "DEVICE FW DURATION [ns]": kernel_ns + 1000,
+            "DEVICE KERNEL DURATION [ns]": kernel_ns,
+        }
+    df = pd.DataFrame([op(10_000), op(15_000 - overlap_ns)])
+
+    _, overlap = measure_overlap(df, [True, True])
+
+    assert list(overlap) == pytest.approx([0, expected_ns])
+
+
 def test_devices_are_never_compared_with_each_other():
     # Device clocks are not synchronised, so equal cycle counts on two devices
     # say nothing about whether the ops ran at the same moment.
@@ -126,6 +152,27 @@ def test_malformed_cycle_cells_leave_overlap_bounded_or_unknown(cell):
         for row_overlap, row_busy in zip(overlap, busy):
             assert np.isnan(row_overlap) or 0 <= row_overlap <= 100_000
             assert np.isnan(row_busy) or 0 <= row_busy <= 100_000
+
+
+@pytest.mark.parametrize("overlap_ns,expected", [(0, (0, 100)), (40, (40, 60)), (250, (100, 0))])
+def test_split_duration_caps_overlap_at_the_duration(overlap_ns, expected):
+    assert split_duration(100, overlap_ns) == expected
+
+
+def test_overflowing_cycle_counts_stay_bounded_without_warnings():
+    # A tiny cycles-per-ns ratio pushes every interval end past the float range.
+    def op():
+        return {
+            "DEVICE ID": 0, "OP TYPE": "tt_dnn_device", "DEVICE FW START CYCLE": 1e-300,
+            "DEVICE FW END CYCLE": 1e300, "DEVICE FW DURATION [ns]": 1e300, "DEVICE KERNEL DURATION [ns]": 5.0,
+        }
+    df = pd.DataFrame([op(), op()])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        busy, overlap = measure_overlap(df, [True, True])
+
+    assert all(np.isnan(value) or 0 <= value <= 5 for value in [*busy, *overlap])
 
 
 def test_valid_duration_must_match_the_rows():

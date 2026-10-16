@@ -7,6 +7,7 @@ import csv
 import os
 import re
 import sys
+import textwrap
 from collections import defaultdict, deque
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Dict, List, NamedTuple, Optional, Tuple, Union
@@ -39,6 +40,7 @@ from tt_perf_report.overlap import (
     OVERLAP_INPUT_COLUMNS,
     annotate_overlap,
     measure_overlap,
+    split_duration,
 )
 from tt_perf_report.sub_device import (
     count_sub_devices,
@@ -660,6 +662,12 @@ class Cell:
 
 
 INVALID_OP_TO_OP_GAP_MIN_NS = 1_000_000
+# A negative gap longer than this fraction of the op's own duration is not
+# overlap the op could have had, so its duration is not trusted.
+INVALID_OP_TO_OP_GAP_DURATION_FRACTION = 0.5
+# Per-op key for the wall-clock share of Device Time. Not a report column:
+# it must never reach the CSV headers.
+BUSY_TIME_KEY = "Busy Time"
 
 
 def is_invalid_device_duration(row):
@@ -671,7 +679,7 @@ def is_invalid_device_duration(row):
     if (
         gap_ns is not None
         and gap_ns < -INVALID_OP_TO_OP_GAP_MIN_NS
-        and abs(gap_ns) > max(duration_ns * 0.5, INVALID_OP_TO_OP_GAP_MIN_NS)
+        and abs(gap_ns) > max(duration_ns * INVALID_OP_TO_OP_GAP_DURATION_FRACTION, INVALID_OP_TO_OP_GAP_MIN_NS)
     ):
         return True
 
@@ -693,7 +701,7 @@ def valid_device_duration_mask(df):
         invalid |= (
             ~np.isnan(gap_ns)
             & (gap_ns < -INVALID_OP_TO_OP_GAP_MIN_NS)
-            & (np.abs(gap_ns) > np.maximum(duration_ns * 0.5, INVALID_OP_TO_OP_GAP_MIN_NS))
+            & (np.abs(gap_ns) > np.maximum(duration_ns * INVALID_OP_TO_OP_GAP_DURATION_FRACTION, INVALID_OP_TO_OP_GAP_MIN_NS))
         )
     return ~invalid
 
@@ -1452,8 +1460,7 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         "Device Time": device_time,
         "Op-to-Op Gap": op_to_op_gap,
         "Overlap": overlap,
-        # Not a report column: the wall-clock share of Device Time, for busy_time().
-        "Busy Time": busy_time_cell,
+        BUSY_TIME_KEY: busy_time_cell,
         "Cores": cores,
         "Sub Device ID": sub_device_id,
         "Available Cores": available_cores,
@@ -1529,23 +1536,26 @@ def busy_time(rows):
         device_time = op_data["Device Time"].raw_value
         if device_time is None:
             continue
-        busy = op_data.get("Busy Time", Cell(None)).raw_value
+        busy = op_data.get(BUSY_TIME_KEY, Cell(None)).raw_value
         total += busy if busy is not None else device_time
     return total
 
 
-def describe_busy_time(device_count):
+def describe_busy_time(device_count, devices_kept_separate):
     """
     Name busy_time() for the reader.
 
-    On one timeline - a single device, or devices merged into one row per op -
-    it is wall-clock time. Devices kept separate run in parallel on clocks that
-    are not synchronised, so their busy times can only be summed, which is not
-    elapsed time either.
+    On a single device it is wall-clock time. Merging devices gives each op the
+    timing - and so the overlap - of one device, usually its slowest, so the
+    total follows the slowest device op by op rather than any one timeline.
+    Devices kept separate run in parallel on clocks that are not synchronised,
+    so their busy times can only be summed, which is not elapsed time either.
     """
-    if device_count > 1:
+    if device_count <= 1:
+        return "wall-clock busy time"
+    if devices_kept_separate:
         return f"busy time summed over {device_count} devices, which ran in parallel"
-    return "wall-clock busy time"
+    return "busy time (slowest device per op)"
 
 
 def overlapped_time(rows):
@@ -1768,7 +1778,8 @@ def color_row(op_data, percentage, min_percentage):
     return op_data
 
 
-def print_performance_table(rows, headers, col_widths, device_ops, host_ops, signpost_count, device_count=1):
+def print_performance_table(rows, headers, col_widths, device_ops, host_ops, signpost_count,
+                            busy_time_label="wall-clock busy time"):
     print("\n🚀 Performance Report 🚀\n========================\n")
 
     print("  ".join(pad_string(header, col_widths[i], align="left") for i, header in enumerate(headers)))
@@ -1780,7 +1791,8 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
     print("-" * (sum(col_widths) + (len(headers) - 1) * 2))
 
     total_device_time = summed_op_time(rows)
-    total_overlapped_time = overlapped_time(rows)
+    total_busy_time = busy_time(rows)
+    total_overlapped_time = total_device_time - total_busy_time
     total_visible_gap = gap_time(rows)
     overall_dram_speed, overall_dram_percentage = calculate_overall_dram_roofline(rows)
     total_row = {
@@ -1798,7 +1810,7 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
         # that. The op shares still add up to 100% - of summed op time, which is
         # not elapsed time here - so the total is marked and footnoted.
         total_row["Total %"] = Cell("100%*")
-        total_row["Device Time"] = Cell(total_device_time - total_overlapped_time, unit="μs", decimals=0)
+        total_row["Device Time"] = Cell(total_busy_time, unit="μs", decimals=0)
         total_row["Overlap"] = Cell(total_overlapped_time, unit="μs", decimals=0)
     for header in headers:
         if header not in total_row:
@@ -1811,7 +1823,7 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
         print(colored(
             f"* Total % adds up to 100% of summed op time ({total_device_time:,.0f} μs), not elapsed time: "
             f"{total_overlapped_time:,.0f} μs of it overlapped. The Device Time total is "
-            f"{describe_busy_time(device_count)}: {total_device_time - total_overlapped_time:,.0f} μs.",
+            f"{busy_time_label}: {total_busy_time:,.0f} μs.",
             muted_cell_color,
         ))
 
@@ -1984,7 +1996,6 @@ def has_utilization_data(flops_percentage):
 
 def _get_category_color_palettes():
     """Define color palettes for each operation category."""
-    import numpy as np
     return {
         "Compute": [plt.cm.Purples(i) for i in np.arange(1.0, 0.4, -0.05)],
         "TM": [plt.cm.Greens(i) for i in np.arange(1.0, 0.4, -0.05)],
@@ -2216,12 +2227,10 @@ def dump_stacked_report(stacked_df: pd.DataFrame, output_file: str):
     csv_df.to_csv(output_file, index=False, float_format="%.2f")
 
 
-def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_category: bool = False, use_category_colors: bool = True, threshold: float = 0.02, no_merge_devices: bool = False):
+def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_category: bool = False, use_category_colors: bool = True, threshold: float = 0.02, no_merge_devices: bool = False, caption: Optional[str] = None):
     if not HAS_MATPLOTLIB:
         print(f"Skipping plot generation for {output_file} (matplotlib not available)")
         return
-
-    import numpy as np
 
     # For stack_by_category, we need special handling since each bar represents a category
     # Sort data appropriately based on stacking mode
@@ -2362,7 +2371,9 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_cat
         ax.set_xlim(*xlim)
 
     ax.set_ylabel("Device Time [μs]")
-    ax.set_title(title)
+    # A caption, when given, qualifies the totals the bars add up to. It is
+    # wrapped to stay inside the figure, which tight_layout makes room for.
+    ax.set_title(f"{title}\n" + textwrap.fill(caption, width=55) if caption else title)
     plt.tight_layout()
     plt.savefig(output_file)
 
@@ -2530,9 +2541,9 @@ def merge_device_rows(df):
             # shorter than the average does not read as having overlapped.
             overlap_ns = finite_float(base_block.get(OVERLAP_COLUMN))
             if overlap_ns is not None and averaged_duration_ns is not None:
-                overlap_ns = min(overlap_ns, averaged_duration_ns)
-                base_block[OVERLAP_COLUMN] = overlap_ns
-                base_block[OVERLAP_BUSY_COLUMN] = averaged_duration_ns - overlap_ns
+                base_block[OVERLAP_COLUMN], base_block[OVERLAP_BUSY_COLUMN] = split_duration(
+                    averaged_duration_ns, overlap_ns
+                )
         else:
             # For non-collective ops, take the row with maximum duration
             max_duration_block = max(blocks, key=_merge_sort_duration_ns)
@@ -2596,6 +2607,9 @@ def reattribute_overlap(rows, pre_merge_df, valid_duration, merged_rows_by_id):
     rows behind the kept ops, and each op then takes the result of the row it
     reports, capped at its device time as merge_device_rows caps an averaged
     collective.
+
+    pre_merge_df needs only OVERLAP_INPUT_COLUMNS and ORIGINAL_ROW, aligned
+    with valid_duration.
     """
     kept_original_rows = {
         original_row
@@ -2603,21 +2617,18 @@ def reattribute_overlap(rows, pre_merge_df, valid_duration, merged_rows_by_id):
         for original_row in merged_rows_by_id.get(op_data["ID"].raw_value, (op_data["ID"].raw_value,))
     }
     kept = np.asarray(valid_duration) & pre_merge_df["ORIGINAL_ROW"].isin(kept_original_rows).to_numpy()
-    # Only the kept rows and the columns the sweep reads: rows outside the
-    # range take no part in it, and a narrow range keeps few of a large frame.
-    columns = [column for column in (*OVERLAP_INPUT_COLUMNS, "ORIGINAL_ROW") if column in pre_merge_df.columns]
-    kept_rows = pre_merge_df.loc[kept, columns]
+    # Only the kept rows: rows outside the range take no part in the sweep, and
+    # a narrow range keeps few of a large frame.
+    kept_rows = pre_merge_df.loc[kept]
     _, overlap = measure_overlap(kept_rows, np.ones(len(kept_rows), dtype=bool))
     overlap_by_row = dict(zip(kept_rows["ORIGINAL_ROW"], overlap))
     for op_data in rows:
         device_time = op_data["Device Time"].raw_value
         overlap_ns = finite_float(overlap_by_row.get(op_data["ID"].raw_value))
         if device_time is None or overlap_ns is None:
-            op_data["Overlap"], op_data["Busy Time"] = overlap_cells(None, None)
+            op_data["Overlap"], op_data[BUSY_TIME_KEY] = overlap_cells(None, None)
             continue
-        device_time_ns = device_time * 1000
-        overlap_ns = min(overlap_ns, device_time_ns)
-        op_data["Overlap"], op_data["Busy Time"] = overlap_cells(overlap_ns, device_time_ns - overlap_ns)
+        op_data["Overlap"], op_data[BUSY_TIME_KEY] = overlap_cells(*split_duration(device_time * 1000, overlap_ns))
 
 
 def filter_host_ops(rows):
@@ -2830,14 +2841,18 @@ def generate_perf_report(
     # one device's counters, so consecutive merged rows cannot be compared.
     valid_duration = valid_device_duration_mask(df)
     annotate_overlap(df, valid_duration)
-    # Kept only when an id range may drop ops that overlap annotation relied on.
-    pre_merge_df = df if id_range else None
+    # Kept only when an id range may drop ops that overlap annotation relied on,
+    # and only the columns reattribute_overlap reads: the full pre-merge frame
+    # would otherwise stay alive for the rest of the run.
+    pre_merge_df = (
+        df[[column for column in (*OVERLAP_INPUT_COLUMNS, "ORIGINAL_ROW") if column in df.columns]]
+        if id_range else None
+    )
     unique_devices = df["DEVICE ID"].nunique()
 
-    # Devices whose rows stay separate each keep their own timeline in the totals.
-    device_count = 1
-    if no_merge_devices and "DEVICE ID" in df.columns and unique_devices > 1:
-        device_count = unique_devices
+    devices_kept_separate = no_merge_devices and "DEVICE ID" in df.columns and unique_devices > 1
+    busy_time_label = describe_busy_time(unique_devices, devices_kept_separate)
+    if devices_kept_separate:
         print(colored(f"Detected data from {unique_devices} devices. Keeping separate device data...", "cyan"))
     elif unique_devices == 0:
         print(colored("No device operations found in the CSV data.", "yellow"))
@@ -2941,21 +2956,20 @@ def generate_perf_report(
     # concurrently anyway, so there any overlap it found would be an artefact of
     # the capture rather than something to put in front of the reader.
     has_overlap_data = show_available_cores and any(
-        op_data["Busy Time"].raw_value is not None for op_data in rows
+        op_data[BUSY_TIME_KEY].raw_value is not None for op_data in rows
     )
     has_overlap = has_overlap_data and any(op_data["Overlap"].raw_value for op_data in rows)
     if not has_overlap:
         for op_data in rows:
-            op_data["Overlap"] = Cell(None, unit="μs", decimals=0)
-            op_data["Busy Time"] = Cell(None, unit="μs", decimals=0)
+            op_data["Overlap"], op_data[BUSY_TIME_KEY] = overlap_cells(None, None)
 
     if has_overlap:
         total_overlapped_time = overlapped_time(rows)
         print(colored(
             f"Overlap: {total_overlapped_time:,.0f} μs of op time ran concurrently with other ops on the same "
             f"device ({total_overlapped_time / summed_op_time(rows) * 100:.1f}% of summed op time). The overall "
-            f"DRAM roofline and the tracing-savings estimate use {describe_busy_time(device_count)}; "
-            "Total % and the summary report remain shares of summed op time.",
+            f"DRAM roofline and the tracing-savings estimate use {busy_time_label}; "
+            "Total % and the stacked report remain shares of summed op time.",
             "cyan"
         ))
     elif has_overlap_data:
@@ -3054,7 +3068,7 @@ def generate_perf_report(
         dev_idx = visible_headers.index("Device")
         col_widths[dev_idx] = max(col_widths[dev_idx], 7)
 
-        print_performance_table(rows, visible_headers, col_widths, device_ops, host_ops, signpost_count, device_count)
+        print_performance_table(rows, visible_headers, col_widths, device_ops, host_ops, signpost_count, busy_time_label)
         if not no_advice:
             print_advice_section(rows, visible_headers, col_widths)
 
@@ -3068,22 +3082,30 @@ def generate_perf_report(
         
         if not csv_output_file:
             print_stacked_report(stacked_report, no_merge_devices)
+        stacked_caption = None
         if has_overlap:
             # The column names are a CSV contract, so the caveat goes alongside
-            # the report rather than into its headers.
+            # the report - and into the PNG's title - rather than into its headers.
             summed = summed_op_time(rows)
             print(colored(
                 f"Stacked report: Device Time Sum and Total % add up summed op time ({summed:,.0f} μs), "
                 f"which counts the {overlapped_time(rows):,.0f} μs of overlap once per op; "
-                f"{describe_busy_time(device_count)} was {busy_time(rows):,.0f} μs.",
+                f"{busy_time_label} was {busy_time(rows):,.0f} μs.",
                 "cyan"
             ))
+            stacked_caption = (
+                f"Summed op time {summed:,.0f} μs, of which {overlapped_time(rows):,.0f} μs overlapped; "
+                f"{busy_time_label} {busy_time(rows):,.0f} μs"
+            )
         if stacked_report_file or csv_output_file:
             base = stacked_report_file or f"{os.path.splitext(csv_output_file)[0]}_stacked"
             print(colored(f"Writing CSV stacked report to {base}.csv", "cyan"))
             dump_stacked_report(stacked_report, f"{base}.csv")
             print(colored(f"Plotting PNG stacked report to {base}.png", "cyan"))
-            plot_stacked_report(stacked_report, f"{base}.png", stack_by_category, not use_simple_colors, no_merge_devices=no_merge_devices)
+            plot_stacked_report(
+                stacked_report, f"{base}.png", stack_by_category, not use_simple_colors,
+                no_merge_devices=no_merge_devices, caption=stacked_caption,
+            )
 
 
 def is_host_op(op_data):

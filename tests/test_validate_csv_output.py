@@ -29,13 +29,13 @@ from tt_perf_report.perf_report import (
     Cell,
 )
 from tt_perf_report.csv_values import sanitize_text
-
-from overlap_timing import fw_timing
 from tt_perf_report.sub_device import (
     count_sub_devices,
     get_op_available_cores,
     get_op_sub_device_id,
 )
+
+from overlap_timing import fw_timing
 
 # Shared test data (sample output from TT-NN)
 @pytest.fixture(scope="session")
@@ -1898,6 +1898,25 @@ def test_stacked_report_stays_summed_and_says_so_when_ops_overlap(mocker):
             "which counts the 100 μs of overlap once per op; wall-clock busy time was 200 μs.") in stdout
 
 
+@pytest.mark.parametrize("ops", ["overlapped", "sequential"])
+def test_stacked_report_png_is_captioned_only_when_ops_overlap(mocker, tmp_path, ops):
+    plot = mocker.patch("tt_perf_report.perf_report.plot_stacked_report")
+    rows = _concurrent_subdevice_rows() if ops == "overlapped" else [
+        _subdevice_row("MatmulDeviceOperation", "0", "54", "54", 1000, **_fw_timing(1000)),
+        _subdevice_row("MatmulDeviceOperation", "1", "54", "54", 2000, **_fw_timing(1101)),
+    ]
+    _run_report(
+        mocker, _rows_to_csv(rows), csv_output_file=str(tmp_path / "report.csv"),
+        no_summary=False, no_stacked_report=False,
+    )
+
+    caption = plot.call_args.kwargs["caption"]
+    if ops == "overlapped":
+        assert caption == "Summed op time 300 μs, of which 100 μs overlapped; wall-clock busy time 200 μs"
+    else:
+        assert caption is None
+
+
 def test_stacked_report_carries_no_overlap_note_without_overlap(mocker):
     csv_content = _rows_to_csv([
         _subdevice_row("MatmulDeviceOperation", "0", "54", "54", 1000, **_fw_timing(1000)),
@@ -1933,6 +1952,19 @@ def test_overlap_is_shown_in_the_terminal_table_and_footer(mocker):
         "* Total % adds up to 100% of summed op time (300 μs), not elapsed time: 100 μs of it overlapped. "
         "The Device Time total is wall-clock busy time: 200 μs."
     )
+
+
+def test_busy_time_of_merged_devices_follows_the_slowest_device(mocker):
+    # Each merged op takes one device's timing, so the total is not one
+    # device's wall clock either.
+    csv_content = _rows_to_csv(
+        _concurrent_subdevice_rows(device_id="0")
+        + _concurrent_subdevice_rows(device_id="1", clock_offset_us=3_000_000)
+    )
+    _, _, stdout = _run_report(mocker, csv_content, csv_output_file=None)
+
+    assert "wall-clock" not in stdout
+    assert "The Device Time total is busy time (slowest device per op): 200 μs." in _strip_ansi(stdout)
 
 
 def test_busy_time_of_separate_devices_is_not_called_wall_clock(mocker):
@@ -2031,6 +2063,17 @@ def test_id_range_dropping_the_covering_op_reports_no_overlap(mocker):
 
     _, _, stdout = _run_report(mocker, csv_content, csv_output_file=None, id_range=(3, None))
     assert "100%*" not in stdout
+
+
+@pytest.mark.parametrize("id_range", [None, (2, None)], ids=["full", "id-range"])
+def test_an_untrusted_duration_never_covers_a_later_op(mocker, id_range):
+    # Row 2's latency marks its duration invalid, so it takes no part in the
+    # overlap sweep - on the full report and when an id range re-measures it.
+    rows = _concurrent_subdevice_rows()
+    rows[0]["OP TO OP LATENCY [ns]"] = "-2000000"
+    _, report_rows, _ = _run_report(mocker, _rows_to_csv(rows), id_range=id_range)
+
+    assert [row["Overlap"] for row in report_rows] == ["", "", ""]
 
 
 def test_id_range_keeping_both_concurrent_ops_keeps_their_overlap(mocker):
