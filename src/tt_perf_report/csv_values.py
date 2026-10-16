@@ -96,7 +96,7 @@ def finite_float_column(df, column):
     if pd.api.types.is_numeric_dtype(series):
         values = series.to_numpy(dtype="float64", na_value=np.nan, copy=True)
     else:
-        values = series.map(finite_float).to_numpy(dtype="float64", na_value=np.nan)
+        values = series.map(finite_float).to_numpy(dtype="float64", na_value=np.nan, copy=True)
     values[~np.isfinite(values)] = np.nan
     return values
 
