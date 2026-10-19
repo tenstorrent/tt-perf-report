@@ -161,14 +161,15 @@ def measure_overlap(df, valid_duration):
     return OverlapMeasurement(busy, overlap, idle)
 
 
-def device_timelines(df, valid_duration, measurement) -> Dict[float, Tuple[float, float]]:
+def device_timelines(df, valid_duration, measurement) -> Dict[float, Tuple[float, float, float]]:
     """
-    Return {device id: (busy ns, idle ns)} over the device ops in df.
+    Return {device id: (busy ns, idle ns, overlap ns)} over the device ops in df.
 
     Busy is the device's own wall-clock busy time: measured where the sweep
     could place the op, and the op's full duration where it could not, which is
     the sequential assumption the report makes anyway. Idle is the uncovered
-    time between its measured ops. Each device is one timeline, so these are
+    time between its measured ops, and overlap the op time other ops on the
+    device had already covered. Each device is one timeline, so these are
     the figures to compare across devices - unlike sums over rows that
     merge_device_rows took from different devices.
     """
@@ -184,11 +185,14 @@ def device_timelines(df, valid_duration, measurement) -> Dict[float, Tuple[float
         )
     busy = np.where(np.isnan(measurement.busy), kernel_ns, measurement.busy)
     idle = np.nan_to_num(measurement.idle)
-    return {
-        device_id: (float(busy[timed & (device_ids == device_id)].sum()),
-                    float(idle[timed & (device_ids == device_id)].sum()))
-        for device_id in np.unique(device_ids[timed])
-    }
+    overlap = np.nan_to_num(measurement.overlap)
+    timelines = {}
+    for device_id in np.unique(device_ids[timed]):
+        on_device = timed & (device_ids == device_id)
+        timelines[device_id] = (
+            float(busy[on_device].sum()), float(idle[on_device].sum()), float(overlap[on_device].sum())
+        )
+    return timelines
 
 
 def annotate_overlap(df, valid_duration):
