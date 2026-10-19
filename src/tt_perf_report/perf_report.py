@@ -709,7 +709,7 @@ def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signpo
             has_filtered_by_signposts = True
             filtered_data = _rows_after_idx(matching.index[0])
         else:
-            print(colored(f"Specified staring signpost '{start_signpost}' not found.", "yellow"))
+            print(colored(f"Specified starting signpost '{start_signpost}' not found.", "yellow"))
 
     if end_signpost:
         matching = signpost_rows[signpost_rows["OP CODE"] == end_signpost]

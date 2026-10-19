@@ -74,7 +74,7 @@ This is particularly useful for:
 
 ## Output Options
 
-- `--min-percentage value`: Hide ops below specified % of total time (default: 0.5)
+- `--min-percentage value`: Dim ops below specified % of total time (default: 0.5)
 - `--color/--no-color`: Force colored/plain output
 - `--csv FILENAME`: Output the table to CSV format for further analysis or inclusion into automated reporting pipelines
 - `--no-advice`: Show only performance table, skip optimization advice
