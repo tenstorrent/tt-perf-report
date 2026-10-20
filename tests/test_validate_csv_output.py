@@ -52,17 +52,17 @@ def test_csv_content():
 def expected_headers():
     return [
         "ID",
-        "Total %",
+        "Total % [%]",
         "Bound",
         "OP Code",
         "Device",
-        "Device Time",
-        "Op-to-Op Gap",
+        "Device Time [μs]",
+        "Op-to-Op Gap [μs]",
         "Cores",
-        "DRAM",
-        "DRAM %",
-        "FLOPs",
-        "FLOPs %",
+        "DRAM [GB/s]",
+        "DRAM % [%]",
+        "FLOPs [TFLOPs]",
+        "FLOPs % [%]",
         "Math Fidelity",
         "Output Datatype",
         "Input 0 Datatype",
@@ -77,7 +77,7 @@ def expected_headers():
         "Available Cores",
         "Op Category",
         "Bound Analysis",
-        "Overlap",
+        "Overlap [μs]",
         "Advice",
         "Raw OP Code",
     ]
@@ -139,16 +139,16 @@ def test_blackhole_trace_invalid_device_durations_are_omitted(mocker):
                 rows = list(csv.DictReader(f))
 
             device_times_us = [
-                float(row["Device Time"])
+                float(row["Device Time [μs]"])
                 for row in rows
-                if row["Device Time"]
+                if row["Device Time [μs]"]
             ]
             assert max(device_times_us) < 200
 
             op_to_op_gaps_us = [
-                float(row["Op-to-Op Gap"])
+                float(row["Op-to-Op Gap [μs]"])
                 for row in rows
-                if row["Op-to-Op Gap"]
+                if row["Op-to-Op Gap [μs]"]
             ]
             assert all(gap >= 0 for gap in op_to_op_gaps_us)
             assert max(op_to_op_gaps_us) < 10
@@ -160,8 +160,8 @@ def test_blackhole_trace_invalid_device_durations_are_omitted(mocker):
             ]
             assert len(matmul_rows) == 5
             assert all(row["Cores"] == "8" for row in matmul_rows)
-            assert all(row["Device Time"] == "" for row in matmul_rows)
-            assert all(row["DRAM %"] == "" for row in matmul_rows)
+            assert all(row["Device Time [μs]"] == "" for row in matmul_rows)
+            assert all(row["DRAM % [%]"] == "" for row in matmul_rows)
 
         finally:
             try:
@@ -961,9 +961,9 @@ def test_sparse_matmul_uses_numeric_nnz_for_utilization(mocker):
     row, stdout = _run_sparse_matmul_report(_sparse_matmul_csv_content("8"), mocker)
 
     assert "active=8/128" in row["OP Code"]
-    assert row["DRAM %"] != ""
-    assert row["FLOPs %"] != ""
-    assert float(row["FLOPs %"]) < 30
+    assert row["DRAM % [%]"] != ""
+    assert row["FLOPs % [%]"] != ""
+    assert float(row["FLOPs % [%]"]) < 30
     assert "--active-experts" not in row["Advice"]
     assert "Overall DRAM roofline" in stdout
 
@@ -972,10 +972,10 @@ def test_sparse_matmul_without_nnz_omits_utilization_and_warns(mocker):
     row, stdout = _run_sparse_matmul_report(_sparse_matmul_csv_content("std::nullopt"), mocker)
 
     assert "active=?/128" in row["OP Code"]
-    assert row["DRAM"] == ""
-    assert row["DRAM %"] == ""
-    assert row["FLOPs"] == ""
-    assert row["FLOPs %"] == ""
+    assert row["DRAM [GB/s]"] == ""
+    assert row["DRAM % [%]"] == ""
+    assert row["FLOPs [TFLOPs]"] == ""
+    assert row["FLOPs % [%]"] == ""
     assert "--active-experts K" in row["Advice"]
     assert "pass --active-experts K" in stdout
 
@@ -984,8 +984,8 @@ def test_sparse_matmul_active_experts_flag_fills_missing_nnz(mocker):
     row, _ = _run_sparse_matmul_report(_sparse_matmul_csv_content("std::nullopt"), mocker, active_experts=8)
 
     assert "active=8/128" in row["OP Code"]
-    assert row["DRAM %"] != ""
-    assert row["FLOPs %"] != ""
+    assert row["DRAM % [%]"] != ""
+    assert row["FLOPs % [%]"] != ""
     assert "--active-experts" not in row["Advice"]
 
 
@@ -1771,8 +1771,8 @@ def test_malformed_tensor_dimension_omits_metrics_without_aborting(mocker, colum
 
     # The op is still reported, with its shape-derived figures omitted.
     assert len(rows) == 1
-    assert rows[0]["FLOPs %"] == ""
-    assert rows[0]["DRAM %"] == ""
+    assert rows[0]["FLOPs % [%]"] == ""
+    assert rows[0]["DRAM % [%]"] == ""
     assert "unknown shape" in rows[0]["OP Code"]
     # Fields that do not depend on the shape survive.
     assert rows[0]["Cores"] == "108"
@@ -1880,7 +1880,7 @@ def _concurrent_subdevice_rows(device_id="0", clock_offset_us=0, gap_ns="0"):
 def test_concurrent_subdevice_ops_report_their_overlap(mocker):
     _, rows, stdout = _run_report(mocker, _rows_to_csv(_concurrent_subdevice_rows()))
 
-    assert [row["Overlap"] for row in rows] == ["", "100.0", ""]
+    assert [row["Overlap [μs]"] for row in rows] == ["", "100.0", ""]
     assert "Overlap: 100 μs of op time ran concurrently" in stdout
     assert "(33.3% of summed op time)" in stdout
     assert "Totals assume ops ran sequentially" not in stdout
@@ -1933,7 +1933,7 @@ def test_stacked_report_carries_no_overlap_note_without_overlap(mocker):
 def test_overlap_leaves_total_percent_a_share_of_summed_op_time(mocker):
     _, rows, _ = _run_report(mocker, _rows_to_csv(_concurrent_subdevice_rows()))
 
-    shares = [float(row["Total %"]) for row in rows]
+    shares = [float(row["Total % [%]"]) for row in rows]
     assert shares == pytest.approx([100 / 3] * 3)
 
 
@@ -2009,7 +2009,7 @@ def test_a_collective_averaged_over_valid_durations_is_valid(mocker):
     ]
     _, report_rows, _ = _run_report(mocker, _rows_to_csv(rows))
 
-    assert [row["Device Time"] for row in report_rows] == ["100.0"]
+    assert [row["Device Time [μs]"] for row in report_rows] == ["100.0"]
 
 
 def test_merged_overlap_is_detected_on_the_devices_not_the_rows_shown(mocker):
@@ -2129,10 +2129,10 @@ def test_long_subdevice_overlap_is_not_mistaken_for_corrupt_timing(mocker, parti
     _, report_rows, _ = _run_report(mocker, _rows_to_csv(rows))
 
     if partitioned:
-        assert [row["Device Time"] for row in report_rows] == ["4000.0", "4000.0"]
-        assert [row["Overlap"] for row in report_rows] == ["", "3000.0"]
+        assert [row["Device Time [μs]"] for row in report_rows] == ["4000.0", "4000.0"]
+        assert [row["Overlap [μs]"] for row in report_rows] == ["", "3000.0"]
     else:
-        assert report_rows[1]["Device Time"] == ""
+        assert report_rows[1]["Device Time [μs]"] == ""
 
 
 def test_sequential_subdevice_ops_report_no_overlap(mocker):
@@ -2157,7 +2157,7 @@ def test_overlap_is_not_reported_on_a_single_grid(mocker):
     ])
     _, rows, stdout = _run_report(mocker, csv_content)
 
-    assert [row["Overlap"] for row in rows] == ["", ""]
+    assert [row["Overlap [μs]"] for row in rows] == ["", ""]
     assert "Overlap:" not in stdout
     assert "No overlap detected" not in stdout
 
@@ -2171,7 +2171,7 @@ def test_overlap_survives_merging_devices_with_unsynchronised_clocks(mocker):
     )
     _, rows, _ = _run_report(mocker, csv_content)
 
-    assert [row["Overlap"] for row in rows] == ["", "100.0", ""]
+    assert [row["Overlap [μs]"] for row in rows] == ["", "100.0", ""]
 
 
 def test_overlap_is_measured_per_device_when_devices_are_kept_separate(mocker):
@@ -2181,7 +2181,7 @@ def test_overlap_is_measured_per_device_when_devices_are_kept_separate(mocker):
     )
     _, rows, stdout = _run_report(mocker, csv_content, no_merge_devices=True)
 
-    overlaps = sorted((row["Device"], row["Overlap"]) for row in rows)
+    overlaps = sorted((row["Device"], row["Overlap [μs]"]) for row in rows)
     assert overlaps == [("0", ""), ("0", ""), ("0", "100.0"), ("1", ""), ("1", ""), ("1", "100.0")]
     assert "Overlap: 200 μs" in stdout
 
@@ -2192,7 +2192,7 @@ def test_id_range_dropping_the_covering_op_reports_no_overlap(mocker):
     csv_content = _rows_to_csv(_concurrent_subdevice_rows())
     _, rows, stdout = _run_report(mocker, csv_content, id_range=(3, None))
 
-    assert [row["Overlap"] for row in rows] == ["", ""]
+    assert [row["Overlap [μs]"] for row in rows] == ["", ""]
     assert "Overlap:" not in stdout
 
     _, _, stdout = _run_report(mocker, csv_content, csv_output_file=None, id_range=(3, None))
@@ -2207,7 +2207,7 @@ def test_an_untrusted_duration_never_covers_a_later_op(mocker, id_range):
     rows[0]["OP TO OP LATENCY [ns]"] = "-2000000"
     _, report_rows, _ = _run_report(mocker, _rows_to_csv(rows), id_range=id_range)
 
-    assert [row["Overlap"] for row in report_rows] == ["", "", ""]
+    assert [row["Overlap [μs]"] for row in report_rows] == ["", "", ""]
 
 
 def test_id_range_keeping_both_concurrent_ops_keeps_their_overlap(mocker):
@@ -2217,7 +2217,7 @@ def test_id_range_keeping_both_concurrent_ops_keeps_their_overlap(mocker):
     )
     _, rows, stdout = _run_report(mocker, csv_content, id_range=(None, 3))
 
-    assert [row["Overlap"] for row in rows] == ["", "100.0"]
+    assert [row["Overlap [μs]"] for row in rows] == ["", "100.0"]
     assert ("Overlap: ops ran concurrently on 2 of 2 devices; 100 μs of the slowest device's op time "
             "overlapped (50.0% of it).") in stdout
 
@@ -2231,9 +2231,9 @@ def test_negative_op_to_op_gap_is_shown_and_left_out_of_totals(mocker):
     rows[2]["OP TO OP LATENCY [ns]"] = "20000"
     _, report_rows, _ = _run_report(mocker, _rows_to_csv(rows))
 
-    assert [row["Op-to-Op Gap"] for row in report_rows] == ["", "-100.0", "20.0"]
+    assert [row["Op-to-Op Gap [μs]"] for row in report_rows] == ["", "-100.0", "20.0"]
     # 300 μs device time + 20 μs gap; the overlapped op's share is its own time.
-    assert [float(row["Total %"]) for row in report_rows] == pytest.approx(
+    assert [float(row["Total % [%]"]) for row in report_rows] == pytest.approx(
         [100 / 320 * 100, 100 / 320 * 100, 120 / 320 * 100]
     )
 
@@ -2262,8 +2262,8 @@ def test_collective_overlap_never_exceeds_its_averaged_device_time(mocker, id_ra
     _, report_rows, _ = _run_report(mocker, _rows_to_csv(rows), id_range=id_range)
 
     collective = next(row for row in report_rows if row["OP Code"].startswith("AllGatherAsync"))
-    assert float(collective["Device Time"]) == pytest.approx(60)
-    assert collective["Overlap"] == "60.0"
+    assert float(collective["Device Time [μs]"]) == pytest.approx(60)
+    assert collective["Overlap [μs]"] == "60.0"
 
 
 @pytest.mark.parametrize("prev_duration_ns,duration_ns,gap_ns,expected_gap", [
@@ -2291,9 +2291,9 @@ def test_negative_op_to_op_gap_is_shown_unless_a_duration_is_untrusted(
     ])
     _, report_rows, _ = _run_report(mocker, csv_content)
 
-    assert report_rows[1]["Op-to-Op Gap"] == expected_gap
+    assert report_rows[1]["Op-to-Op Gap [μs]"] == expected_gap
     # A negative gap never adds to an op's share of the total.
-    shares = [float(row["Total %"]) for row in report_rows if row["Total %"]]
+    shares = [float(row["Total % [%]"]) for row in report_rows if row["Total % [%]"]]
     assert sum(shares) == pytest.approx(100)
 
 
@@ -2445,7 +2445,7 @@ def test_conv_with_no_usable_window_omits_metrics_without_aborting(mocker, attri
 
     assert len(rows) == 1
     assert "unknown shape" in rows[0]["OP Code"]
-    assert rows[0]["FLOPs %"] == ""
+    assert rows[0]["FLOPs % [%]"] == ""
     # Fields that do not depend on the window survive.
     assert rows[0]["Cores"] == "88"
     assert rows[0]["Available Cores"] == "108"
@@ -2462,7 +2462,7 @@ def test_conv_with_a_malformed_shape_omits_metrics_without_aborting(mocker, colu
 
     assert len(rows) == 1
     assert "unknown shape" in rows[0]["OP Code"]
-    assert rows[0]["FLOPs %"] == ""
+    assert rows[0]["FLOPs % [%]"] == ""
     assert rows[0]["Cores"] == "88"
 
 
@@ -2473,7 +2473,7 @@ def test_conv_with_a_usable_window_still_models_flops(mocker):
     _, rows, _ = _run_report(mocker, _rows_to_csv([row]))
 
     assert "unknown shape" not in rows[0]["OP Code"]
-    assert float(rows[0]["FLOPs %"]) > 0
+    assert float(rows[0]["FLOPs % [%]"]) > 0
 
 
 def test_sparse_matmul_with_a_malformed_shape_does_not_blame_active_experts(mocker):
@@ -2623,3 +2623,97 @@ def test_merge_device_rows_preserves_order_when_slowest_device_changes(tracing_m
     assert set(result.columns) == set(df.columns) | {MERGED_ROWS_COLUMN}
     assert ops[MERGED_ROWS_COLUMN].tolist() == [(3, 6), (4, 7), (5, 8)]
     pd.testing.assert_frame_equal(df, original)
+
+
+def _fixture_content(name):
+    with open(os.path.join(os.path.dirname(__file__), "data", name)) as f:
+        return f.read()
+
+
+def _table_cells(stdout, column):
+    """Map each printed table row's ID to its cell in column, by header position."""
+    lines = stdout.splitlines()
+    header = next(line for line in lines if line.startswith("ID") and "Total %" in line)
+    # Header names contain single spaces and are separated by at least two.
+    starts = [m.start() for m in re.finditer(r"\S+(?: \S+)*", header)]
+    start = header.index(column)
+    end = next((s for s in starts if s > start), None)
+    cells = {}
+    for line in lines[lines.index(header) + 2:]:
+        if line.startswith("-"):
+            break
+        row_id = line[:header.index("Total %")].strip()
+        if row_id.isdigit():
+            cells[row_id] = line[start:end].strip()
+    return cells
+
+
+def test_csv_writes_blanks_not_nan(mocker):
+    # Signpost rows leave the datatype and call-count columns blank, which pandas
+    # reads as NaN; the CSV must not spell that out.
+    headers, rows, _ = _run_report(
+        mocker, _fixture_content("bh20_oft_integral_image_trace.csv"), print_signposts=True
+    )
+
+    assert any(row["OP Code"].endswith("(signpost)") for row in rows)
+    for row in rows:
+        assert "nan" not in row.values(), row["ID"]
+        # Whole numbers, not 1024.0.
+        assert row["Global Call Count"] == "" or row["Global Call Count"].isdigit(), row["Global Call Count"]
+
+
+@pytest.mark.parametrize(
+    "csv_column,table_column,unit,decimals",
+    [
+        ("Device Time [μs]", "Device Time", "μs", 0),
+        ("Total % [%]", "Total %", "%", 1),
+    ],
+)
+def test_csv_values_match_the_terminal_table(mocker, csv_column, table_column, unit, decimals):
+    # tt-perf-report#41: the CSV holds the unrounded value, so formatting it the
+    # way the table does must reproduce the printed cell.
+    content = _fixture_content("bh_8xp150_deepseek_v3_d_p.csv")
+    _, rows, _ = _run_report(mocker, content, no_advice=True)
+    _, _, stdout = _run_report(mocker, content, csv_output_file=None, no_advice=True)
+
+    printed = _table_cells(stdout, table_column)
+    compared = 0
+    for row in rows:
+        if row[csv_column]:
+            assert Cell(float(row[csv_column]), unit=unit, decimals=decimals).format() == printed[row["ID"]], row["ID"]
+            compared += 1
+    assert compared > 0
+
+
+_STACKED_ROW = re.compile(r"^\s*([\d,.]+) %\s+(.+?)\s+(\d+)\s+[\d,.]+ μs\s")
+
+
+def test_stacked_report_order_is_numeric_and_matches_its_csv(mocker, tmp_path):
+    # With devices kept apart, the printed stacked report used to sort the
+    # formatted "Total %" strings, so "5.91 %" ranked above "42.53 %", and the
+    # stacked CSV came out in a different order.
+    mocker.patch("tt_perf_report.perf_report.plot_stacked_report")
+    summary = tmp_path / "summary"
+    _, _, stdout = _run_report(
+        mocker,
+        _fixture_content("bh_8xp150_deepseek_v3_d_p.csv"),
+        csv_output_file=None,
+        no_advice=True,
+        no_merge_devices=True,
+        no_summary=False,
+        no_stacked_report=False,
+        summary_file=str(summary),
+    )
+
+    stacked = stdout[stdout.index("Stacked report"):]
+    printed = [m.groups() for m in map(_STACKED_ROW.match, stacked.splitlines()) if m]
+    assert len({device for _, _, device in printed}) > 1
+
+    for (pct, _, device), (next_pct, _, next_device) in zip(printed, printed[1:]):
+        assert int(device) <= int(next_device)
+        if device == next_device:
+            assert float(pct.replace(",", "")) >= float(next_pct.replace(",", ""))
+
+    with open(f"{summary}.csv") as f:
+        csv_rows = list(csv.DictReader(f))
+    assert [(row["Op Code"], row["Device"]) for row in csv_rows] == [(op, device) for _, op, device in printed]

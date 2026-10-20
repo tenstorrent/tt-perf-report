@@ -76,10 +76,12 @@ This is particularly useful for:
 
 - `--min-percentage value`: Dim ops below specified % of total time (default: 0.5)
 - `--color/--no-color`: Force colored/plain output
-- `--csv FILENAME`: Output the table to CSV format for further analysis or inclusion into automated reporting pipelines
+- `--csv FILENAME`: Output the table to CSV format for further analysis or inclusion into automated reporting pipelines. Values are written unrounded, without the units the terminal table puts in each cell, so columns with a unit carry it in the header instead: **Total % [%]**, **Device Time [μs]**, **Op-to-Op Gap [μs]**, **DRAM [GB/s]**, **DRAM % [%]**, **FLOPs [TFLOPs]**, **FLOPs % [%]** and **Overlap [μs]**, following the stacked report CSV. A blank cell means no value. Rounding a CSV value to the table's precision gives the printed figure
 - `--no-advice`: Show only performance table, skip optimization advice
 - `--active-experts K`: Use K active experts per input batch group for `ttnn.sparse_matmul` rows whose CSV attributes do not include numeric `nnz`
 - `--arch ARCH`: Override architecture/SKU detection. Use `p100` for Blackhole P100 traces because profiler CSVs identify the chip family but not the card SKU.
+
+> **Upgrading from 1.4.x:** the eight `--csv` columns listed above gained a bracketed unit in their header, so a reader that looks columns up by name must use the new names. Column order is unchanged. Blank datatype and **Global Call Count** cells are now written empty rather than as `nan`, and **Global Call Count** as a whole number (`1024`, not `1024.0`).
 
 ## Understanding the Performance Report
 

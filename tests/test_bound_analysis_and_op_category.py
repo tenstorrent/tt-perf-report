@@ -130,7 +130,7 @@ def test_conv2d_gets_flops_only_analysis(tmp_path, mocker):
     rows, _, _ = _run_report(str(csv_path), tmp_path, mocker)
 
     assert rows[0]["Bound Analysis"] == "flops_only"
-    assert (rows[0]["DRAM %"], rows[0]["Bound"]) == ("", "")
+    assert (rows[0]["DRAM % [%]"], rows[0]["Bound"]) == ("", "")
 
 
 def test_bound_analysis_matches_which_figures_are_present(tmp_path, mocker):
@@ -139,15 +139,15 @@ def test_bound_analysis_matches_which_figures_are_present(tmp_path, mocker):
 
     for row in device_rows:
         if row["Bound Analysis"] == "none":
-            assert (row["DRAM %"], row["FLOPs %"], row["Bound"]) == ("", "", ""), row["Raw OP Code"]
+            assert (row["DRAM % [%]"], row["FLOPs % [%]"], row["Bound"]) == ("", "", ""), row["Raw OP Code"]
         elif row["Bound Analysis"] == "flops_only":
-            assert (row["DRAM %"], row["Bound"]) == ("", ""), row["Raw OP Code"]
-        elif row["DRAM %"] and row["FLOPs %"]:
+            assert (row["DRAM % [%]"], row["Bound"]) == ("", ""), row["Raw OP Code"]
+        elif row["DRAM % [%]"] and row["FLOPs % [%]"]:
             assert row["Bound"] in ROOFLINE_BOUNDS, row["Raw OP Code"]
 
     # Guards the other direction: blanking every figure would satisfy the loop above.
-    assert any(row["DRAM %"] and row["FLOPs %"] for row in device_rows if row["Bound Analysis"] == "full")
-    assert any(row["FLOPs %"] for row in device_rows if row["Bound Analysis"] == "flops_only")
+    assert any(row["DRAM % [%]"] and row["FLOPs % [%]"] for row in device_rows if row["Bound Analysis"] == "full")
+    assert any(row["FLOPs % [%]"] for row in device_rows if row["Bound Analysis"] == "flops_only")
 
 
 def test_signposts_have_no_op_category_and_do_not_warn(tmp_path, mocker):

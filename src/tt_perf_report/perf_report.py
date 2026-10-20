@@ -104,6 +104,20 @@ stacked_report_csv_column_labels = {
     "Flops_weighted_mean": "Weighted Mean FLOPs [%]",
 }
 
+# The terminal table puts each value's unit in the cell; the per-op --csv writes
+# bare, unrounded numbers, so the unit goes in the header instead, as it does in
+# the stacked CSV. Columns not listed here are written under their table name.
+report_csv_column_labels = {
+    "Total %": "Total % [%]",
+    "Device Time": "Device Time [μs]",
+    "Op-to-Op Gap": "Op-to-Op Gap [μs]",
+    "DRAM": "DRAM [GB/s]",
+    "DRAM %": "DRAM % [%]",
+    "FLOPs": "FLOPs [TFLOPs]",
+    "FLOPs %": "FLOPs % [%]",
+    "Overlap": "Overlap [μs]",
+}
+
 def detect_csv_format(df):
     """Detect CSV format version by checking for specific columns"""
     # Check for v2.1 columns (DEVICE ARCH and AVAILABLE WORKER CORE COUNT)
@@ -1432,9 +1446,11 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     output_datatype = get_entry("OUTPUT_0_DATATYPE")
     input_0_datatype = get_entry("INPUT_0_DATATYPE")
     input_1_datatype = get_entry("INPUT_1_DATATYPE")
-    output_datatype_cell = Cell(output_datatype)
-    input_0_datatype_cell = Cell(input_0_datatype)
-    input_1_datatype_cell = Cell(input_1_datatype)
+    # pandas reads a blank datatype as NaN, which --csv would write as "nan".
+    # Only the cells change: the op-code text below interpolates the raw values.
+    output_datatype_cell = Cell(output_datatype if pd.notna(output_datatype) else None)
+    input_0_datatype_cell = Cell(input_0_datatype if pd.notna(input_0_datatype) else None)
+    input_1_datatype_cell = Cell(input_1_datatype if pd.notna(input_1_datatype) else None)
     short_name = lambda n: {
         "FLOAT32": "FP32",
         "BFLOAT16": "BF16",
@@ -2290,8 +2306,13 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
     cols = stacked_df.columns.tolist()
     cols.insert(0, cols.pop(cols.index("%")))
     stacked_df = stacked_df[cols]
-    # Sort the stacked dataframe by "Device_Time_Sum_us" in descending order
-    stacked_df = stacked_df.sort_values(by="Device_Time_Sum_us", ascending=False)
+    # Sort by device time, descending, within each device when devices are kept
+    # apart. Sorting here, on numbers, gives the printed report and the CSV the
+    # same row order; within one device this is also descending Total %.
+    if "Device" in stacked_df.columns:
+        stacked_df = stacked_df.sort_values(by=["Device", "Device_Time_Sum_us"], ascending=[True, False])
+    else:
+        stacked_df = stacked_df.sort_values(by="Device_Time_Sum_us", ascending=False)
 
     return stacked_df
 
@@ -2316,7 +2337,7 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
 
     if no_merge_devices:
         columns = ["Total %", "Op Code", "Device", "Device Time Sum", "Op Count", "Op Category", "Min FLOPs", "Max FLOPs", "Mean FLOPs", "Std FLOPs", "Weighted Mean FLOPs"]
-        display_df = display_df[columns].sort_values(by=["Device", "Total %"], ascending=[True, False])
+        display_df = display_df[columns]
     
     # Convert to list of dictionaries for consistent formatting
     headers = display_df.columns.tolist()
@@ -3017,7 +3038,8 @@ def generate_perf_report(
         merged_rows = row.get(MERGED_ROWS_COLUMN)
         if isinstance(merged_rows, tuple):
             merged_rows_by_id[row["ORIGINAL_ROW"]] = merged_rows
-        op_data["Global Call Count"] = Cell(row["GLOBAL CALL COUNT"])
+        # Signpost rows leave this column blank, so pandas reads it as float.
+        op_data["Global Call Count"] = Cell(get_int(row, "GLOBAL CALL COUNT"))
         if raw_op_codes:
             op_data["Raw OP Code"] = Cell(row["OP CODE"])
 
@@ -3235,7 +3257,9 @@ def generate_perf_report(
             all_headers.append("Raw OP Code")
         print(colored(f"Writing CSV output to {csv_output_file}", "cyan"))
         with open(csv_output_file, "w") as f:
-            csv_writer = csv.DictWriter(f, fieldnames=all_headers)
+            csv_writer = csv.DictWriter(
+                f, fieldnames=[report_csv_column_labels.get(header, header) for header in all_headers]
+            )
             csv_writer.writeheader()
             for op_data in rows:
                 row = {
@@ -3246,7 +3270,7 @@ def generate_perf_report(
                 if not no_advice:
                     advice = generate_matmul_advice(op_data) if is_matmul_op(op_data) else ""
                     row["Advice"] = escape_csv_formula(" • ".join(advice))
-                csv_writer.writerow(row)
+                csv_writer.writerow({report_csv_column_labels.get(k, k): v for k, v in row.items()})
         overall_dram_speed, overall_dram_percentage = calculate_overall_dram_roofline(rows, timeline.busy)
         if overall_dram_percentage is not None:
             print(colored(
