@@ -3,6 +3,8 @@
 
 # SPDX-FileCopyrightText: © 2026 Tenstorrent AI ULC
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from tt_perf_report.csv_values import (
@@ -10,6 +12,7 @@ from tt_perf_report.csv_values import (
     MAX_PLAUSIBLE_TENSOR_DIM,
     core_count_from_value,
     finite_float,
+    finite_float_column,
     get_core_count,
     get_int,
     get_numeric_value,
@@ -146,3 +149,35 @@ def test_implausible_dimensions_do_not_reach_flop_arithmetic(cell):
     if cell == 1e300:
         with pytest.raises(OverflowError):
             (int(cell) ** 3 * 2) / 1e-9
+
+
+def test_finite_float_column_leaves_a_numeric_source_unchanged():
+    # Infinity becomes NaN in the result only. Writing it back into the
+    # caller's frame would change what every later reader of the column sees.
+    df = pd.DataFrame({"duration": [1.0, np.inf, np.nan]})
+
+    values = finite_float_column(df, "duration")
+
+    assert np.array_equal(values, [1.0, np.nan, np.nan], equal_nan=True)
+    assert df["duration"].tolist()[:2] == [1.0, np.inf]
+
+
+@pytest.mark.parametrize("dtype", [object, "string"])
+def test_finite_float_column_reads_text_cells_as_finite_float_does(dtype):
+    cells = ["inf", "x", "1_000", " 7 ", "", None]
+    df = pd.DataFrame({"duration": pd.Series(cells, dtype=dtype)})
+
+    values = finite_float_column(df, "duration")
+
+    expected = [np.nan if finite_float(cell) is None else finite_float(cell) for cell in cells]
+    assert np.array_equal(values, expected, equal_nan=True)
+    # Callers write into the result; pandas 3 can hand back a read-only array.
+    assert values.flags.writeable
+
+
+def test_finite_float_column_without_the_column_is_all_nan():
+    df = pd.DataFrame({"other": [1, 2, 3]})
+
+    values = finite_float_column(df, "duration")
+
+    assert len(values) == 3 and np.isnan(values).all()
