@@ -95,7 +95,7 @@ stacked_report_column_labels = {
 
 stacked_report_csv_column_labels = {
     **stacked_report_column_labels,
-    "%": "Total % [%]",
+    "%": "Total [%]",
     "Device_Time_Sum_us": "Device Time Sum [μs]",
     "Flops_min": "Min FLOPs [%]",
     "Flops_max": "Max FLOPs [%]",
@@ -108,13 +108,13 @@ stacked_report_csv_column_labels = {
 # bare, unrounded numbers, so the unit goes in the header instead, as it does in
 # the stacked CSV. Columns not listed here are written under their table name.
 report_csv_column_labels = {
-    "Total %": "Total % [%]",
+    "Total %": "Total [%]",
     "Device Time": "Device Time [μs]",
     "Op-to-Op Gap": "Op-to-Op Gap [μs]",
     "DRAM": "DRAM [GB/s]",
-    "DRAM %": "DRAM % [%]",
+    "DRAM %": "DRAM [%]",
     "FLOPs": "FLOPs [TFLOPs]",
-    "FLOPs %": "FLOPs % [%]",
+    "FLOPs %": "FLOPs [%]",
     "Overlap": "Overlap [μs]",
 }
 
