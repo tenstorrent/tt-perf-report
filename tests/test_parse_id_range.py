@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 
-# SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
+# SPDX-FileCopyrightText: © 2026 Tenstorrent AI ULC
 
 import pytest
 
+from tt_perf_report import perf_report
 from tt_perf_report.perf_report import parse_id_range
 
 
@@ -22,7 +23,29 @@ def test_parse_id_range(id_range, expected):
     assert parse_id_range(id_range) == expected
 
 
-@pytest.mark.parametrize("id_range", ["-", "10", "1-2-3", "a-b"])
+@pytest.mark.parametrize(
+    "id_range",
+    [
+        # "-" used to parse to (None, None), which filter_by_id_range then compared against row IDs
+        # and failed with a TypeError.
+        pytest.param("-", id="dash-only-was-a-TypeError"),
+        pytest.param("", id="empty"),
+        pytest.param(",-", id="separator-without-digits"),
+        pytest.param("10", id="no-dash"),
+        pytest.param("1-2-3", id="two-dashes"),
+        pytest.param("a-b", id="not-numbers"),
+    ],
+)
 def test_parse_id_range_rejects_invalid(id_range):
     with pytest.raises(ValueError):
         parse_id_range(id_range)
+
+
+def test_dash_only_is_reported_as_a_format_error(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["tt-perf-report", "dummy.csv", "--id-range", "-"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        perf_report.parse_args()
+
+    assert excinfo.value.code == 1
+    assert "Invalid --id-range format" in capsys.readouterr().out
