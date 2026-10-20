@@ -2665,11 +2665,20 @@ def test_csv_writes_blanks_not_nan(mocker):
         mocker, _fixture_content("bh20_oft_integral_image_trace.csv"), print_signposts=True
     )
 
-    assert any(row["OP Code"].endswith("(signpost)") for row in rows)
+    signposts = [row for row in rows if row["OP Code"].endswith("(signpost)")]
+    ops = [row for row in rows if not row["OP Code"].endswith("(signpost)")]
+    assert signposts and ops
     for row in rows:
         assert "nan" not in row.values(), row["ID"]
-        # Whole numbers, not 1024.0.
-        assert row["Global Call Count"] == "" or row["Global Call Count"].isdigit(), row["Global Call Count"]
+    for row in signposts:
+        assert (row["Output Datatype"], row["Input 0 Datatype"], row["Global Call Count"]) == ("", "", ""), row["ID"]
+    # Blanking must not reach populated cells: every op keeps its datatype and
+    # its call count, written as a whole number (1024, not 1024.0).
+    for row in ops:
+        assert row["Output Datatype"] and row["Input 0 Datatype"], row["ID"]
+        assert row["Global Call Count"].isdigit(), row["Global Call Count"]
+    first_op = next(row for row in ops if row["ID"] == "3")
+    assert (first_op["Output Datatype"], first_op["Global Call Count"]) == ("BFLOAT16", "1024")
 
 
 @pytest.mark.parametrize(
@@ -2677,6 +2686,11 @@ def test_csv_writes_blanks_not_nan(mocker):
     [
         ("Device Time", "μs", 0),
         ("Total %", "%", 1),
+        ("Op-to-Op Gap", "μs", 0),
+        ("DRAM", "GB/s", 0),
+        ("DRAM %", "%", 1),
+        ("FLOPs", "TFLOPs", 1),
+        ("FLOPs %", "%", 1),
     ],
 )
 def test_csv_values_match_the_terminal_table(mocker, table_column, unit, decimals):
@@ -2743,4 +2757,15 @@ def test_csv_unit_headers_are_the_documented_contract():
         "FLOPs %": "FLOPs [%]",
         "Overlap": "Overlap [μs]",
     }
-    assert stacked_report_csv_column_labels["%"] == "Total [%]"
+    assert stacked_report_csv_column_labels == {
+        "%": "Total [%]",
+        "OP Code Joined": "Op Code",
+        "Device_Time_Sum_us": "Device Time Sum [μs]",
+        "Ops_Count": "Op Count",
+        "Op_Category": "Op Category",
+        "Flops_min": "Min FLOPs [%]",
+        "Flops_max": "Max FLOPs [%]",
+        "Flops_mean": "Mean FLOPs [%]",
+        "Flops_std": "Std FLOPs [%]",
+        "Flops_weighted_mean": "Weighted Mean FLOPs [%]",
+    }

@@ -81,7 +81,7 @@ This is particularly useful for:
 - `--active-experts K`: Use K active experts per input batch group for `ttnn.sparse_matmul` rows whose CSV attributes do not include numeric `nnz`
 - `--arch ARCH`: Override architecture/SKU detection. Use `p100` for Blackhole P100 traces because profiler CSVs identify the chip family but not the card SKU.
 
-> **Upgrading from 1.4.x:** the eight `--csv` columns listed above gained a bracketed unit in their header, and the percentage columns dropped the `%` from their name (`DRAM %` is now `DRAM [%]`), so a reader that looks columns up by name must use the new names. The stacked report CSV's `Total % [%]` column is now `Total [%]`. Column order is unchanged in both files. Blank datatype and **Global Call Count** cells are now written empty rather than as `nan`, and **Global Call Count** as a whole number (`1024`, not `1024.0`).
+> **Upgrading from 1.4.x:** the eight `--csv` columns listed above gained a bracketed unit in their header, and the percentage columns dropped the `%` from their name (`DRAM %` is now `DRAM [%]`), so a reader that looks columns up by name must use the new names. The stacked report CSV's `Total % [%]` column is now `Total [%]`. Column order is unchanged in both files. With `--no-merge-devices` the stacked report's rows, printed and in its CSV, are now grouped by device, each device's rows in descending device time; the CSV was previously sorted by device time across all devices. Blank datatype and **Global Call Count** cells are now written empty rather than as `nan`, and **Global Call Count** as a whole number (`1024`, not `1024.0`).
 
 ## Understanding the Performance Report
 
