@@ -17,6 +17,9 @@ from tt_perf_report.perf_report import parse_id_range
         ("1,000-2,000", (1000, 2000)),
         ("10-", (10, None)),
         ("-20", (None, 20)),
+        # ID 0 is a valid bound and must not be mistaken for a missing one.
+        ("0-", (0, None)),
+        ("-0", (None, 0)),
     ],
 )
 def test_parse_id_range(id_range, expected):
@@ -26,11 +29,11 @@ def test_parse_id_range(id_range, expected):
 @pytest.mark.parametrize(
     "id_range",
     [
-        # "-" used to parse to (None, None), which filter_by_id_range then compared against row IDs
-        # and failed with a TypeError.
-        pytest.param("-", id="dash-only-was-a-TypeError"),
+        # "-" must not reach filter_by_id_range as (None, None).
+        pytest.param("-", id="dash-only"),
         pytest.param("", id="empty"),
         pytest.param(",-", id="separator-without-digits"),
+        pytest.param("-,", id="comma-only-end"),
         pytest.param("10", id="no-dash"),
         pytest.param("1-2-3", id="two-dashes"),
         pytest.param("a-b", id="not-numbers"),
