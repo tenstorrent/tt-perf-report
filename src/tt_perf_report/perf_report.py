@@ -2705,7 +2705,7 @@ def parse_id_range(id_range_str):
         return None
 
     parts = id_range_str.split("-")
-    if len(parts) != 2:
+    if len(parts) != 2 or not any(parts):
         raise ValueError("Invalid ID range format")
 
     start = int(parts[0].replace(",", "")) if parts[0] else None
