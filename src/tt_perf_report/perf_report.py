@@ -2315,10 +2315,7 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
     display_df = format_stacked_report_df(stacked_df)
 
     if no_merge_devices:
-        columns = ["Total %", "Op Code", "Device", "Device Time Sum", "Op Count", "Op Category", "Min FLOPs", "Max FLOPs", "Mean FLOPs", "Std FLOPs", "Weighted Mean FLOPs"]
-        # Category stacking aggregates no Op Category or FLOPs columns.
-        columns = [column for column in columns if column in display_df.columns]
-        display_df = display_df[columns].sort_values(by=["Device", "Total %"], ascending=[True, False])
+        display_df = display_df.sort_values(by=["Device", "Total %"], ascending=[True, False])
     
     # Convert to list of dictionaries for consistent formatting
     headers = display_df.columns.tolist()
