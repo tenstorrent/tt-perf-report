@@ -14,13 +14,15 @@ from typing import Any, ClassVar, Dict, List, NamedTuple, Optional, Tuple, Union
 
 try:
     import matplotlib.pyplot as plt
+
     HAS_MATPLOTLIB = True
 except ImportError:
     HAS_MATPLOTLIB = False
     print("Warning: matplotlib not available, plotting disabled")
+from enum import Enum
+
 import numpy as np
 import pandas as pd
-from enum import Enum
 
 from tt_perf_report.csv_values import (
     AVAILABLE_WORKER_CORE_COUNT_COLUMN,
@@ -54,11 +56,13 @@ from tt_perf_report.sub_device import (
     get_op_sub_device_id,
 )
 
+
 # CSV format versions
 class CsvFormat(Enum):
     V1 = 1  # Original format
     V2 = 2  # Format with _PAD[LOGICAL] columns
     V2_1 = 3  # V2 + DEVICE ARCH and AVAILABLE WORKER CORE COUNT columns
+
 
 # Global variable to store color preference
 color_output = None  # None means auto-detect, True forces color, False forces no color
@@ -95,7 +99,7 @@ stacked_report_column_labels = {
 
 stacked_report_csv_column_labels = {
     **stacked_report_column_labels,
-    "%": "Total % [%]",
+    "%": "Total [%]",
     "Device_Time_Sum_us": "Device Time Sum [μs]",
     "Flops_min": "Min FLOPs [%]",
     "Flops_max": "Max FLOPs [%]",
@@ -104,20 +108,35 @@ stacked_report_csv_column_labels = {
     "Flops_weighted_mean": "Weighted Mean FLOPs [%]",
 }
 
+# The terminal table puts each value's unit in the cell; the per-op --csv writes
+# bare, unrounded numbers, so the unit goes in the header instead, as it does in
+# the stacked CSV. Columns not listed here are written under their table name.
+report_csv_column_labels = {
+    "Total %": "Total [%]",
+    "Device Time": "Device Time [μs]",
+    "Op-to-Op Gap": "Op-to-Op Gap [μs]",
+    "DRAM": "DRAM [GB/s]",
+    "DRAM %": "DRAM [%]",
+    "FLOPs": "FLOPs [TFLOPs]",
+    "FLOPs %": "FLOPs [%]",
+    "Overlap": "Overlap [μs]",
+}
+
+
 def detect_csv_format(df):
     """Detect CSV format version by checking for specific columns"""
     # Check for v2.1 columns (DEVICE ARCH and AVAILABLE WORKER CORE COUNT)
     has_device_arch = "DEVICE ARCH" in df.columns
     has_worker_core_count = AVAILABLE_WORKER_CORE_COUNT_COLUMN in df.columns
-    
+
     if has_device_arch or has_worker_core_count:
         return CsvFormat.V2_1
-    
+
     # Check for v2 columns (_PAD[LOGICAL])
     v2_columns = [col for col in df.columns if "_PAD[LOGICAL]" in col]
     if v2_columns:
         return CsvFormat.V2
-    
+
     # Default to v1
     return CsvFormat.V1
 
@@ -183,6 +202,7 @@ class WorkerCoreBudgets(NamedTuple):
 @dataclass(frozen=True)
 class ArchitectureSpec:
     """Immutable specification for a hardware architecture."""
+
     name: str
     worker_cores: int
     dram_sharded_matmul_cores: int
@@ -199,23 +219,22 @@ class ArchitectureSpec:
     # distinction the report has to make when it names the number.
     observed_budgets: Tuple[int, ...] = ()
 
-
     # Registry of known architectures
-    _SPECS: ClassVar[Dict[str, 'ArchitectureSpec']] = {}
-    
+    _SPECS: ClassVar[Dict[str, "ArchitectureSpec"]] = {}
+
     @classmethod
-    def register(cls, spec: 'ArchitectureSpec'):
+    def register(cls, spec: "ArchitectureSpec"):
         """Register an architecture specification."""
         cls._SPECS[spec.name] = spec
         return spec
-    
+
     @classmethod
     def from_name(
         cls,
         arch_name: Optional[str],
         worker_cores: Optional[int] = None,
         observed_budgets: Tuple[int, ...] = (),
-    ) -> 'ArchitectureSpec':
+    ) -> "ArchitectureSpec":
         """
         Get architecture spec by name with normalization.
         If worker_cores is provided, it overrides the default for that architecture.
@@ -246,10 +265,14 @@ class ArchitectureSpec:
         # even when the count they imply matches the registry, since a file whose
         # largest budget happens to equal the registered grid is still a file
         # where no row reported that grid.
-        if (worker_cores is not None and worker_cores != spec.worker_cores) or observed_budgets:
+        if (
+            worker_cores is not None and worker_cores != spec.worker_cores
+        ) or observed_budgets:
             return replace(
                 spec,
-                worker_cores=spec.worker_cores if worker_cores is None else worker_cores,
+                worker_cores=(
+                    spec.worker_cores if worker_cores is None else worker_cores
+                ),
                 observed_budgets=observed_budgets,
             )
 
@@ -265,26 +288,36 @@ class ArchitectureSpec:
         csv_format = detect_csv_format(df)
 
         if csv_format != CsvFormat.V2_1 or "DEVICE ARCH" not in df.columns:
-            print(colored("DEVICE ARCH column not found. Defaulting to 'wormhole'.", "yellow"))
+            print(
+                colored(
+                    "DEVICE ARCH column not found. Defaulting to 'wormhole'.", "yellow"
+                )
+            )
             return "wormhole"
 
         # Get all non-empty, non-null values
         arch_values = df["DEVICE ARCH"].dropna()
         arch_values = arch_values[arch_values != ""]
-        
+
         if arch_values.empty:
-            print(colored("No DEVICE ARCH values found. Defaulting to 'wormhole'.", "yellow"))
+            print(
+                colored(
+                    "No DEVICE ARCH values found. Defaulting to 'wormhole'.", "yellow"
+                )
+            )
             return "wormhole"
 
         first_arch = arch_values.iloc[0]
-        
+
         # Check if all values are consistent
         unique_archs = arch_values.unique()
         if len(unique_archs) > 1:
-            print(colored(
-                f"Warning: Multiple DEVICE ARCH values found: {list(unique_archs)}. Using first value: '{first_arch}'.",
-                "yellow"
-            ))
+            print(
+                colored(
+                    f"Warning: Multiple DEVICE ARCH values found: {list(unique_archs)}. Using first value: '{first_arch}'.",
+                    "yellow",
+                )
+            )
 
         # Normalize architecture names
         if first_arch == "wormhole_b0":
@@ -293,7 +326,9 @@ class ArchitectureSpec:
         return first_arch
 
     @classmethod
-    def _get_worker_core_count_from_df(cls, df, arch_name: Optional[str] = None) -> WorkerCoreBudgets:
+    def _get_worker_core_count_from_df(
+        cls, df, arch_name: Optional[str] = None
+    ) -> WorkerCoreBudgets:
         """
         Get the file-wide available worker core count from CSV if available (v2.1+).
         Returns the largest non-zero value from AVAILABLE WORKER CORE COUNT column,
@@ -311,19 +346,28 @@ class ArchitectureSpec:
             arch_name = cls._get_arch_name_from_df(df)
         default_worker_cores = cls.from_name(arch_name).worker_cores
 
-        if csv_format != CsvFormat.V2_1 or AVAILABLE_WORKER_CORE_COUNT_COLUMN not in df.columns:
-            print(colored(
-                "AVAILABLE WORKER CORE COUNT column not found. "
-                f"Defaulting to {default_worker_cores} {cls.from_name(arch_name).name} cores.",
-                "yellow",
-            ))
+        if (
+            csv_format != CsvFormat.V2_1
+            or AVAILABLE_WORKER_CORE_COUNT_COLUMN not in df.columns
+        ):
+            print(
+                colored(
+                    "AVAILABLE WORKER CORE COUNT column not found. "
+                    f"Defaulting to {default_worker_cores} {cls.from_name(arch_name).name} cores.",
+                    "yellow",
+                )
+            )
             return WorkerCoreBudgets(default_worker_cores)
 
         # Reduce through the same per-cell policy the per-op path uses, rather
         # than restating it vectorised. A vectorised astype(int) would also
         # truncate a fraction into a plausible grid and saturate an out-of-range
         # magnitude to the int64 maximum, both silently. This runs once per file.
-        present_counts = [value for value in df[AVAILABLE_WORKER_CORE_COUNT_COLUMN] if not pd.isna(value)]
+        present_counts = [
+            value
+            for value in df[AVAILABLE_WORKER_CORE_COUNT_COLUMN]
+            if not pd.isna(value)
+        ]
         core_counts = [
             count
             for count in (core_count_from_value(value) for value in present_counts)
@@ -339,22 +383,28 @@ class ArchitectureSpec:
         unreadable = sum(1 for value in present_counts if finite_float(value) is None)
         unusable = len(present_counts) - unreadable - len(core_counts)
         if unreadable > 0:
-            print(colored(
-                f"Ignoring {unreadable} unreadable AVAILABLE WORKER CORE COUNT value(s).",
-                "yellow"
-            ))
+            print(
+                colored(
+                    f"Ignoring {unreadable} unreadable AVAILABLE WORKER CORE COUNT value(s).",
+                    "yellow",
+                )
+            )
         if unusable > 0:
-            print(colored(
-                f"Ignoring {unusable} AVAILABLE WORKER CORE COUNT value(s) that are not a core count.",
-                "yellow"
-            ))
+            print(
+                colored(
+                    f"Ignoring {unusable} AVAILABLE WORKER CORE COUNT value(s) that are not a core count.",
+                    "yellow",
+                )
+            )
 
         if not core_counts:
-            print(colored(
-                "No usable AVAILABLE WORKER CORE COUNT values found. "
-                f"Defaulting to {default_worker_cores} {cls.from_name(arch_name).name} cores.",
-                "yellow",
-            ))
+            print(
+                colored(
+                    "No usable AVAILABLE WORKER CORE COUNT values found. "
+                    f"Defaulting to {default_worker_cores} {cls.from_name(arch_name).name} cores.",
+                    "yellow",
+                )
+            )
             return WorkerCoreBudgets(default_worker_cores)
 
         # The largest budget in the file is the best available evidence of the full
@@ -368,32 +418,34 @@ class ArchitectureSpec:
         # is expected, not a problem: each op is measured against its own budget.
         unique_counts = sorted(set(core_counts), reverse=True)
         if len(unique_counts) > 1:
-            print(colored(
-                f"Detected multiple worker core budgets {unique_counts} - using per-op values; "
-                f"largest observed budget is {largest_budget}.",
-                "cyan"
-            ))
+            print(
+                colored(
+                    f"Detected multiple worker core budgets {unique_counts} - using per-op values; "
+                    f"largest observed budget is {largest_budget}.",
+                    "cyan",
+                )
+            )
 
         return WorkerCoreBudgets(largest_budget, tuple(unique_counts))
 
     @classmethod
-    def from_df(cls, df, arch_name: Optional[str] = None) -> 'ArchitectureSpec':
+    def from_df(cls, df, arch_name: Optional[str] = None) -> "ArchitectureSpec":
         """
         Create ArchitectureSpec from CSV DataFrame.
-        
+
         Args:
             df: DataFrame containing the CSV data
             arch_name: Optional architecture/SKU override
-        
+
         Returns:
             ArchitectureSpec instance with appropriate configuration
         """
         # Detect CSV format
         csv_format = detect_csv_format(df)
-        
+
         # Get architecture name from CSV
         arch_name = arch_name or cls._get_arch_name_from_df(df)
-        
+
         # Get worker core count from CSV
         budgets = cls._get_worker_core_count_from_df(df, arch_name)
 
@@ -416,60 +468,70 @@ class ArchitectureSpec:
 # Blackhole-family peaks use phase divisors (HiFi4=/4, HiFi3=/3, HiFi2=/2, LoFi=/1).
 # Wormhole uses published chip peaks; HiFi3 is derived as HiFi4 × 4/3 (LoFi is empirical).
 _wormhole_tflops_hifi4 = 74 / 72
-ArchitectureSpec.register(ArchitectureSpec(
-    name="wormhole",
-    worker_cores=64,  # N150 and N300 with ETH dispatch
-    dram_sharded_matmul_cores=12,
-    dram_bandwidth_gb_s=288,
-    tflops_hifi4=_wormhole_tflops_hifi4,
-    tflops_hifi3=_wormhole_tflops_hifi4 * 4 / 3,
-    tflops_hifi2=148 / 72,
-    tflops_lofi=262 / 72,
-))
+ArchitectureSpec.register(
+    ArchitectureSpec(
+        name="wormhole",
+        worker_cores=64,  # N150 and N300 with ETH dispatch
+        dram_sharded_matmul_cores=12,
+        dram_bandwidth_gb_s=288,
+        tflops_hifi4=_wormhole_tflops_hifi4,
+        tflops_hifi3=_wormhole_tflops_hifi4 * 4 / 3,
+        tflops_hifi2=148 / 72,
+        tflops_lofi=262 / 72,
+    )
+)
 
-ArchitectureSpec.register(ArchitectureSpec(
-    name="blackhole",
-    worker_cores=110,  # P150 with dispatch cores reserved
-    dram_sharded_matmul_cores=8,
-    dram_bandwidth_gb_s=512,
-    tflops_hifi4=4096 * 1.35 / 1000 / 4,
-    tflops_hifi3=4096 * 1.35 / 1000 / 3,
-    tflops_hifi2=4096 * 1.35 / 1000 / 2,
-    tflops_lofi=4096 * 1.35 / 1000,
-))
+ArchitectureSpec.register(
+    ArchitectureSpec(
+        name="blackhole",
+        worker_cores=110,  # P150 with dispatch cores reserved
+        dram_sharded_matmul_cores=8,
+        dram_bandwidth_gb_s=512,
+        tflops_hifi4=4096 * 1.35 / 1000 / 4,
+        tflops_hifi3=4096 * 1.35 / 1000 / 3,
+        tflops_hifi2=4096 * 1.35 / 1000 / 2,
+        tflops_lofi=4096 * 1.35 / 1000,
+    )
+)
 
-ArchitectureSpec.register(ArchitectureSpec(
-    name="blackhole_p100",
-    worker_cores=110,
-    dram_sharded_matmul_cores=7,
-    dram_bandwidth_gb_s=448,
-    tflops_hifi4=4096 * 1.35 / 1000 / 4,
-    tflops_hifi3=4096 * 1.35 / 1000 / 3,
-    tflops_hifi2=4096 * 1.35 / 1000 / 2,
-    tflops_lofi=4096 * 1.35 / 1000,
-))
+ArchitectureSpec.register(
+    ArchitectureSpec(
+        name="blackhole_p100",
+        worker_cores=110,
+        dram_sharded_matmul_cores=7,
+        dram_bandwidth_gb_s=448,
+        tflops_hifi4=4096 * 1.35 / 1000 / 4,
+        tflops_hifi3=4096 * 1.35 / 1000 / 3,
+        tflops_hifi2=4096 * 1.35 / 1000 / 2,
+        tflops_lofi=4096 * 1.35 / 1000,
+    )
+)
 
-ArchitectureSpec.register(ArchitectureSpec(
-    name="bh20",
-    worker_cores=20,   # N1-emu
-    dram_sharded_matmul_cores=8,
-    dram_bandwidth_gb_s=512,
-    tflops_hifi4=4096 * 1.35 / 1000 / 4,
-    tflops_hifi3=4096 * 1.35 / 1000 / 3,
-    tflops_hifi2=4096 * 1.35 / 1000 / 2,
-    tflops_lofi=4096 * 1.35 / 1000,
-))
+ArchitectureSpec.register(
+    ArchitectureSpec(
+        name="bh20",
+        worker_cores=20,  # N1-emu
+        dram_sharded_matmul_cores=8,
+        dram_bandwidth_gb_s=512,
+        tflops_hifi4=4096 * 1.35 / 1000 / 4,
+        tflops_hifi3=4096 * 1.35 / 1000 / 3,
+        tflops_hifi2=4096 * 1.35 / 1000 / 2,
+        tflops_lofi=4096 * 1.35 / 1000,
+    )
+)
 
-ArchitectureSpec.register(ArchitectureSpec(
-    name="n1",
-    worker_cores=20,
-    dram_sharded_matmul_cores=8,
-    dram_bandwidth_gb_s=120,
-    tflops_hifi4=4096 * 0.65 / 1000 / 4,
-    tflops_hifi3=4096 * 0.65 / 1000 / 3,
-    tflops_hifi2=4096 * 0.65 / 1000 / 2,
-    tflops_lofi=4096 * 0.65 / 1000,
-))
+ArchitectureSpec.register(
+    ArchitectureSpec(
+        name="n1",
+        worker_cores=20,
+        dram_sharded_matmul_cores=8,
+        dram_bandwidth_gb_s=120,
+        tflops_hifi4=4096 * 0.65 / 1000 / 4,
+        tflops_hifi3=4096 * 0.65 / 1000 / 3,
+        tflops_hifi2=4096 * 0.65 / 1000 / 2,
+        tflops_lofi=4096 * 0.65 / 1000,
+    )
+)
 
 # Host fallback ops carry this marker anywhere in the op code, not as its first token.
 HOST_OP_MARKER = "(torch)"
@@ -482,58 +544,126 @@ BOUND_ANALYSIS_NONE = "none"
 # Operation category classification - single source of truth
 OPERATION_CATEGORIES = {
     "Compute": {
-        "AllGatherMatmul", "RMSAllGather", "ScaledDotProductAttentionDecode", "SdpaDecode",
-        "RotaryEmbeddingLlama", "RotaryEmbedding", "SDPAOperation",
-        "OptimizedConvNew", "Conv2d", "Matmul", "BinaryNg", "Binary",
-        "Unary", "Pool2D", "UpSample", "UpsampleOperation", "GroupNorm", "GridSample", "Accumulation",
-        "LayerNorm", "ScaledDotProductAttention", "Reduce", "FastReduceNC", "ArgMax", "Softmax",
-        "Embeddings", "MinimalMatmulOp", "SparseMatmul", "IntImg", "GridSampleOperation",
+        "AllGatherMatmul",
+        "RMSAllGather",
+        "ScaledDotProductAttentionDecode",
+        "SdpaDecode",
+        "RotaryEmbeddingLlama",
+        "RotaryEmbedding",
+        "SDPAOperation",
+        "OptimizedConvNew",
+        "Conv2d",
+        "Matmul",
+        "BinaryNg",
+        "Binary",
+        "Unary",
+        "Pool2D",
+        "UpSample",
+        "UpsampleOperation",
+        "GroupNorm",
+        "GridSample",
+        "Accumulation",
+        "LayerNorm",
+        "ScaledDotProductAttention",
+        "Reduce",
+        "FastReduceNC",
+        "ArgMax",
+        "Softmax",
+        "Embeddings",
+        "MinimalMatmulOp",
+        "SparseMatmul",
+        "IntImg",
+        "GridSampleOperation",
         # DeepSeek prefill MoE routing and expert maths (tt-metal experimental/deepseek_prefill/).
         # None moves data between devices; MaskedBincount and OffsetCumsum run on the
         # data-movement RISCs but compute counts and offsets rather than moving tensors.
-        "MoeGroupedTopk", "MaskedBincount", "OffsetCumsum", "UnifiedRoutedExpertFfn",
+        "MoeGroupedTopk",
+        "MaskedBincount",
+        "OffsetCumsum",
+        "UnifiedRoutedExpertFfn",
         "PostCombineReduce",
     },
     # Data Movement
     "DM": {
         "PagedUpdateCacheDeviceOperation",
-        "Move", "Copy", "InterleavedToSharded",
-        "ShardedToInterleaved", "InterleavedToShardedPartial",
-        "ShardedToInterleavedPartial", "Halo", "Where", "CloneOperation", "Reshard",
+        "Move",
+        "Copy",
+        "InterleavedToSharded",
+        "ShardedToInterleaved",
+        "InterleavedToShardedPartial",
+        "ShardedToInterleavedPartial",
+        "Halo",
+        "Where",
+        "CloneOperation",
+        "Reshard",
     },
     # Collective communication: inter-device traffic over the fabric. Ops that fuse a collective
     # with real compute (AllGatherMatmul, RMSAllGather) stay in Compute; their async and
     # attention-fused variants (e.g. RingAttentionAllGatherAsync) are not classified yet.
     "CCL": {
-        "AllGather", "AllGatherAsync", "AllGatherConcat",
-        "ReduceScatter", "ReduceScatterMinimalAsync", "ReduceScatterMinimalDirect",
-        "StridedReduceScatterAsync", "LlamaReduceScatter", "DeepseekMoEReduceScatter",
-        "StridedAllGatherAsync", "SliceReshardAsync", "SelectiveReduceCombine",
+        "AllGather",
+        "AllGatherAsync",
+        "AllGatherConcat",
+        "ReduceScatter",
+        "ReduceScatterMinimalAsync",
+        "ReduceScatterMinimalDirect",
+        "StridedReduceScatterAsync",
+        "LlamaReduceScatter",
+        "DeepseekMoEReduceScatter",
+        "StridedAllGatherAsync",
+        "SliceReshardAsync",
+        "SelectiveReduceCombine",
         # Its tt-metal type is ReduceToRootOp, which the DeviceOperation alias does not cover.
         "ReduceToRootOp",
         "AllReduceAsync",
-        "AllToAllAsync", "AllToAllAsyncGeneric", "AllToAllDispatch", "AllToAllDispatchMetadata",
+        "AllToAllAsync",
+        "AllToAllAsyncGeneric",
+        "AllToAllDispatch",
+        "AllToAllDispatchMetadata",
         "AllToAllCombine",
-        "AllBroadcast", "Broadcast",
-        "SendAsync", "RecvAsync", "SendDirectAsync", "RecvDirectAsync",
+        "AllBroadcast",
+        "Broadcast",
+        "SendAsync",
+        "RecvAsync",
+        "SendDirectAsync",
+        "RecvDirectAsync",
         # DeepSeek prefill MoE dispatch/combine (tt-metal experimental/deepseek_prefill/): both
         # take a fabric topology, so they are all-to-all collectives despite the generic names.
-        "Dispatch", "Combine",
+        "Dispatch",
+        "Combine",
     },
     # Tensor Manipulation
     "TM": {
-        "NLPCreateHeadsDecodeDeviceOperation", "NLPCreateQKVHeadsDecodeDeviceOperation", "NLPConcatHeadsDecodeDeviceOperation", "Fold", "CreateQKVHeadsDeviceOperation", "ConcatenateHeads",
-        "Reshape", "ReshapeView", "Transpose", "Permute", "Slice", "PaddedSlice", "SliceWrite",
-        "Concat", "Split", "Repeat",
-        "TilizeWithValPadding", "Tilize", "UntilizeWithUnpadding", "Untilize", "Typecast",
-        "NLPConcatHeads", "NlpCreateHeads", "Ternary", "FillPad", "PadDeviceOperation",
+        "NLPCreateHeadsDecodeDeviceOperation",
+        "NLPCreateQKVHeadsDecodeDeviceOperation",
+        "NLPConcatHeadsDecodeDeviceOperation",
+        "Fold",
+        "CreateQKVHeadsDeviceOperation",
+        "ConcatenateHeads",
+        "Reshape",
+        "ReshapeView",
+        "Transpose",
+        "Permute",
+        "Slice",
+        "PaddedSlice",
+        "SliceWrite",
+        "Concat",
+        "Split",
+        "Repeat",
+        "TilizeWithValPadding",
+        "Tilize",
+        "UntilizeWithUnpadding",
+        "Untilize",
+        "Typecast",
+        "NLPConcatHeads",
+        "NlpCreateHeads",
+        "Ternary",
+        "FillPad",
+        "PadDeviceOperation",
     },
-
     # Matched by classify_operation's HOST_OP_MARKER check, since the marker is never the first
     # token; listed so Host is a category like any other (chart order, colours, tests).
-    "Host": {
-        HOST_OP_MARKER
-    }
+    "Host": {HOST_OP_MARKER},
 }
 
 # Chart and stacked-report order. pd.Categorical turns any category missing here into NaN, so
@@ -554,9 +684,9 @@ _UNCLASSIFIED_OPS_WARNED = set()
 
 def classify_operation(op_code):
     """Classify operations into categories based on their type"""
-    
+
     global OPERATION_CATEGORIES_EXTENDED
-    
+
     if OPERATION_CATEGORIES_EXTENDED is None:
         OPERATION_CATEGORIES_EXTENDED = {}
         for category, operations in OPERATION_CATEGORIES.items():
@@ -581,8 +711,17 @@ def classify_operation(op_code):
     # If not found in any category, warn about unclassified operation (only once per operation type)
     warned_name = base_op[:MAX_WARNED_OP_NAME_CHARS]
     if warned_name not in _UNCLASSIFIED_OPS_WARNED:
-        shown = warned_name if len(base_op) <= MAX_WARNED_OP_NAME_CHARS else f"{warned_name}…"
-        print(colored(f"Warning: Unclassified operation '{shown}' found. Please add to OPERATION_CATEGORIES for proper classification.", "yellow"))
+        shown = (
+            warned_name
+            if len(base_op) <= MAX_WARNED_OP_NAME_CHARS
+            else f"{warned_name}…"
+        )
+        print(
+            colored(
+                f"Warning: Unclassified operation '{shown}' found. Please add to OPERATION_CATEGORIES for proper classification.",
+                "yellow",
+            )
+        )
         _UNCLASSIFIED_OPS_WARNED.add(warned_name)
 
     return "Other"
@@ -613,7 +752,15 @@ def escape_csv_formula(value):
 
 
 class Cell:
-    def __init__(self, value: Any, unit: Optional[str] = None, decimals=0, color=None, *, as_text=False):
+    def __init__(
+        self,
+        value: Any,
+        unit: Optional[str] = None,
+        decimals=0,
+        color=None,
+        *,
+        as_text=False,
+    ):
         self.raw_value = value
         self.unit = unit
         self.decimals = decimals
@@ -643,7 +790,9 @@ class Cell:
             op_name = parts[0]
             size = parts[1] if len(parts) > 1 else ""
             if self.color:
-                formatted = f"{colored(op_name, self.color)} {colored(size, self.color)}"
+                formatted = (
+                    f"{colored(op_name, self.color)} {colored(size, self.color)}"
+                )
             else:
                 formatted = f"{op_name} {size}"
         else:
@@ -696,7 +845,11 @@ def is_invalid_device_duration(row):
     if (
         gap_ns is not None
         and gap_ns < -INVALID_OP_TO_OP_GAP_MIN_NS
-        and abs(gap_ns) > max(duration_ns * INVALID_OP_TO_OP_GAP_DURATION_FRACTION, INVALID_OP_TO_OP_GAP_MIN_NS)
+        and abs(gap_ns)
+        > max(
+            duration_ns * INVALID_OP_TO_OP_GAP_DURATION_FRACTION,
+            INVALID_OP_TO_OP_GAP_MIN_NS,
+        )
     ):
         return True
 
@@ -716,7 +869,10 @@ def _started_after_predecessor(df, duration_ns, gap_ns):
     is_device_op = (df["OP TYPE"].to_numpy() == "tt_dnn_device") & ~np.isnan(device_ids)
     previous_duration_ns = np.full(len(df), np.nan)
     previous_duration_ns[is_device_op] = (
-        pd.Series(duration_ns[is_device_op]).groupby(device_ids[is_device_op]).shift(1).to_numpy()
+        pd.Series(duration_ns[is_device_op])
+        .groupby(device_ids[is_device_op])
+        .shift(1)
+        .to_numpy()
     )
     with np.errstate(invalid="ignore"):
         return is_device_op & (fw_end > fw_start) & (-gap_ns <= previous_duration_ns)
@@ -744,7 +900,13 @@ def valid_device_duration_mask(df, partitioned=False):
         suspect_gap = (
             ~np.isnan(gap_ns)
             & (gap_ns < -INVALID_OP_TO_OP_GAP_MIN_NS)
-            & (np.abs(gap_ns) > np.maximum(duration_ns * INVALID_OP_TO_OP_GAP_DURATION_FRACTION, INVALID_OP_TO_OP_GAP_MIN_NS))
+            & (
+                np.abs(gap_ns)
+                > np.maximum(
+                    duration_ns * INVALID_OP_TO_OP_GAP_DURATION_FRACTION,
+                    INVALID_OP_TO_OP_GAP_MIN_NS,
+                )
+            )
         )
     if partitioned and all(column in df.columns for column in OVERLAP_INPUT_COLUMNS):
         suspect_gap &= ~_started_after_predecessor(df, duration_ns, gap_ns)
@@ -762,9 +924,14 @@ def is_partitioned_capture(df, arch_spec):
         return True
     if SUB_DEVICE_ID_COLUMN not in df.columns:
         return False
-    return count_sub_devices(
-        df[SUB_DEVICE_ID_COLUMN].map(lambda value: get_op_sub_device_id({SUB_DEVICE_ID_COLUMN: value}))
-    ) > 0
+    return (
+        count_sub_devices(
+            df[SUB_DEVICE_ID_COLUMN].map(
+                lambda value: get_op_sub_device_id({SUB_DEVICE_ID_COLUMN: value})
+            )
+        )
+        > 0
+    )
 
 
 def get_analysis_duration_ns(row):
@@ -775,17 +942,32 @@ def get_analysis_duration_ns(row):
     return duration_ns, False
 
 
-def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signposts=False, print_signposts=False):
+def filter_by_signpost(
+    df,
+    start_signpost=None,
+    end_signpost=None,
+    ignore_signposts=False,
+    print_signposts=False,
+):
     signpost_rows = df[df["OP TYPE"] == "signpost"]
     filtered_data = df
     has_filtered_by_signposts = False
 
     if ignore_signposts:
-        print(colored("Ignoring all signposts. Using the entire file for analysis.", "cyan"))
+        print(
+            colored(
+                "Ignoring all signposts. Using the entire file for analysis.", "cyan"
+            )
+        )
         return df
 
     if signpost_rows.empty:
-        print(colored("No signposts found in the file. Using the entire file for analysis.", "yellow"))
+        print(
+            colored(
+                "No signposts found in the file. Using the entire file for analysis.",
+                "yellow",
+            )
+        )
         return df
 
     def _strip_signposts(window):
@@ -807,7 +989,12 @@ def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signpo
             has_filtered_by_signposts = True
             filtered_data = _rows_after_idx(matching.index[0])
         else:
-            print(colored(f"Specified starting signpost '{start_signpost}' not found.", "yellow"))
+            print(
+                colored(
+                    f"Specified starting signpost '{start_signpost}' not found.",
+                    "yellow",
+                )
+            )
 
     if end_signpost:
         matching = signpost_rows[signpost_rows["OP CODE"] == end_signpost]
@@ -820,16 +1007,30 @@ def filter_by_signpost(df, start_signpost=None, end_signpost=None, ignore_signpo
             if start_signpost == end_signpost:
                 index = index + 1
                 if len(matching) > 2:
-                    print(colored(f"Multiple occurrences of signpost '{end_signpost}' found. Using the second occurrence for the end filter.", "yellow"))
+                    print(
+                        colored(
+                            f"Multiple occurrences of signpost '{end_signpost}' found. Using the second occurrence for the end filter.",
+                            "yellow",
+                        )
+                    )
 
             if index < len(matching.index):
                 has_filtered_by_signposts = True
 
                 filtered_data = _rows_before_idx(matching.index[index])
             else:
-                print(colored(f"Not enough occurrences of signpost '{end_signpost}' to apply to both start and end filters.", "yellow"))
+                print(
+                    colored(
+                        f"Not enough occurrences of signpost '{end_signpost}' to apply to both start and end filters.",
+                        "yellow",
+                    )
+                )
         else:
-            print(colored(f"Specified ending signpost '{end_signpost}' not found.", "yellow"))
+            print(
+                colored(
+                    f"Specified ending signpost '{end_signpost}' not found.", "yellow"
+                )
+            )
 
     if has_filtered_by_signposts:
         return filtered_data
@@ -850,11 +1051,15 @@ def get_attribute_value(attributes, name):
     if not attributes:
         return None
 
-    quoted_match = re.search(rf"['\"]{re.escape(name)}['\"]\s*:\s*['\"]([^'\"]+)['\"]", attributes)
+    quoted_match = re.search(
+        rf"['\"]{re.escape(name)}['\"]\s*:\s*['\"]([^'\"]+)['\"]", attributes
+    )
     if quoted_match:
         return quoted_match.group(1)
 
-    unquoted_match = re.search(rf"['\"]{re.escape(name)}['\"]\s*:\s*([^;,\}}\s]+)", attributes)
+    unquoted_match = re.search(
+        rf"['\"]{re.escape(name)}['\"]\s*:\s*([^;,\}}\s]+)", attributes
+    )
     if unquoted_match:
         return unquoted_match.group(1)
 
@@ -879,11 +1084,15 @@ def get_bool_attribute(attributes, name, default=False):
 
 
 def get_tensor_dim(row, tensor_prefix, dim_name, csv_format):
-    return get_value_physical_logical(row[get_column_name(f"{tensor_prefix}_{dim_name}", csv_format)])
+    return get_value_physical_logical(
+        row[get_column_name(f"{tensor_prefix}_{dim_name}", csv_format)]
+    )
 
 
 def get_tensor_batch_size(row, tensor_prefix, csv_format):
-    return get_tensor_dim(row, tensor_prefix, "W", csv_format) * get_tensor_dim(row, tensor_prefix, "Z", csv_format)
+    return get_tensor_dim(row, tensor_prefix, "W", csv_format) * get_tensor_dim(
+        row, tensor_prefix, "Z", csv_format
+    )
 
 
 def get_sparse_matmul_batch_info(row, csv_format, attributes, active_experts):
@@ -896,18 +1105,28 @@ def get_sparse_matmul_batch_info(row, csv_format, attributes, active_experts):
     """
     input_0_batch = get_tensor_batch_size(row, "INPUT_0", csv_format)
     input_1_batch = get_tensor_batch_size(row, "INPUT_1", csv_format)
-    is_input_a_sparse = get_bool_attribute(attributes, "is_input_a_sparse", default=False)
-    is_input_b_sparse = get_bool_attribute(attributes, "is_input_b_sparse", default=True)
+    is_input_a_sparse = get_bool_attribute(
+        attributes, "is_input_a_sparse", default=False
+    )
+    is_input_b_sparse = get_bool_attribute(
+        attributes, "is_input_b_sparse", default=True
+    )
 
     if is_input_a_sparse and is_input_b_sparse:
         input_a_batch_groups = 1
         dense_sparse_batches = input_1_batch
     elif is_input_a_sparse:
-        input_a_batch_groups = max(1, input_0_batch // input_1_batch) if input_1_batch else input_0_batch
+        input_a_batch_groups = (
+            max(1, input_0_batch // input_1_batch) if input_1_batch else input_0_batch
+        )
         dense_sparse_batches = input_a_batch_groups * input_1_batch
     else:
         input_a_batch_groups = input_0_batch
-        dense_sparse_batches = input_a_batch_groups * input_1_batch if is_input_b_sparse else max(input_0_batch, input_1_batch)
+        dense_sparse_batches = (
+            input_a_batch_groups * input_1_batch
+            if is_input_b_sparse
+            else max(input_0_batch, input_1_batch)
+        )
 
     nnz = get_optional_int_attribute(attributes, "nnz")
     if nnz is not None:
@@ -962,9 +1181,15 @@ def evaluate_fidelity(
                 "HiFi2 may also work, it discards the lowest bit of the activations and has 2x the throughput of HiFi4",
             )
         elif math_fidelity in ("HiFi3", "HiFi2"):
-            return "too_low", "If your matmuls are not FLOP-bound use HiFi4 with BF16 activations for full accuracy"
+            return (
+                "too_low",
+                "If your matmuls are not FLOP-bound use HiFi4 with BF16 activations for full accuracy",
+            )
         elif math_fidelity == "LoFi":
-            return "too_low", "Use HiFi2 or HiFi4 with BF16 activations for improved accuracy"
+            return (
+                "too_low",
+                "Use HiFi2 or HiFi4 with BF16 activations for improved accuracy",
+            )
         else:
             assert False, f"Unknown math fidelity: {math_fidelity}"
     elif in0_bits == 8 and out_bits == 3:
@@ -992,20 +1217,35 @@ def evaluate_fidelity(
             assert False, f"Unknown math fidelity: {math_fidelity}"
     elif in1_bits >= 7 and out_bits >= 7:
         if math_fidelity == "HiFi4":
-            return "too_high", "HiFi2 is sufficient for BFP8 multiplication and has 2x the throughput of HiFi4"
+            return (
+                "too_high",
+                "HiFi2 is sufficient for BFP8 multiplication and has 2x the throughput of HiFi4",
+            )
         elif math_fidelity == "HiFi3":
-            return "too_high", "HiFi2 is sufficient for BFP8 multiplication and has higher throughput than HiFi3"
+            return (
+                "too_high",
+                "HiFi2 is sufficient for BFP8 multiplication and has higher throughput than HiFi3",
+            )
         elif math_fidelity == "HiFi2":
             return "sufficient", None
         elif math_fidelity == "LoFi":
-            return "too_low", "HiFi2 is recommended for accuracy; LoFi discards the lowest 2 bits of the weights"
+            return (
+                "too_low",
+                "HiFi2 is recommended for accuracy; LoFi discards the lowest 2 bits of the weights",
+            )
         else:
             assert False, f"Unknown math fidelity: {math_fidelity}"
     elif in1_bits >= 7 and out_bits == 3:
         if math_fidelity == "HiFi4":
-            return "too_high", "HiFi2 is sufficient for BFP8 multiplication and has 2x the throughput of HiFi4"
+            return (
+                "too_high",
+                "HiFi2 is sufficient for BFP8 multiplication and has 2x the throughput of HiFi4",
+            )
         elif math_fidelity == "HiFi3":
-            return "too_high", "HiFi2 is sufficient for BFP8 multiplication and has higher throughput than HiFi3"
+            return (
+                "too_high",
+                "HiFi2 is sufficient for BFP8 multiplication and has higher throughput than HiFi3",
+            )
         elif math_fidelity == "HiFi2":
             return (
                 "sufficient",
@@ -1022,9 +1262,14 @@ def evaluate_fidelity(
         if math_fidelity == "LoFi":
             return "sufficient", None
         else:
-            return "too_high", "LoFi is sufficient with BFP4 weights, use it for much higher throughput"
+            return (
+                "too_high",
+                "LoFi is sufficient with BFP4 weights, use it for much higher throughput",
+            )
     else:
-        print(f"Using {math_fidelity} for {input_0_datatype}/{input_1_datatype} inputs and {output_datatype} output")
+        print(
+            f"Using {math_fidelity} for {input_0_datatype}/{input_1_datatype} inputs and {output_datatype} output"
+        )
         print(f"Bits: {in0_bits}/{in1_bits}/{out_bits}")
         return (
             "unknown",
@@ -1058,7 +1303,12 @@ class MatmulAnalysis(NamedTuple):
     sparse_active_source: Optional[str] = None
 
 
-def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None, active_experts: Optional[int] = None):
+def analyze_matmul(
+    row,
+    csv_format=CsvFormat.V2,
+    arch_spec: ArchitectureSpec = None,
+    active_experts: Optional[int] = None,
+):
     if arch_spec is None:
         arch_spec = ArchitectureSpec.from_name("wormhole")
 
@@ -1066,14 +1316,18 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     input_1_from_dram = "DRAM" in row["INPUT_1_MEMORY"]
 
     duration_ns, _ = get_analysis_duration_ns(row)
-    duration_s = duration_ns * 1e-9 if duration_ns is not None and duration_ns > 0 else None
+    duration_s = (
+        duration_ns * 1e-9 if duration_ns is not None and duration_ns > 0 else None
+    )
 
     core_count = get_core_count(row, "CORE COUNT")
     math_fidelity = row["MATH FIDELITY"]
 
     # Check for DRAM-sharded program config
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
-    is_dram_sharded = "MatmulMultiCoreReuseMultiCastDRAMShardedProgramConfig" in attributes
+    is_dram_sharded = (
+        "MatmulMultiCoreReuseMultiCastDRAMShardedProgramConfig" in attributes
+    )
     is_sparse_matmul = "SparseMatmul" in row["OP CODE"]
 
     # The profiler's CORE COUNT describes the enclosing worker grid for this
@@ -1104,9 +1358,18 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     output_0_x = get_tensor_dim(row, "OUTPUT_0", "X", csv_format)
 
     dimensions = (
-        input_0_w, input_0_z, input_0_y, input_0_x,
-        input_1_w, input_1_z, input_1_y, input_1_x,
-        output_0_w, output_0_z, output_0_y, output_0_x,
+        input_0_w,
+        input_0_z,
+        input_0_y,
+        input_0_x,
+        input_1_w,
+        input_1_z,
+        input_1_y,
+        input_1_x,
+        output_0_w,
+        output_0_z,
+        output_0_y,
+        output_0_x,
     )
     if any(dimension is None for dimension in dimensions):
         # A malformed shape cell costs this op its modelled figures rather than
@@ -1136,8 +1399,8 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     sparse_dense_batches = None
 
     if is_sparse_matmul:
-        sparse_active_batches, sparse_dense_batches, sparse_active_source = get_sparse_matmul_batch_info(
-            row, csv_format, attributes, active_experts
+        sparse_active_batches, sparse_dense_batches, sparse_active_source = (
+            get_sparse_matmul_batch_info(row, csv_format, attributes, active_experts)
         )
         if sparse_active_batches is None:
             sparse_active_batches_missing = True
@@ -1146,21 +1409,58 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
         else:
             total_data_size_bytes = 0
             if input_0_from_dram:
-                total_data_size_bytes += M * K * get_datatype_size(row["INPUT_0_DATATYPE"]) * sparse_active_batches
+                total_data_size_bytes += (
+                    M
+                    * K
+                    * get_datatype_size(row["INPUT_0_DATATYPE"])
+                    * sparse_active_batches
+                )
             if input_1_from_dram:
-                total_data_size_bytes += K * N * get_datatype_size(row["INPUT_1_DATATYPE"]) * sparse_active_batches
+                total_data_size_bytes += (
+                    K
+                    * N
+                    * get_datatype_size(row["INPUT_1_DATATYPE"])
+                    * sparse_active_batches
+                )
             if "DRAM" in row["OUTPUT_0_MEMORY"]:
-                total_data_size_bytes += M * N * get_datatype_size(row["OUTPUT_0_DATATYPE"]) * sparse_active_batches
-            flops = (M * K * N * sparse_active_batches * 2) / duration_s if duration_s else None
+                total_data_size_bytes += (
+                    M
+                    * N
+                    * get_datatype_size(row["OUTPUT_0_DATATYPE"])
+                    * sparse_active_batches
+                )
+            flops = (
+                (M * K * N * sparse_active_batches * 2) / duration_s
+                if duration_s
+                else None
+            )
     else:
         if input_0_from_dram:
-            total_data_size_bytes += input_0_w * input_0_y * input_0_z * input_0_x * get_datatype_size(row["INPUT_0_DATATYPE"])
+            total_data_size_bytes += (
+                input_0_w
+                * input_0_y
+                * input_0_z
+                * input_0_x
+                * get_datatype_size(row["INPUT_0_DATATYPE"])
+            )
         if input_1_from_dram:
-            total_data_size_bytes += input_1_w * input_1_y * input_1_z * input_1_x * get_datatype_size(row["INPUT_1_DATATYPE"])
+            total_data_size_bytes += (
+                input_1_w
+                * input_1_y
+                * input_1_z
+                * input_1_x
+                * get_datatype_size(row["INPUT_1_DATATYPE"])
+            )
 
         # Always include output if it's written to DRAM
         if "DRAM" in row["OUTPUT_0_MEMORY"]:
-            total_data_size_bytes += output_0_w * output_0_y * output_0_z * output_0_x * get_datatype_size(row["OUTPUT_0_DATATYPE"])
+            total_data_size_bytes += (
+                output_0_w
+                * output_0_y
+                * output_0_z
+                * output_0_x
+                * get_datatype_size(row["OUTPUT_0_DATATYPE"])
+            )
 
         flops = (M * K * N * W * Z * 2) / duration_s if duration_s else None
 
@@ -1170,7 +1470,9 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
 
     dram_speed_gb_s = (
         (total_data_size_bytes / duration_s) / 1e9
-        if duration_s and total_data_size_bytes is not None and total_data_size_bytes > 0
+        if duration_s
+        and total_data_size_bytes is not None
+        and total_data_size_bytes > 0
         else None
     )
 
@@ -1183,7 +1485,11 @@ def analyze_matmul(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = N
     else:
         size = f"b={{{batch}}} x {M} x {K} x {N}" if batch > 1 else f"{M} x {K} x {N}"
 
-    dram_percentage = (dram_speed_gb_s / arch_spec.dram_bandwidth_gb_s) * 100 if dram_speed_gb_s is not None else None
+    dram_percentage = (
+        (dram_speed_gb_s / arch_spec.dram_bandwidth_gb_s) * 100
+        if dram_speed_gb_s is not None
+        else None
+    )
     flops_percentage = (
         (flops / peak_flops_value) * 100
         if flops is not None and peak_flops_value
@@ -1235,13 +1541,16 @@ def analyze_halo(row):
         dilation_hw = "x"
 
     try:
-        memory_layout = attributes.split("memory_layout=")[1].split(";")[0].split("::")[1]
+        memory_layout = (
+            attributes.split("memory_layout=")[1].split(";")[0].split("::")[1]
+        )
     except (IndexError, AttributeError):
         memory_layout = "x"
 
     config = f"w={window_hw} s={stride_hw} p={pad_hw} d={dilation_hw} | {memory_layout}"
 
     return config
+
 
 def get_conv_window_hw(attributes) -> Optional[Tuple[int, int]]:
     """
@@ -1275,7 +1584,9 @@ def analyze_conv(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = Non
         arch_spec = ArchitectureSpec.from_name("wormhole")
 
     duration_ns, _ = get_analysis_duration_ns(row)
-    duration_s = duration_ns * 1e-9 if duration_ns is not None and duration_ns > 0 else None
+    duration_s = (
+        duration_ns * 1e-9 if duration_ns is not None and duration_ns > 0 else None
+    )
 
     # Conv scores against the cores it actually used, as matmul does, rather than
     # against the grid it was given. That is subdevice-safe by construction, so
@@ -1315,29 +1626,37 @@ def analyze_conv(row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = Non
     )
 
     try:
-        act_block_h_ntiles = int(attributes.split("act_block_h_ntiles")[1][1:].split(";")[0])
+        act_block_h_ntiles = int(
+            attributes.split("act_block_h_ntiles")[1][1:].split(";")[0]
+        )
     except (IndexError, ValueError):
         act_block_h_ntiles = "x"
 
     try:
-        enable_act_double_buffer = "true" == attributes.split("enable_act_double_buffer': '")[1].split("'")[0]
+        enable_act_double_buffer = (
+            "true" == attributes.split("enable_act_double_buffer': '")[1].split("'")[0]
+        )
     except (IndexError, ValueError):
         enable_act_double_buffer = "x"
 
     try:
-        enable_split_reader = "true" == attributes.split("enable_split_reader': '")[1].split("'")[0]
+        enable_split_reader = (
+            "true" == attributes.split("enable_split_reader': '")[1].split("'")[0]
+        )
     except (IndexError, ValueError):
         enable_split_reader = "x"
 
     try:
-        per_core_out_matrix_height_ntile = int(attributes.split("per_core_out_matrix_height_ntile")[1][1:].split(";")[0])
+        per_core_out_matrix_height_ntile = int(
+            attributes.split("per_core_out_matrix_height_ntile")[1][1:].split(";")[0]
+        )
     except (IndexError, ValueError):
         per_core_out_matrix_height_ntile = "x"
 
     config = f"[ABH={per_core_out_matrix_height_ntile}|{act_block_h_ntiles}"
-    if (enable_act_double_buffer):
+    if enable_act_double_buffer:
         config += " ADB"
-    if (enable_split_reader):
+    if enable_split_reader:
         config += " SR"
     config += "]"
 
@@ -1369,11 +1688,17 @@ def idle_cell(idle_ns):
     return Cell(idle_ns / 1000 if idle_ns is not None else None, unit="μs", decimals=0)
 
 
-def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSpec = None,
-               active_experts: Optional[int] = None, prev_row_invalid_duration: Optional[bool] = None):
+def analyze_op(
+    row,
+    prev_row,
+    csv_format=CsvFormat.V2,
+    arch_spec: ArchitectureSpec = None,
+    active_experts: Optional[int] = None,
+    prev_row_invalid_duration: Optional[bool] = None,
+):
     if arch_spec is None:
         arch_spec = ArchitectureSpec.from_name("wormhole")
-    
+
     # OP CODE is CSV text reported verbatim, and it reaches the terminal table,
     # the stacked report and --csv. Sanitize it once, here, rather than at each.
     op_code = Cell(sanitize_text(row["OP CODE"]))
@@ -1395,9 +1720,13 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     # recomputing it here made validity a ~4x per-row cost. Fall back to
     # computing it when a caller does not thread it through.
     if prev_row_invalid_duration is None:
-        prev_row_invalid_duration = prev_row is not None and is_invalid_device_duration(prev_row)
+        prev_row_invalid_duration = prev_row is not None and is_invalid_device_duration(
+            prev_row
+        )
     prev_invalid_device_duration = prev_row is not None and prev_row_invalid_duration
-    current_or_prev_duration_invalid = invalid_device_duration or prev_invalid_device_duration
+    current_or_prev_duration_invalid = (
+        invalid_device_duration or prev_invalid_device_duration
+    )
     # A negative gap is kept: the op started before its predecessor finished,
     # which is what concurrent subdevices look like, and blanking it would hide
     # that. gap_time() leaves it out of every total, since overlapped time is
@@ -1406,7 +1735,10 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         prev_row is not None
         and prev_row["OP TYPE"] != "signpost"
         and raw_gap_ns is not None
-        and not (current_or_prev_duration_invalid and abs(raw_gap_ns) > INVALID_OP_TO_OP_GAP_MIN_NS)
+        and not (
+            current_or_prev_duration_invalid
+            and abs(raw_gap_ns) > INVALID_OP_TO_OP_GAP_MIN_NS
+        )
     ):
         op_to_op_gap = Cell(
             raw_gap_ns / 1000,
@@ -1419,7 +1751,8 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     # Set by annotate_overlap before merging.
     if device_time.raw_value is not None:
         overlap, busy_time_cell = overlap_cells(
-            get_numeric_value(row, OVERLAP_COLUMN), get_numeric_value(row, OVERLAP_BUSY_COLUMN)
+            get_numeric_value(row, OVERLAP_COLUMN),
+            get_numeric_value(row, OVERLAP_BUSY_COLUMN),
         )
         idle_time_cell = idle_cell(get_numeric_value(row, OVERLAP_IDLE_COLUMN))
     else:
@@ -1432,9 +1765,15 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     output_datatype = get_entry("OUTPUT_0_DATATYPE")
     input_0_datatype = get_entry("INPUT_0_DATATYPE")
     input_1_datatype = get_entry("INPUT_1_DATATYPE")
-    output_datatype_cell = Cell(output_datatype)
-    input_0_datatype_cell = Cell(input_0_datatype)
-    input_1_datatype_cell = Cell(input_1_datatype)
+    # pandas reads a blank datatype as NaN, which --csv would write as "nan".
+    # Only the cells change: the op-code text below interpolates the raw values.
+    output_datatype_cell = Cell(output_datatype if pd.notna(output_datatype) else None)
+    input_0_datatype_cell = Cell(
+        input_0_datatype if pd.notna(input_0_datatype) else None
+    )
+    input_1_datatype_cell = Cell(
+        input_1_datatype if pd.notna(input_1_datatype) else None
+    )
     short_name = lambda n: {
         "FLOAT32": "FP32",
         "BFLOAT16": "BF16",
@@ -1452,9 +1791,15 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
     sparse_active_source = None
 
     math_fidelity = ""
-    math_fidelity += f"{short_name(input_0_datatype)}" if pd.notna(input_0_datatype) else ""
-    math_fidelity += f", {short_name(input_1_datatype)}" if pd.notna(input_1_datatype) else ""
-    math_fidelity += f" => {short_name(output_datatype)}" if pd.notna(output_datatype) else ""
+    math_fidelity += (
+        f"{short_name(input_0_datatype)}" if pd.notna(input_0_datatype) else ""
+    )
+    math_fidelity += (
+        f", {short_name(input_1_datatype)}" if pd.notna(input_1_datatype) else ""
+    )
+    math_fidelity += (
+        f" => {short_name(output_datatype)}" if pd.notna(output_datatype) else ""
+    )
     math_fidelity_cell = Cell(math_fidelity.strip())
 
     is_dram_sharded = False
@@ -1476,7 +1821,11 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         dram_speed = Cell(matmul.dram_speed_gb_s, unit="GB/s", decimals=0)
         dram_percentage = Cell(matmul.dram_percentage, unit="%", decimals=1)
         flops = Cell(
-            matmul.flops / 1e12 if matmul.flops is not None and pd.notna(matmul.flops) else None,
+            (
+                matmul.flops / 1e12
+                if matmul.flops is not None and pd.notna(matmul.flops)
+                else None
+            ),
             unit="TFLOPs",
             decimals=1,
         )
@@ -1504,7 +1853,9 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         op_code = Cell(f"{op_code.raw_value} {size} {config}")
         dram_speed = Cell(None, unit="GB/s", decimals=0)
         dram_percentage = Cell(None, unit="%", decimals=1)
-        flops = Cell(flops / 1e12 if pd.notna(flops) else None, unit="TFLOPs", decimals=1)
+        flops = Cell(
+            flops / 1e12 if pd.notna(flops) else None, unit="TFLOPs", decimals=1
+        )
         flops_percentage = Cell(flops_percentage, unit="%", decimals=1)
         math_fidelity_cell = Cell(
             f"{math_fidelity} {short_name(input_0_datatype)} x {short_name(input_1_datatype)} => {short_name(output_datatype)}".strip()
@@ -1553,7 +1904,9 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
         "Bound Analysis": Cell(bound_analysis),
     }
 
-    input_0_memory = Cell(row["INPUT_0_MEMORY"] if pd.notna(row["INPUT_0_MEMORY"]) else None)
+    input_0_memory = Cell(
+        row["INPUT_0_MEMORY"] if pd.notna(row["INPUT_0_MEMORY"]) else None
+    )
 
     # Extract program config details
     attributes = row["ATTRIBUTES"] if pd.notna(row["ATTRIBUTES"]) else ""
@@ -1583,7 +1936,11 @@ def analyze_op(row, prev_row, csv_format=CsvFormat.V2, arch_spec: ArchitectureSp
 
 
 def sum_column(rows, header):
-    return sum(op_data[header].raw_value for op_data in rows if op_data[header].raw_value is not None)
+    return sum(
+        op_data[header].raw_value
+        for op_data in rows
+        if op_data[header].raw_value is not None
+    )
 
 
 def summed_op_time(rows):
@@ -1673,11 +2030,20 @@ def measure_timeline(rows, has_overlap, busy_label, slowest_device=None):
     if slowest_device is not None:
         busy_ns, idle_ns, overlap_ns = slowest_device
         return Timeline(
-            summed, busy_ns / 1000, overlap_ns / 1000, idle_ns / 1000, busy_label,
-            has_overlap=True, slowest_device=True,
+            summed,
+            busy_ns / 1000,
+            overlap_ns / 1000,
+            idle_ns / 1000,
+            busy_label,
+            has_overlap=True,
+            slowest_device=True,
         )
     return Timeline(
-        summed, busy_time(rows), sum_column(rows, "Overlap"), sum_column(rows, IDLE_TIME_KEY), busy_label,
+        summed,
+        busy_time(rows),
+        sum_column(rows, "Overlap"),
+        sum_column(rows, IDLE_TIME_KEY),
+        busy_label,
         has_overlap=True,
     )
 
@@ -1709,13 +2075,24 @@ def gap_time(rows):
 def add_derived_columns(rows):
     total_duration = summed_op_time(rows) + gap_time(rows)
     for op_data in rows:
-        device_time = op_data["Device Time"].raw_value if op_data["Device Time"].raw_value is not None else 0
+        device_time = (
+            op_data["Device Time"].raw_value
+            if op_data["Device Time"].raw_value is not None
+            else 0
+        )
         op_to_op_gap = visible_gap(op_data)
         if total_duration != 0:
-            op_data["Total %"] = Cell(((device_time + op_to_op_gap) / total_duration) * 100, unit="%", decimals=1)
+            op_data["Total %"] = Cell(
+                ((device_time + op_to_op_gap) / total_duration) * 100,
+                unit="%",
+                decimals=1,
+            )
         else:
             op_data["Total %"] = Cell(None, unit="%", decimals=1)
-        if op_data["Device Time"].raw_value is None and op_data["Op-to-Op Gap"].raw_value is None:
+        if (
+            op_data["Device Time"].raw_value is None
+            and op_data["Op-to-Op Gap"].raw_value is None
+        ):
             op_data["Total %"].raw_value = None
 
         # Only the full roofline model yields both figures; analyze_op records which model ran.
@@ -1758,7 +2135,8 @@ def calculate_overall_dram_roofline(rows, busy_us=None):
     weighted_dram_percentage = sum(
         op_data["DRAM %"].raw_value * op_data["Device Time"].raw_value
         for op_data in timed_rows
-        if op_data["DRAM %"].raw_value is not None and pd.notna(op_data["DRAM %"].raw_value)
+        if op_data["DRAM %"].raw_value is not None
+        and pd.notna(op_data["DRAM %"].raw_value)
     )
 
     if total_dram_bytes == 0:
@@ -1783,11 +2161,13 @@ def has_missing_sparse_active_batches(rows):
 
 def print_sparse_matmul_active_experts_warning(rows):
     if has_missing_sparse_active_batches(rows):
-        print(colored(
-            "Warning: SparseMatmulDeviceOperation rows without numeric nnz were found. "
-            "Their DRAM/FLOP utilization is omitted; pass --active-experts K to model K active experts per input batch group.",
-            "yellow",
-        ))
+        print(
+            colored(
+                "Warning: SparseMatmulDeviceOperation rows without numeric nnz were found. "
+                "Their DRAM/FLOP utilization is omitted; pass --active-experts K to model K active experts per input batch group.",
+                "yellow",
+            )
+        )
 
 
 def print_invalid_duration_warning(rows):
@@ -1800,18 +2180,20 @@ def print_invalid_duration_warning(rows):
     if not invalid_rows:
         return
 
-    print(colored(
-        f"Warning: {len(invalid_rows)} rows had invalid device durations. "
-        "Their device time, utilization, and timing-total contributions were omitted.",
-        "yellow",
-    ))
+    print(
+        colored(
+            f"Warning: {len(invalid_rows)} rows had invalid device durations. "
+            "Their device time, utilization, and timing-total contributions were omitted.",
+            "yellow",
+        )
+    )
 
 
 def get_op_color(op_code):
     for op, color in op_colors.items():
         if op in op_code:
             return color
-    
+
     return default_cell_color
 
 
@@ -1819,20 +2201,28 @@ def print_row(row, col_widths, headers):
     def format_cell(header, cell):
         # Avoid thousand separators for ID column
         text = colored(str(cell.raw_value), cell.color) if header == "ID" else str(cell)
-    
-        # Add signpost emoji for OP Code if it contains "(signpost)" 
+
+        # Add signpost emoji for OP Code if it contains "(signpost)"
         # --> 🪧 I'm a signpost
         if header == "OP Code" and "(signpost)" in text:
             text = text.replace("(signpost)", "").strip()
             text = "🪧 " + text
-        
-        return pad_string(text, col_widths[headers.index(header)], align="left" if header == "OP Code" else "right")
+
+        return pad_string(
+            text,
+            col_widths[headers.index(header)],
+            align="left" if header == "OP Code" else "right",
+        )
 
     print("  ".join(format_cell(header, row[header]) for header in headers))
 
 
 def color_row(op_data, percentage, min_percentage):
-    if percentage is not None and percentage < min_percentage and not is_host_op(op_data):
+    if (
+        percentage is not None
+        and percentage < min_percentage
+        and not is_host_op(op_data)
+    ):
         for v in op_data.values():
             v.color = muted_cell_color
     else:
@@ -1852,7 +2242,9 @@ def color_row(op_data, percentage, min_percentage):
             # only ever removes red from an op, never adds it.
             is_dram_sharded = op_data.get("DRAM Sharded", Cell(False)).raw_value
             available_cores = op_data.get("Available Cores", Cell(None)).raw_value
-            uses_little_of_budget = available_cores is None or num_cores < available_cores / 2
+            uses_little_of_budget = (
+                available_cores is None or num_cores < available_cores / 2
+            )
             if is_dram_sharded:
                 op_data["Cores"].color = "green"
             elif num_cores < 10 and uses_little_of_budget:
@@ -1884,11 +2276,16 @@ def color_row(op_data, percentage, min_percentage):
         elif op_data["Bound"].raw_value == "HOST":
             op_data["Bound"].color = "red"
 
-        if op_data["Op-to-Op Gap"].raw_value is not None and op_data["Op-to-Op Gap"].raw_value > 6.5:
+        if (
+            op_data["Op-to-Op Gap"].raw_value is not None
+            and op_data["Op-to-Op Gap"].raw_value > 6.5
+        ):
             op_data["Op-to-Op Gap"].color = "red"
 
-        if ("Matmul" in op_data["OP Code"].raw_value 
-            or "OptimizedConvNew" in op_data["OP Code"].raw_value) and op_data["Math Fidelity"].raw_value:
+        if (
+            "Matmul" in op_data["OP Code"].raw_value
+            or "OptimizedConvNew" in op_data["OP Code"].raw_value
+        ) and op_data["Math Fidelity"].raw_value:
             math_fidelity = op_data["Math Fidelity"].raw_value.split()[0]
             input_0_datatype = op_data["Input 0 Datatype"].raw_value
             input_1_datatype = op_data["Input 1 Datatype"].raw_value
@@ -1910,10 +2307,17 @@ def color_row(op_data, percentage, min_percentage):
     return op_data
 
 
-def print_performance_table(rows, headers, col_widths, device_ops, host_ops, signpost_count, timeline=None):
+def print_performance_table(
+    rows, headers, col_widths, device_ops, host_ops, signpost_count, timeline=None
+):
     print("\n🚀 Performance Report 🚀\n========================\n")
 
-    print("  ".join(pad_string(header, col_widths[i], align="left") for i, header in enumerate(headers)))
+    print(
+        "  ".join(
+            pad_string(header, col_widths[i], align="left")
+            for i, header in enumerate(headers)
+        )
+    )
     print("-" * sum(col_widths) + "-" * (len(headers) - 1) * 2)
 
     for idx, op_data in enumerate(rows):
@@ -1922,14 +2326,20 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
     print("-" * (sum(col_widths) + (len(headers) - 1) * 2))
 
     if timeline is None:
-        timeline = measure_timeline(rows, has_overlap=False, busy_label="wall-clock busy time")
+        timeline = measure_timeline(
+            rows, has_overlap=False, busy_label="wall-clock busy time"
+        )
     total_visible_gap = gap_time(rows)
-    overall_dram_speed, overall_dram_percentage = calculate_overall_dram_roofline(rows, timeline.busy)
+    overall_dram_speed, overall_dram_percentage = calculate_overall_dram_roofline(
+        rows, timeline.busy
+    )
     total_row = {
         "ID": Cell(""),
         "Total %": Cell(100.0, unit="%", decimals=1),
         "Bound": Cell(""),
-        "OP Code": Cell(f"{device_ops} device ops, {host_ops} host ops, {signpost_count} signposts"),
+        "OP Code": Cell(
+            f"{device_ops} device ops, {host_ops} host ops, {signpost_count} signposts"
+        ),
         "Device Time": Cell(timeline.summed, unit="μs", decimals=0),
         "Op-to-Op Gap": Cell(total_visible_gap, unit="μs", decimals=0),
         "DRAM": Cell(overall_dram_speed, unit="GB/s", decimals=0),
@@ -1946,16 +2356,23 @@ def print_performance_table(rows, headers, col_widths, device_ops, host_ops, sig
         if header not in total_row:
             total_row[header] = Cell("")
     print_row(
-        {k: Cell(v.raw_value, v.unit, v.decimals, color=muted_cell_color) for k, v in total_row.items()}, col_widths, headers
+        {
+            k: Cell(v.raw_value, v.unit, v.decimals, color=muted_cell_color)
+            for k, v in total_row.items()
+        },
+        col_widths,
+        headers,
     )
 
     if timeline.has_overlap:
-        print(colored(
-            f"* Total % adds up to 100% of summed op time ({timeline.summed:,.0f} μs), not elapsed time; "
-            f"{timeline.overlap_phrase}. The Device Time total is "
-            f"{timeline.busy_label}: {timeline.busy:,.0f} μs.",
-            muted_cell_color,
-        ))
+        print(
+            colored(
+                f"* Total % adds up to 100% of summed op time ({timeline.summed:,.0f} μs), not elapsed time; "
+                f"{timeline.overlap_phrase}. The Device Time total is "
+                f"{timeline.busy_label}: {timeline.busy:,.0f} μs.",
+                muted_cell_color,
+            )
+        )
 
 
 def print_advice_section(rows, headers, col_widths, timeline=None):
@@ -1986,7 +2403,9 @@ def print_op_to_op_gap_advice(rows, headers, col_widths, timeline=None):
         print("High Op-to-Op Gap\n----------------")
         for idx, op_data in high_gap_ops:
             print_row(op_data, col_widths, headers)
-        max_gap_overhead = sum(advice_gap(op_data, timeline) - 6 for _, op_data in high_gap_ops)
+        max_gap_overhead = sum(
+            advice_gap(op_data, timeline) - 6 for _, op_data in high_gap_ops
+        )
 
         # A share of elapsed time: overlapped op time counts once, and with
         # overlap measured only the gaps no op covered count at all.
@@ -2009,7 +2428,10 @@ def is_matmul_op(op_data):
 
 
 def is_sparse_matmul_op(op_data):
-    return op_data.get("Sparse Matmul", Cell(False)).raw_value or "SparseMatmul" in op_data["OP Code"].raw_value
+    return (
+        op_data.get("Sparse Matmul", Cell(False)).raw_value
+        or "SparseMatmul" in op_data["OP Code"].raw_value
+    )
 
 
 def print_matmul_advice(rows, headers, col_widths):
@@ -2020,7 +2442,11 @@ def print_matmul_advice(rows, headers, col_widths):
         for op_data in matmul_ops:
             print_row(op_data, col_widths, headers)
             advice = generate_matmul_advice(op_data)
-            color = muted_cell_color if op_data["OP Code"].color == muted_cell_color else default_cell_color
+            color = (
+                muted_cell_color
+                if op_data["OP Code"].color == muted_cell_color
+                else default_cell_color
+            )
 
             if advice:
                 for item in advice:
@@ -2039,7 +2465,9 @@ def generate_matmul_advice(op_data):
         ]
 
     math_fidelity = (
-        op_data["Math Fidelity"].raw_value.split()[0] if op_data["Math Fidelity"].raw_value else None
+        op_data["Math Fidelity"].raw_value.split()[0]
+        if op_data["Math Fidelity"].raw_value
+        else None
     )
     output_datatype = op_data["Output Datatype"].raw_value
     input_0_datatype = op_data["Input 0 Datatype"].raw_value
@@ -2069,20 +2497,29 @@ def generate_matmul_advice(op_data):
             and available_cores is not None
             and cores < available_cores
         ):
-            advice.append(f"Increase grid size (currently using {cores} of {available_cores})")
+            advice.append(
+                f"Increase grid size (currently using {cores} of {available_cores})"
+            )
         if fidelity_evaluation == "too_high":
             advice.append(fidelity_advice)
     elif op_data["Bound"].raw_value == "SLOW":
         input_0_memory = op_data["Input 0 Memory"].raw_value
         if input_0_memory and "L1" not in input_0_memory:
-            advice.append(f"If possible place input 0 in L1 (currently in {input_0_memory})")
+            advice.append(
+                f"If possible place input 0 in L1 (currently in {input_0_memory})"
+            )
 
         inner_dim_block = op_data["Inner Dim Block Size"].raw_value
         out_h = op_data["Output Subblock H"].raw_value
         out_w = op_data["Output Subblock W"].raw_value
         is_dram_sharded = op_data["DRAM Sharded"].raw_value
 
-        if not is_dram_sharded and inner_dim_block is None and out_h is None and out_w is None:
+        if (
+            not is_dram_sharded
+            and inner_dim_block is None
+            and out_h is None
+            and out_w is None
+        ):
             advice.append(
                 "No program_config specified, try using one to override in0_block_w and out_subblock_h/w"
             )
@@ -2090,7 +2527,9 @@ def generate_matmul_advice(op_data):
             all_good = True
             if inner_dim_block is not None:
                 if inner_dim_block < 2:
-                    advice.append(f"in0_block_w={inner_dim_block} is small, try in0_block_w=2 or above")
+                    advice.append(
+                        f"in0_block_w={inner_dim_block} is small, try in0_block_w=2 or above"
+                    )
                     all_good = False
             else:
                 advice.append("No inner dim block size found")
@@ -2145,34 +2584,54 @@ def _get_category_border_colors():
     return dict.fromkeys(CATEGORY_ORDER, "black")
 
 
-def _sort_dataframe_by_category(stacked_df: pd.DataFrame, category_column: str = "Op_Category") -> pd.DataFrame:
+def _sort_dataframe_by_category(
+    stacked_df: pd.DataFrame, category_column: str = "Op_Category"
+) -> pd.DataFrame:
     """Sort DataFrame by category order when using category-based visualization."""
     # Create a categorical column with the desired order
-    stacked_df["category_sort"] = pd.Categorical(stacked_df[category_column], categories=CATEGORY_ORDER, ordered=True)
-    
+    stacked_df["category_sort"] = pd.Categorical(
+        stacked_df[category_column], categories=CATEGORY_ORDER, ordered=True
+    )
+
     # Sort by category first, then by Device_Time_Sum_us descending within each category
-    stacked_df = stacked_df.sort_values(["category_sort", "Device_Time_Sum_us"], ascending=[True, False])
-    
+    stacked_df = stacked_df.sort_values(
+        ["category_sort", "Device_Time_Sum_us"], ascending=[True, False]
+    )
+
     # Drop the helper column
     return stacked_df.drop("category_sort", axis=1)
 
 
-def _get_color_for_bar(i: int, row: pd.Series, stack_by_category: bool, use_category_colors: bool, 
-                      current_category: str, category_color_index: int, 
-                      category_color_palettes: dict, fallback_colors: list) -> tuple:
+def _get_color_for_bar(
+    i: int,
+    row: pd.Series,
+    stack_by_category: bool,
+    use_category_colors: bool,
+    current_category: str,
+    category_color_index: int,
+    category_color_palettes: dict,
+    fallback_colors: list,
+) -> tuple:
     """
     Determine the color for a bar based on the coloring scheme.
-    
+
     Returns:
         tuple: (color, updated_category_color_index)
     """
-    if use_category_colors and not stack_by_category and "Op_Category" in row.index and current_category in category_color_palettes:
+    if (
+        use_category_colors
+        and not stack_by_category
+        and "Op_Category" in row.index
+        and current_category in category_color_palettes
+    ):
         # Use category-specific colors
         palette = category_color_palettes[current_category]
         if category_color_index < len(palette):
             color = palette[category_color_index]
         else:
-            color = fallback_colors[(category_color_index - len(palette)) % len(fallback_colors)]
+            color = fallback_colors[
+                (category_color_index - len(palette)) % len(fallback_colors)
+            ]
         return color, category_color_index + 1
     else:
         # Use original tab20 color scheme
@@ -2180,10 +2639,17 @@ def _get_color_for_bar(i: int, row: pd.Series, stack_by_category: bool, use_cate
         return color, category_color_index
 
 
-def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool = False, stack_by_category: bool = False, no_merge_devices: bool = False, no_host_ops: bool = False) -> pd.DataFrame:
+def generate_stacked_report(
+    rows,
+    visible_headers,
+    stack_by_input0_layout: bool = False,
+    stack_by_category: bool = False,
+    no_merge_devices: bool = False,
+    no_host_ops: bool = False,
+) -> pd.DataFrame:
     # Ensure we filter out signpost rows before processing because they aren't useful in the stacked report
     filtered_rows = filter_signposts(rows)
-    
+
     # Filter out host ops if requested
     if no_host_ops:
         filtered_rows = filter_host_ops(filtered_rows)
@@ -2192,8 +2658,7 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
         for row in filtered_rows:
             if is_host_op(row):
                 # TODO: Refactor to avoid mutating the original row data
-                row["Device Time"] = Cell(0, unit="μs", decimals=0) 
-
+                row["Device Time"] = Cell(0, unit="μs", decimals=0)
 
     # Return an empty DataFrame if there are no rows to process
     if len(filtered_rows) == 0:
@@ -2202,11 +2667,14 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
     if stack_by_input0_layout:
         visible_headers.append("Input 0 Memory")
 
-    data = {header: [row[header].raw_value for row in filtered_rows] for header in visible_headers}
-    
+    data = {
+        header: [row[header].raw_value for row in filtered_rows]
+        for header in visible_headers
+    }
+
     # Reuse the per-op category so the stacked report and the --csv column cannot disagree.
     data["Op Category"] = [row["Op Category"].raw_value for row in filtered_rows]
-    
+
     df = pd.DataFrame(data)
 
     if stack_by_category:
@@ -2216,12 +2684,26 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
         # Extract operation name
         op_name = df["OP Code"].str.split().str[0]
         df["OP Code Joined"] = op_name.copy()
-        
+
         # Add layout info only for rows with valid Input 0 Memory
         has_in0_memory = df["Input 0 Memory"].notna()
         if has_in0_memory.any():
-            layout_info = " (in0:" + df.loc[has_in0_memory, "Input 0 Memory"].str.split('_').str[-2].str.lower() + "_" + df.loc[has_in0_memory, "Input 0 Memory"].str.split('_').str[-1].str.lower() + ")"
-            df.loc[has_in0_memory, "OP Code Joined"] = op_name[has_in0_memory] + layout_info
+            layout_info = (
+                " (in0:"
+                + df.loc[has_in0_memory, "Input 0 Memory"]
+                .str.split("_")
+                .str[-2]
+                .str.lower()
+                + "_"
+                + df.loc[has_in0_memory, "Input 0 Memory"]
+                .str.split("_")
+                .str[-1]
+                .str.lower()
+                + ")"
+            )
+            df.loc[has_in0_memory, "OP Code Joined"] = (
+                op_name[has_in0_memory] + layout_info
+            )
     else:
         df["OP Code Joined"] = df["OP Code"].str.split().str[0]
 
@@ -2230,49 +2712,66 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
     # Group by the joined OP Code and aggregate the data
     if stack_by_category:
         # For category stacking, don't include FLOPs stats as they're not meaningful across different op types
-        stacked_df = df.groupby(grouping).agg(
-            Device_Time_Sum_us=("Device Time", "sum"),
-            Ops_Count=("Device Time", "size"),
-        ).reset_index()
+        stacked_df = (
+            df.groupby(grouping)
+            .agg(
+                Device_Time_Sum_us=("Device Time", "sum"),
+                Ops_Count=("Device Time", "size"),
+            )
+            .reset_index()
+        )
     else:
         # For regular stacking, include FLOPs statistics and Op Category
-        stacked_df = df.groupby(grouping).agg(
-            Device_Time_Sum_us=("Device Time", "sum"),
-            Ops_Count=("Device Time", "size"),
-            Op_Category=("Op Category", "first"),  # Take the first category (they should all be the same for the same op)
-            Flops_min=("FLOPs %", "min"),
-            Flops_max=("FLOPs %", "max"),
-            Flops_mean=("FLOPs %", "mean"),
-            Flops_std=("FLOPs %", "std"),
-        ).reset_index()
-        
+        stacked_df = (
+            df.groupby(grouping)
+            .agg(
+                Device_Time_Sum_us=("Device Time", "sum"),
+                Ops_Count=("Device Time", "size"),
+                Op_Category=(
+                    "Op Category",
+                    "first",
+                ),  # Take the first category (they should all be the same for the same op)
+                Flops_min=("FLOPs %", "min"),
+                Flops_max=("FLOPs %", "max"),
+                Flops_mean=("FLOPs %", "mean"),
+                Flops_std=("FLOPs %", "std"),
+            )
+            .reset_index()
+        )
+
         # Calculate weighted mean FLOPS for operations that have utilization data
         def calculate_weighted_mean_flops(group):
             # Filter out rows with NaN FLOPS values
             valid_rows = group.dropna(subset=["FLOPs %"])
             if valid_rows.empty:
                 return None
-            
+
             # Check if any rows in this group have utilization data
-            if not any(has_utilization_data(flops_val) for flops_val in valid_rows["FLOPs %"]):
+            if not any(
+                has_utilization_data(flops_val) for flops_val in valid_rows["FLOPs %"]
+            ):
                 return None
-            
+
             # Calculate weighted mean: sum(flops_percentage * device_time) / total_device_time
             numerator = (valid_rows["FLOPs %"] * valid_rows["Device Time"]).sum()
             denominator = valid_rows["Device Time"].sum()
-            
+
             if denominator == 0:
                 return None
-            
+
             return numerator / denominator
-        
+
         # Add the weighted mean column
-        weighted_means = df.groupby("OP Code Joined").apply(calculate_weighted_mean_flops, include_groups=False)
+        weighted_means = df.groupby("OP Code Joined").apply(
+            calculate_weighted_mean_flops, include_groups=False
+        )
         if isinstance(weighted_means, pd.DataFrame):
             weighted_means = pd.Series(dtype="float64")
 
         if not weighted_means.empty:
-            stacked_df["Flops_weighted_mean"] = stacked_df["OP Code Joined"].map(weighted_means)
+            stacked_df["Flops_weighted_mean"] = stacked_df["OP Code Joined"].map(
+                weighted_means
+            )
         else:
             stacked_df["Flops_weighted_mean"] = pd.NA
 
@@ -2281,46 +2780,66 @@ def generate_stacked_report(rows, visible_headers, stack_by_input0_layout: bool 
         stacked_df["Device"] = stacked_df["Device"].astype(int)
 
     if no_merge_devices:
-        device_totals = stacked_df.groupby("Device")["Device_Time_Sum_us"].transform("sum")
-        stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / device_totals * 100).fillna(0)
+        device_totals = stacked_df.groupby("Device")["Device_Time_Sum_us"].transform(
+            "sum"
+        )
+        stacked_df["%"] = (
+            stacked_df["Device_Time_Sum_us"] / device_totals * 100
+        ).fillna(0)
     else:
         total_device_time = stacked_df["Device_Time_Sum_us"].sum()
-        stacked_df["%"] = (stacked_df["Device_Time_Sum_us"] / total_device_time * 100).fillna(0) if total_device_time != 0 else 0
+        stacked_df["%"] = (
+            (stacked_df["Device_Time_Sum_us"] / total_device_time * 100).fillna(0)
+            if total_device_time != 0
+            else 0
+        )
 
     cols = stacked_df.columns.tolist()
     cols.insert(0, cols.pop(cols.index("%")))
     stacked_df = stacked_df[cols]
-    # Sort the stacked dataframe by "Device_Time_Sum_us" in descending order
-    stacked_df = stacked_df.sort_values(by="Device_Time_Sum_us", ascending=False)
+    # Sort by device time, descending, within each device when devices are kept
+    # apart. Sorting here, on numbers, gives the printed report and the CSV the
+    # same row order; within one device this is also descending Total %.
+    if "Device" in stacked_df.columns:
+        stacked_df = stacked_df.sort_values(
+            by=["Device", "Device_Time_Sum_us"], ascending=[True, False]
+        )
+    else:
+        stacked_df = stacked_df.sort_values(by="Device_Time_Sum_us", ascending=False)
 
     return stacked_df
 
 
 def format_stacked_report_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    flops_columns = ["Flops_min", "Flops_max", "Flops_mean", "Flops_std", "Flops_weighted_mean"]
+    flops_columns = [
+        "Flops_min",
+        "Flops_max",
+        "Flops_mean",
+        "Flops_std",
+        "Flops_weighted_mean",
+    ]
     for col in flops_columns:
         if col in df.columns:
             df[col] = df[col].apply(lambda x: "" if pd.isna(x) else f"{x:,.2f} %")
     if "%" in df.columns:
         df["%"] = df["%"].apply(lambda x: f"{x:,.2f} %")
     if "Device_Time_Sum_us" in df.columns:
-        df["Device_Time_Sum_us"] = df["Device_Time_Sum_us"].apply(lambda x: f"{x:,.2f} μs")
+        df["Device_Time_Sum_us"] = df["Device_Time_Sum_us"].apply(
+            lambda x: f"{x:,.2f} μs"
+        )
     return df.rename(columns=stacked_report_column_labels)
 
 
-def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = False):
+def print_stacked_report(stacked_df: pd.DataFrame):
     print("\n📊 Stacked report 📊\n====================\n")
 
     display_df = format_stacked_report_df(stacked_df)
 
-    if no_merge_devices:
-        display_df = display_df.sort_values(by=["Device", "Total %"], ascending=[True, False])
-    
     # Convert to list of dictionaries for consistent formatting
     headers = display_df.columns.tolist()
-    rows = display_df.to_dict('records')
-    
+    rows = display_df.to_dict("records")
+
     # Calculate column widths
     col_widths = []
     for i, header in enumerate(headers):
@@ -2329,11 +2848,18 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
             cell_value = str(row[header])
             max_width = max(max_width, visible_length(cell_value))
         col_widths.append(max_width)
-    
+
     # Print header
-    print("  ".join(pad_string(header, col_widths[i], align="left" if header == "Op Code" else "right") for i, header in enumerate(headers)))
+    print(
+        "  ".join(
+            pad_string(
+                header, col_widths[i], align="left" if header == "Op Code" else "right"
+            )
+            for i, header in enumerate(headers)
+        )
+    )
     print("-" * sum(col_widths) + "-" * (len(headers) - 1) * 2)
-    
+
     # Print rows
     for row in rows:
         formatted_cells = []
@@ -2346,7 +2872,7 @@ def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = Fals
             align = "left" if header == "Op Code" else "right"
             formatted_cells.append(pad_string(cell_value, col_widths[i], align=align))
         print("  ".join(formatted_cells))
-    
+
     print("-" * sum(col_widths) + "-" * (len(headers) - 1) * 2)
 
 
@@ -2360,7 +2886,15 @@ def dump_stacked_report(stacked_df: pd.DataFrame, output_file: str):
     csv_df.to_csv(output_file, index=False, float_format="%.2f")
 
 
-def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_category: bool = False, use_category_colors: bool = True, threshold: float = 0.02, no_merge_devices: bool = False, caption: Optional[str] = None):
+def plot_stacked_report(
+    stacked_df: pd.DataFrame,
+    output_file: str,
+    stack_by_category: bool = False,
+    use_category_colors: bool = True,
+    threshold: float = 0.02,
+    no_merge_devices: bool = False,
+    caption: Optional[str] = None,
+):
     if not HAS_MATPLOTLIB:
         print(f"Skipping plot generation for {output_file} (matplotlib not available)")
         return
@@ -2371,7 +2905,9 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_cat
         # When stacking by category, sort by predefined category order
         if use_category_colors:
             # Each bar is a category, so the joined op code is the category name.
-            stacked_df = _sort_dataframe_by_category(stacked_df, category_column="OP Code Joined")
+            stacked_df = _sort_dataframe_by_category(
+                stacked_df, category_column="OP Code Joined"
+            )
     else:
         # For non-category stacking, use category-based sorting if enabled
         if use_category_colors and "Op_Category" in stacked_df.columns:
@@ -2386,7 +2922,10 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_cat
     if no_merge_devices:
         devices = sorted(stacked_df["Device"].unique())
         fig, ax = plt.subplots(figsize=(max(6, len(devices) * 2), 8), dpi=300)
-        data_groups = [(i, stacked_df[stacked_df["Device"] == dev]) for i, dev in enumerate(devices)]
+        data_groups = [
+            (i, stacked_df[stacked_df["Device"] == dev])
+            for i, dev in enumerate(devices)
+        ]
         total_sum = None  # Per-device totals used for threshold
         title = "Stacked Device Time per Device (100% per device)"
     else:
@@ -2398,9 +2937,11 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_cat
         xlim = (1 - bar_width / 2 - 0.05, 1 + bar_width / 2 + 0.05)
 
     for x_pos, group_data in data_groups:
-        threshold_total = total_sum if total_sum else group_data["Device_Time_Sum_us"].sum()
+        threshold_total = (
+            total_sum if total_sum else group_data["Device_Time_Sum_us"].sum()
+        )
         bottom = 0
-        
+
         # Track category boundaries for borders and color indexing
         category_borders = []
         current_category = None
@@ -2413,28 +2954,43 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_cat
                 # When stacking by category, use single color per category
                 category_name = row["OP Code Joined"]  # This IS the category name
                 if category_name in category_color_palettes:
-                    color = category_color_palettes[category_name][0]  # Use first color from palette
+                    color = category_color_palettes[category_name][
+                        0
+                    ]  # Use first color from palette
                 else:
                     color = fallback_colors[i % len(fallback_colors)]
             else:
                 # Check if we're starting a new category (only for non-category stacking with category colors)
-                if use_category_colors and not stack_by_category and "Op_Category" in row:
+                if (
+                    use_category_colors
+                    and not stack_by_category
+                    and "Op_Category" in row
+                ):
                     if row["Op_Category"] != current_category:
                         # Save the previous category boundary
                         if current_category is not None:
-                            category_borders.append((current_category, category_start, bottom))
+                            category_borders.append(
+                                (current_category, category_start, bottom)
+                            )
                         current_category = row["Op_Category"]
                         category_start = bottom
                         category_color_index = 0  # Reset color index for new category
-                
+
                 # Get color for this bar
                 color, category_color_index = _get_color_for_bar(
-                    i, row, stack_by_category, use_category_colors, 
-                    current_category, category_color_index, 
-                    category_color_palettes, fallback_colors
+                    i,
+                    row,
+                    stack_by_category,
+                    use_category_colors,
+                    current_category,
+                    category_color_index,
+                    category_color_palettes,
+                    fallback_colors,
                 )
 
-            bar = ax.bar(x_pos, row["Device_Time_Sum_us"], bar_width, bottom=bottom, color=color)
+            bar = ax.bar(
+                x_pos, row["Device_Time_Sum_us"], bar_width, bottom=bottom, color=color
+            )
 
             if row["Device_Time_Sum_us"] >= threshold_total * threshold:
                 if no_merge_devices:
@@ -2443,59 +2999,90 @@ def plot_stacked_report(stacked_df: pd.DataFrame, output_file: str, stack_by_cat
                     text = f"({row['%']:.1f} %) {row['OP Code Joined']} total={row['Device_Time_Sum_us']:.1f} μs; {row['Ops_Count']} ops"
                     if "Flops_mean" in row.index and not pd.isna(row["Flops_mean"]):
                         # Use weighted mean if available, otherwise fall back to regular mean
-                        if "Flops_weighted_mean" in row.index and not pd.isna(row["Flops_weighted_mean"]):
+                        if "Flops_weighted_mean" in row.index and not pd.isna(
+                            row["Flops_weighted_mean"]
+                        ):
                             text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] weighted_mean={row['Flops_weighted_mean']:.1f}% (mean={row['Flops_mean']:.1f} ± {row['Flops_std']:.1f}%)"
                         else:
                             text += f"\n Util [{row['Flops_min']:.1f} - {row['Flops_max']:.1f}] {row['Flops_mean']:.1f} ± {row['Flops_std']:.1f} %"
-                
-                ax.text(bar[0].get_x() + bar[0].get_width() / 2, bottom + row["Device_Time_Sum_us"] / 2,
-                       text, ha="center", va="center", fontsize=6, color=default_cell_color)
+
+                ax.text(
+                    bar[0].get_x() + bar[0].get_width() / 2,
+                    bottom + row["Device_Time_Sum_us"] / 2,
+                    text,
+                    ha="center",
+                    va="center",
+                    fontsize=6,
+                    color=default_cell_color,
+                )
 
             # Add category labels (vertical, outside the bar) unless using classic colors
             # Only show label for the first operation in each category
             if use_category_colors:
                 # Always show category name, regardless of grouping mode
                 if stack_by_category:
-                    category_label = row["OP Code Joined"]  # When grouping by category, this IS the category
+                    category_label = row[
+                        "OP Code Joined"
+                    ]  # When grouping by category, this IS the category
                     # For category grouping, we can get percentage directly from the row
                     category_percentage = row["%"]
                 elif "Op_Category" in row:
-                    category_label = row["Op_Category"]  # When grouping by op/memory, get the category
+                    category_label = row[
+                        "Op_Category"
+                    ]  # When grouping by op/memory, get the category
                     # For op/memory grouping, calculate category percentage by summing all ops in that category
-                    category_total_time = group_data[group_data["Op_Category"] == category_label]["Device_Time_Sum_us"].sum()
+                    category_total_time = group_data[
+                        group_data["Op_Category"] == category_label
+                    ]["Device_Time_Sum_us"].sum()
                     category_percentage = (category_total_time / threshold_total) * 100
                 else:
                     category_label = "Other"  # Fallback
                     category_percentage = 0
-                
+
                 # Only add label if this is a new category (first occurrence)
                 if category_label != previous_category_label:
                     label_text = f"{category_label}({category_percentage:.1f}%)"
                     ax.text(
                         bar[0].get_x() - 0.02,  # Position to the left of the bar
-                        bottom + threshold_total * category_percentage/200, # Centered vertically on the bar
+                        bottom
+                        + threshold_total
+                        * category_percentage
+                        / 200,  # Centered vertically on the bar
                         label_text,  # Category name with percentage
                         ha="left",
                         va="center",
                         fontsize=6,
                         fontweight="bold",
                         color="black",
-                        rotation=90  # Vertical text
+                        rotation=90,  # Vertical text
                     )
                     previous_category_label = category_label
-            
+
             bottom += row["Device_Time_Sum_us"]
-        
+
         # Add the final category boundary (only for non-category stacking)
-        if use_category_colors and not stack_by_category and "Op_Category" in group_data.columns and current_category is not None:
+        if (
+            use_category_colors
+            and not stack_by_category
+            and "Op_Category" in group_data.columns
+            and current_category is not None
+        ):
             category_borders.append((current_category, category_start, bottom))
-        
+
         # Draw transparent borders around each category (only for non-category stacking)
         if use_category_colors and not stack_by_category and category_borders:
             for category, start, end in category_borders:
                 border_color = category_border_colors.get(category, "gray")
-                ax.bar(x_pos, end - start, bar_width, bottom=start, 
-                       fill=False, edgecolor=border_color, linewidth=2, alpha=0.8)
+                ax.bar(
+                    x_pos,
+                    end - start,
+                    bar_width,
+                    bottom=start,
+                    fill=False,
+                    edgecolor=border_color,
+                    linewidth=2,
+                    alpha=0.8,
+                )
 
     if no_merge_devices:
         ax.set_xticks(range(len(devices)))
@@ -2519,7 +3106,9 @@ def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
         df = pd.read_csv(csv_path, low_memory=False)
 
         if "DEVICE ID" not in df.columns:
-            print(colored(f"CSV '{csv_path}' is missing the 'DEVICE ID' column.", "red"))
+            print(
+                colored(f"CSV '{csv_path}' is missing the 'DEVICE ID' column.", "red")
+            )
             sys.exit(1)
 
         df["DEVICE ID"] = pd.to_numeric(df["DEVICE ID"], errors="coerce")
@@ -2538,7 +3127,11 @@ def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
             # and must not define the count either: taking 0 from here would
             # zero the offset applied to every later file, silently merging
             # their devices together.
-            print(colored(f"CSV '{csv_path}' reports no usable 'DEVICE ID' values.", "yellow"))
+            print(
+                colored(
+                    f"CSV '{csv_path}' reports no usable 'DEVICE ID' values.", "yellow"
+                )
+            )
         elif num_devices_per_system is None:
             num_devices_per_system = current_num_devices
         elif current_num_devices != num_devices_per_system:
@@ -2616,10 +3209,12 @@ def merge_device_rows(df):
             # A device op with no usable device id cannot take part in per-device
             # merging, so it is reported unmerged rather than aborting the run.
             if op_type == "tt_dnn_device":
-                print(colored(
-                    f"Warning: {op_name} has no usable DEVICE ID and was not merged across devices.",
-                    "yellow",
-                ))
+                print(
+                    colored(
+                        f"Warning: {op_name} has no usable DEVICE ID and was not merged across devices.",
+                        "yellow",
+                    )
+                )
             non_device_rows.append(row_data)
 
     device_ids = sorted(block_by_device.keys())
@@ -2638,7 +3233,12 @@ def merge_device_rows(df):
         missing_devices = []
         for device_id in device_ids:
             if not len(block_by_device[device_id]):
-                print(colored(f"Warning: Device {device_id} is missing operation {op_name} at index {global_index}", "yellow"))
+                print(
+                    colored(
+                        f"Warning: Device {device_id} is missing operation {op_name} at index {global_index}",
+                        "yellow",
+                    )
+                )
                 continue
             if op_name is None:
                 op_name = block_by_device[device_id][0][0]
@@ -2649,12 +3249,21 @@ def merge_device_rows(df):
             blocks.append(block_by_device[device_id].popleft())
 
         if missing_devices:
-            print(colored(f"Warning: {op_name} at index {global_index} not present in CSV for {len(missing_devices)} devices {missing_devices} - do not trust data for this op or directly subsequent ops with the same name", "yellow"))
+            print(
+                colored(
+                    f"Warning: {op_name} at index {global_index} not present in CSV for {len(missing_devices)} devices {missing_devices} - do not trust data for this op or directly subsequent ops with the same name",
+                    "yellow",
+                )
+            )
 
         if not blocks:
             break
 
-        if "AllGather" in op_name or "ReduceScatter" in op_name or "AllReduce" in op_name:
+        if (
+            "AllGather" in op_name
+            or "ReduceScatter" in op_name
+            or "AllReduce" in op_name
+        ):
             # For collective ops, take the average duration over all rows within a block
             device_kernel_durations = [
                 duration
@@ -2665,7 +3274,9 @@ def merge_device_rows(df):
             # Use the first block's data but update its duration with the average
             base_block = blocks[0][1].copy()
             averaged_duration_ns = (
-                sum(device_kernel_durations) / len(device_kernel_durations) if device_kernel_durations else None
+                sum(device_kernel_durations) / len(device_kernel_durations)
+                if device_kernel_durations
+                else None
             )
             base_block["DEVICE KERNEL DURATION [ns]"] = averaged_duration_ns
             # The average is over valid durations only, so it is valid exactly when
@@ -2678,8 +3289,8 @@ def merge_device_rows(df):
             # shorter than the average does not read as having overlapped.
             overlap_ns = finite_float(base_block.get(OVERLAP_COLUMN))
             if overlap_ns is not None and averaged_duration_ns is not None:
-                base_block[OVERLAP_COLUMN], base_block[OVERLAP_BUSY_COLUMN] = split_duration(
-                    averaged_duration_ns, overlap_ns
+                base_block[OVERLAP_COLUMN], base_block[OVERLAP_BUSY_COLUMN] = (
+                    split_duration(averaged_duration_ns, overlap_ns)
                 )
         else:
             # For non-collective ops, take the row with maximum duration
@@ -2690,7 +3301,9 @@ def merge_device_rows(df):
         base_block["_REPORT_ORDER"] = min(data["_REPORT_ORDER"] for _, data in blocks)
         # Every per-device row this op stands for, so a filter on the merged
         # rows can find the per-device intervals it kept; see reattribute_overlap.
-        base_block[MERGED_ROWS_COLUMN] = tuple(block.get("ORIGINAL_ROW") for _, block in blocks)
+        base_block[MERGED_ROWS_COLUMN] = tuple(
+            block.get("ORIGINAL_ROW") for _, block in blocks
+        )
         merged_blocks.append(base_block)
 
         global_index += 1
@@ -2739,7 +3352,9 @@ def kept_pre_merge_rows(rows, pre_merge_df, merged_rows_by_id):
     kept_original_rows = {
         original_row
         for op_data in rows
-        for original_row in merged_rows_by_id.get(op_data["ID"].raw_value, (op_data["ID"].raw_value,))
+        for original_row in merged_rows_by_id.get(
+            op_data["ID"].raw_value, (op_data["ID"].raw_value,)
+        )
     }
     return pre_merge_df["ORIGINAL_ROW"].isin(kept_original_rows).to_numpy()
 
@@ -2757,16 +3372,23 @@ def reattribute_overlap(rows, measurement, original_rows):
     """
     by_row = {
         original_row: (overlap_ns, idle_ns)
-        for original_row, overlap_ns, idle_ns in zip(original_rows, measurement.overlap, measurement.idle)
+        for original_row, overlap_ns, idle_ns in zip(
+            original_rows, measurement.overlap, measurement.idle
+        )
     }
     for op_data in rows:
         device_time = op_data["Device Time"].raw_value
-        overlap_ns, idle_ns = (finite_float(value) for value in by_row.get(op_data["ID"].raw_value, (None, None)))
+        overlap_ns, idle_ns = (
+            finite_float(value)
+            for value in by_row.get(op_data["ID"].raw_value, (None, None))
+        )
         op_data[IDLE_TIME_KEY] = idle_cell(idle_ns if device_time is not None else None)
         if device_time is None or overlap_ns is None:
             op_data["Overlap"], op_data[BUSY_TIME_KEY] = overlap_cells(None, None)
             continue
-        op_data["Overlap"], op_data[BUSY_TIME_KEY] = overlap_cells(*split_duration(device_time * 1000, overlap_ns))
+        op_data["Overlap"], op_data[BUSY_TIME_KEY] = overlap_cells(
+            *split_duration(device_time * 1000, overlap_ns)
+        )
 
 
 def filter_host_ops(rows):
@@ -2806,21 +3428,47 @@ def main():
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="User-friendly Performance Report Analysis Tool")
-    parser.add_argument("csv_files", type=str, nargs="+", help="Paths to one or more performance report CSV files")
-    parser.add_argument("--start-signpost", type=str, help="Specify a signpost to delimit the starting range of the data. The first instance of the matching signpost will be used as the start of the data range.", default=None)
-    parser.add_argument("--end-signpost", type=str, help="Specify a signpost to delimit the ending range of the data. The first instance of the matching signpost will be used as the end of the data range. If the same value is provided for both start and end, the end range will be the second instance of the signpost.", default=None)
-    parser.add_argument(
-        "--ignore-signposts", action="store_true", help="Ignore all signposts and use the entire file for analysis"
+    parser = argparse.ArgumentParser(
+        description="User-friendly Performance Report Analysis Tool"
     )
     parser.add_argument(
-        "--print-signposts", action="store_true", help="Print signposts between any defined start/end signposts"
+        "csv_files",
+        type=str,
+        nargs="+",
+        help="Paths to one or more performance report CSV files",
     )
     parser.add_argument(
-        "--min-percentage", type=float, default=0.5, help="Minimum percentage for coloring (default: 0.5)"
+        "--start-signpost",
+        type=str,
+        help="Specify a signpost to delimit the starting range of the data. The first instance of the matching signpost will be used as the start of the data range.",
+        default=None,
     )
     parser.add_argument(
-        "--id-range", type=str, help="Show only rows with IDs in the specified range (e.g., '5-10', '31-', or '-12')"
+        "--end-signpost",
+        type=str,
+        help="Specify a signpost to delimit the ending range of the data. The first instance of the matching signpost will be used as the end of the data range. If the same value is provided for both start and end, the end range will be the second instance of the signpost.",
+        default=None,
+    )
+    parser.add_argument(
+        "--ignore-signposts",
+        action="store_true",
+        help="Ignore all signposts and use the entire file for analysis",
+    )
+    parser.add_argument(
+        "--print-signposts",
+        action="store_true",
+        help="Print signposts between any defined start/end signposts",
+    )
+    parser.add_argument(
+        "--min-percentage",
+        type=float,
+        default=0.5,
+        help="Minimum percentage for coloring (default: 0.5)",
+    )
+    parser.add_argument(
+        "--id-range",
+        type=str,
+        help="Show only rows with IDs in the specified range (e.g., '5-10', '31-', or '-12')",
     )
     parser.add_argument(
         "--arch",
@@ -2831,28 +3479,74 @@ def parse_args():
         ),
         default=None,
     )
-    parser.add_argument("--color", action="store_true", help="Force colored output even when output is redirected")
-    parser.add_argument("--no-color", action="store_true", help="Force output without color")
-    parser.add_argument("--csv", type=str, help="Output filename for CSV format", metavar="OUTPUT_FILE")
-    parser.add_argument("--no-advice", action="store_true", help="Only show the table section of the report")
-    parser.add_argument("--tracing-mode", action="store_true", help="Do not sort when in tracing mode")
-    parser.add_argument("--raw-op-codes", action="store_true", help="Include raw op codes in output")
-    parser.add_argument("--no-host-ops", action="store_true", help="Do not include host ops in output")
-    parser.add_argument("--no-summary", action="store_true", help="Skip generating the operation summary report")
-    parser.add_argument("--group-by", choices=["op", "memory", "category"], 
-        default="memory", 
-        help="Group summary by: 'op' (operation name), 'memory' (input0 layout), 'category' (compute/data/tensor)")
-    parser.add_argument("--classic-colors", action="store_true",
-        help="Use classic tab20 colors instead of category-themed colors")
-    parser.add_argument("--summary-file", type=str, metavar="FILE",
-        help="Output file for summary report (CSV and PNG)")
-    parser.add_argument("--no-stacked-report", action="store_true", help="Do not generate a stacked report (deprecated, use --no-summary)")
-    parser.add_argument("--no-stack-by-in0", action="store_true",
-        help="Do not group the stacked report by the layout of Input 0 (deprecated, use --group-by=op)"
-        )
-    parser.add_argument("--stacked-csv", type=str, 
-                help="Output filename for the stacked report CSV (deprecated, use --summary-file)", metavar="STACKED_FILE")
-    parser.add_argument("--no-merge-devices", action="store_true", help="Don't merge rows from multiple devices")
+    parser.add_argument(
+        "--color",
+        action="store_true",
+        help="Force colored output even when output is redirected",
+    )
+    parser.add_argument(
+        "--no-color", action="store_true", help="Force output without color"
+    )
+    parser.add_argument(
+        "--csv", type=str, help="Output filename for CSV format", metavar="OUTPUT_FILE"
+    )
+    parser.add_argument(
+        "--no-advice",
+        action="store_true",
+        help="Only show the table section of the report",
+    )
+    parser.add_argument(
+        "--tracing-mode", action="store_true", help="Do not sort when in tracing mode"
+    )
+    parser.add_argument(
+        "--raw-op-codes", action="store_true", help="Include raw op codes in output"
+    )
+    parser.add_argument(
+        "--no-host-ops", action="store_true", help="Do not include host ops in output"
+    )
+    parser.add_argument(
+        "--no-summary",
+        action="store_true",
+        help="Skip generating the operation summary report",
+    )
+    parser.add_argument(
+        "--group-by",
+        choices=["op", "memory", "category"],
+        default="memory",
+        help="Group summary by: 'op' (operation name), 'memory' (input0 layout), 'category' (compute/data/tensor)",
+    )
+    parser.add_argument(
+        "--classic-colors",
+        action="store_true",
+        help="Use classic tab20 colors instead of category-themed colors",
+    )
+    parser.add_argument(
+        "--summary-file",
+        type=str,
+        metavar="FILE",
+        help="Output file for summary report (CSV and PNG)",
+    )
+    parser.add_argument(
+        "--no-stacked-report",
+        action="store_true",
+        help="Do not generate a stacked report (deprecated, use --no-summary)",
+    )
+    parser.add_argument(
+        "--no-stack-by-in0",
+        action="store_true",
+        help="Do not group the stacked report by the layout of Input 0 (deprecated, use --group-by=op)",
+    )
+    parser.add_argument(
+        "--stacked-csv",
+        type=str,
+        help="Output filename for the stacked report CSV (deprecated, use --summary-file)",
+        metavar="STACKED_FILE",
+    )
+    parser.add_argument(
+        "--no-merge-devices",
+        action="store_true",
+        help="Don't merge rows from multiple devices",
+    )
     parser.add_argument(
         "--active-experts",
         type=int,
@@ -2869,11 +3563,21 @@ def parse_args():
     try:
         id_range = parse_id_range(args.id_range)
     except ValueError:
-        print(colored("Invalid --id-range format. Please use 'START-END', 'START-', or '-END'.", "red"))
+        print(
+            colored(
+                "Invalid --id-range format. Please use 'START-END', 'START-', or '-END'.",
+                "red",
+            )
+        )
         exit(1)
 
     if args.active_experts is not None and args.active_experts <= 0:
-        print(colored("Invalid --active-experts value. Please provide a positive integer.", "red"))
+        print(
+            colored(
+                "Invalid --active-experts value. Please provide a positive integer.",
+                "red",
+            )
+        )
         exit(1)
 
     return args, id_range
@@ -2907,17 +3611,17 @@ def generate_perf_report(
     # Priority: new arguments > legacy arguments
     if no_summary:
         no_stacked_report = True
-    
-    stack_by_in0 = (group_by == 'memory') if group_by else (not no_stack_by_in0)
-    stack_by_category = (group_by == 'category')
+
+    stack_by_in0 = (group_by == "memory") if group_by else (not no_stack_by_in0)
+    stack_by_category = group_by == "category"
     use_simple_colors = classic_colors
-    
+
     # Prefer summary_file over stacked_csv
     if summary_file:
         stacked_report_file = summary_file
     else:
         stacked_report_file = stacked_csv
-    
+
     df = merge_perf_traces(csv_files)
 
     # Detect CSV format version
@@ -2928,18 +3632,25 @@ def generate_perf_report(
     elif csv_format == CsvFormat.V2:
         print(colored(f"Detected CSV format: v2", "cyan"))
     elif csv_format == CsvFormat.V2_1:
-        print(colored(f"Detected CSV format: v2.1 (with device arch and worker core count)", "cyan"))
+        print(
+            colored(
+                f"Detected CSV format: v2.1 (with device arch and worker core count)",
+                "cyan",
+            )
+        )
         csv_arch = ArchitectureSpec._get_arch_name_from_df(df)
 
         if arch is None:
             arch = csv_arch
             print(colored(f"Using architecture from CSV: {arch}", "cyan"))
         else:
-            print(colored(
-                f"Using user-specified architecture: {arch} (CSV detected {csv_arch})",
-                "cyan",
-            ))
-    
+            print(
+                colored(
+                    f"Using user-specified architecture: {arch} (CSV detected {csv_arch})",
+                    "cyan",
+                )
+            )
+
     # Create ArchitectureSpec early to pass through analysis functions
     if csv_format == CsvFormat.V2_1:
         # For v2.1, use the selected/detected architecture and CSV worker count.
@@ -2947,7 +3658,7 @@ def generate_perf_report(
     else:
         # For v1 and v2, use the arch parameter (either default or user-specified)
         arch_spec = ArchitectureSpec.from_name(arch)
-    
+
     # On a partitioned capture no row reports the real grid, so this number is
     # the largest budget observed rather than a fact about the chip - it can even
     # exceed the architecture's registered grid. Naming it "Worker cores" under
@@ -2956,13 +3667,17 @@ def generate_perf_report(
     # The budgets themselves are listed by _get_worker_core_count_from_df, so
     # naming the largest is enough here.
     if len(arch_spec.observed_budgets) > 1:
-        cores_description = f"largest observed worker core budget: {arch_spec.worker_cores}"
+        cores_description = (
+            f"largest observed worker core budget: {arch_spec.worker_cores}"
+        )
     else:
         cores_description = f"Worker cores: {arch_spec.worker_cores}"
     print(colored(f"Architecture: {arch_spec.name}, {cores_description}", "cyan"))
 
     # Add a column for original row numbers
-    df["ORIGINAL_ROW"] = df.index + 2  # +2 to match Excel row numbers (1-based + header)
+    df["ORIGINAL_ROW"] = (
+        df.index + 2
+    )  # +2 to match Excel row numbers (1-based + header)
 
     # Sort the DataFrame by "HOST START TS" column
     # Sorting by HOST START TS is incorrect when using tracing mode since the tracing ops timestamps are the ones when captured and not executed
@@ -2970,34 +3685,68 @@ def generate_perf_report(
         print(colored("Sorting CSV by 'HOST START TS' column...", "cyan"))
         df = df.sort_values(by="HOST START TS")
     elif tracing_mode:
-        print(colored("Tracing mode enabled. CSV will not be sorted by 'HOST START TS'.", "cyan"))
+        print(
+            colored(
+                "Tracing mode enabled. CSV will not be sorted by 'HOST START TS'.",
+                "cyan",
+            )
+        )
     else:
-        print(colored("Warning: 'HOST START TS' column not found. CSV will not be sorted.", "yellow"))
+        print(
+            colored(
+                "Warning: 'HOST START TS' column not found. CSV will not be sorted.",
+                "yellow",
+            )
+        )
 
-    df = filter_by_signpost(df, start_signpost, end_signpost, ignore_signposts, print_signposts)
+    df = filter_by_signpost(
+        df, start_signpost, end_signpost, ignore_signposts, print_signposts
+    )
     # Before merging: cycle counters are per device, and a merged row keeps only
     # one device's counters, so consecutive merged rows cannot be compared.
-    valid_duration = valid_device_duration_mask(df, is_partitioned_capture(df, arch_spec))
+    valid_duration = valid_device_duration_mask(
+        df, is_partitioned_capture(df, arch_spec)
+    )
     df.insert(len(df.columns), DURATION_VALID_COLUMN, valid_duration)
     annotate_overlap(df, valid_duration)
     # The per-device rows, for re-measuring overlap after an id range and for
     # per-device totals once rows are merged - only the columns those read, so
     # the full pre-merge frame is not kept alive for the rest of the run.
-    pre_merge_df = df[[
-        column
-        for column in (*OVERLAP_INPUT_COLUMNS, "ORIGINAL_ROW", OVERLAP_BUSY_COLUMN, OVERLAP_COLUMN, OVERLAP_IDLE_COLUMN)
-        if column in df.columns
-    ]]
+    pre_merge_df = df[
+        [
+            column
+            for column in (
+                *OVERLAP_INPUT_COLUMNS,
+                "ORIGINAL_ROW",
+                OVERLAP_BUSY_COLUMN,
+                OVERLAP_COLUMN,
+                OVERLAP_IDLE_COLUMN,
+            )
+            if column in df.columns
+        ]
+    ]
     unique_devices = df["DEVICE ID"].nunique()
 
-    devices_kept_separate = no_merge_devices and "DEVICE ID" in df.columns and unique_devices > 1
+    devices_kept_separate = (
+        no_merge_devices and "DEVICE ID" in df.columns and unique_devices > 1
+    )
     busy_time_label = describe_busy_time(unique_devices, devices_kept_separate)
     if devices_kept_separate:
-        print(colored(f"Detected data from {unique_devices} devices. Keeping separate device data...", "cyan"))
+        print(
+            colored(
+                f"Detected data from {unique_devices} devices. Keeping separate device data...",
+                "cyan",
+            )
+        )
     elif unique_devices == 0:
         print(colored("No device operations found in the CSV data.", "yellow"))
     else:
-        print(colored(f"Detected data from {unique_devices} devices. Merging device data...", "cyan"))
+        print(
+            colored(
+                f"Detected data from {unique_devices} devices. Merging device data...",
+                "cyan",
+            )
+        )
         df = merge_device_rows(df)
 
     rows = []
@@ -3009,14 +3758,19 @@ def generate_perf_report(
     merged_rows_by_id = {}
     for _, row in df.iterrows():
         op_data, current_gap = analyze_op(
-            row, prev_non_signpost_row, csv_format, arch_spec, active_experts,
+            row,
+            prev_non_signpost_row,
+            csv_format,
+            arch_spec,
+            active_experts,
             prev_row_invalid_duration=prev_non_signpost_invalid_duration,
         )
         op_data["ID"] = Cell(row["ORIGINAL_ROW"])  # Use the original row number
         merged_rows = row.get(MERGED_ROWS_COLUMN)
         if isinstance(merged_rows, tuple):
             merged_rows_by_id[row["ORIGINAL_ROW"]] = merged_rows
-        op_data["Global Call Count"] = Cell(row["GLOBAL CALL COUNT"])
+        # Signpost rows leave this column blank, so pandas reads it as float.
+        op_data["Global Call Count"] = Cell(get_int(row, "GLOBAL CALL COUNT"))
         if raw_op_codes:
             op_data["Raw OP Code"] = Cell(row["OP CODE"])
 
@@ -3028,10 +3782,14 @@ def generate_perf_report(
         else:
             # Update prev_non_signpost_row only for non-signpost operations
             prev_non_signpost_row = row
-            prev_non_signpost_invalid_duration = op_data["Invalid Device Duration"].raw_value
+            prev_non_signpost_invalid_duration = op_data[
+                "Invalid Device Duration"
+            ].raw_value
             # Classify the sanitised op code: classify_operation echoes unknown names to the
             # terminal, and the raw cell is untrusted text.
-            op_data["Op Category"] = Cell(classify_operation(op_data["OP Code"].raw_value))
+            op_data["Op Category"] = Cell(
+                classify_operation(op_data["OP Code"].raw_value)
+            )
 
         rows.append(op_data)
 
@@ -3054,10 +3812,16 @@ def generate_perf_report(
         measurement = measure_overlap(kept_rows, kept_valid)
         reattribute_overlap(rows, measurement, kept_rows["ORIGINAL_ROW"])
     else:
-        measurement = OverlapMeasurement(*(
-            kept_rows[column].to_numpy(dtype="float64") if column in kept_rows.columns else np.full(len(kept_rows), np.nan)
-            for column in (OVERLAP_BUSY_COLUMN, OVERLAP_COLUMN, OVERLAP_IDLE_COLUMN)
-        ))
+        measurement = OverlapMeasurement(
+            *(
+                (
+                    kept_rows[column].to_numpy(dtype="float64")
+                    if column in kept_rows.columns
+                    else np.full(len(kept_rows), np.nan)
+                )
+                for column in (OVERLAP_BUSY_COLUMN, OVERLAP_COLUMN, OVERLAP_IDLE_COLUMN)
+            )
+        )
 
     if no_host_ops:
         rows = filter_host_ops(rows)
@@ -3065,7 +3829,10 @@ def generate_perf_report(
     # Recalculate derived columns after filtering
     add_derived_columns(rows)
 
-    rows = [color_row(op_data, op_data["Total %"].raw_value, min_percentage) for op_data in rows]
+    rows = [
+        color_row(op_data, op_data["Total %"].raw_value, min_percentage)
+        for op_data in rows
+    ]
     print_sparse_matmul_active_experts_warning(rows)
     print_invalid_duration_warning(rows)
 
@@ -3073,7 +3840,9 @@ def generate_perf_report(
     # count and the promotion decision describe what the reader will see. The ids
     # come only from get_op_sub_device_id, so there is one definition of "blank".
     sub_device_count = count_sub_devices(
-        op_data["Sub Device ID"].raw_value for op_data in rows if "Sub Device ID" in op_data
+        op_data["Sub Device ID"].raw_value
+        for op_data in rows
+        if "Sub Device ID" in op_data
     )
 
     # Budgets can vary without the capture carrying any subdevice id - an older
@@ -3084,36 +3853,51 @@ def generate_perf_report(
     reported_budgets = {
         op_data["Available Cores"].raw_value
         for op_data in rows
-        if "Available Cores" in op_data and op_data["Available Cores"].raw_value is not None
+        if "Available Cores" in op_data
+        and op_data["Available Cores"].raw_value is not None
     }
 
     show_sub_device_ids = sub_device_count > 0
     show_available_cores = show_sub_device_ids or len(reported_budgets) > 1
 
     if show_sub_device_ids:
-        print(colored(f"Subdevices: {sub_device_count} - using per-op worker core budgets.", "cyan"))
+        print(
+            colored(
+                f"Subdevices: {sub_device_count} - using per-op worker core budgets.",
+                "cyan",
+            )
+        )
     elif show_available_cores:
-        print(colored(
-            f"Worker core budgets vary across ops {sorted(reported_budgets, reverse=True)} "
-            "- using per-op values.",
-            "cyan"
-        ))
+        print(
+            colored(
+                f"Worker core budgets vary across ops {sorted(reported_budgets, reverse=True)} "
+                "- using per-op values.",
+                "cyan",
+            )
+        )
 
     # Overlap is only reported on a partitioned run. The interval anchoring in
     # annotate_overlap is empirical, and on a single grid ops cannot run
     # concurrently anyway, so there any overlap it found would be an artefact of
     # the capture rather than something to put in front of the reader.
-    timed_ops = [op_data for op_data in rows if op_data["Device Time"].raw_value is not None]
-    measured_ops = [op_data for op_data in timed_ops if op_data[BUSY_TIME_KEY].raw_value is not None]
+    timed_ops = [
+        op_data for op_data in rows if op_data["Device Time"].raw_value is not None
+    ]
+    measured_ops = [
+        op_data for op_data in timed_ops if op_data[BUSY_TIME_KEY].raw_value is not None
+    ]
     has_overlap_data = show_available_cores and bool(measured_ops)
     # Merged rows each take one device's timing, so whether ops overlapped is a
     # question for each device's own measurement, not for the rows on show.
     timelines = {}
     if has_overlap_data and unique_devices > 1 and not devices_kept_separate:
         timelines = device_timelines(kept_rows, kept_valid, measurement)
-    devices_with_overlap = sum(1 for _, _, overlap_ns in timelines.values() if overlap_ns > 0)
+    devices_with_overlap = sum(
+        1 for _, _, overlap_ns in timelines.values() if overlap_ns > 0
+    )
     has_overlap = has_overlap_data and (
-        devices_with_overlap > 0 or any(op_data["Overlap"].raw_value for op_data in rows)
+        devices_with_overlap > 0
+        or any(op_data["Overlap"].raw_value for op_data in rows)
     )
     if not has_overlap:
         for op_data in rows:
@@ -3122,21 +3906,34 @@ def generate_perf_report(
 
     slowest_device = None
     if has_overlap and timelines:
-        slowest_id, slowest_device = max(timelines.items(), key=lambda item: item[1][0] + item[1][1])
+        slowest_id, slowest_device = max(
+            timelines.items(), key=lambda item: item[1][0] + item[1][1]
+        )
         # Tracing advice weighs each op's idle time against the slowest device's
         # busy + idle, so each op takes its idle time from that device too. An op
         # the device did not run, or whose idle it could not measure, adds none.
         device_ids = finite_float_column(kept_rows, "DEVICE ID")
         idle_on_slowest = {
             original_row: idle_ns
-            for original_row, device_id, idle_ns in zip(kept_rows["ORIGINAL_ROW"], device_ids, measurement.idle)
+            for original_row, device_id, idle_ns in zip(
+                kept_rows["ORIGINAL_ROW"], device_ids, measurement.idle
+            )
             if device_id == slowest_id
         }
         for op_data in rows:
             if op_data["Device Time"].raw_value is None:
                 continue
-            members = merged_rows_by_id.get(op_data["ID"].raw_value, (op_data["ID"].raw_value,))
-            idle_ns = next((idle_on_slowest[member] for member in members if member in idle_on_slowest), None)
+            members = merged_rows_by_id.get(
+                op_data["ID"].raw_value, (op_data["ID"].raw_value,)
+            )
+            idle_ns = next(
+                (
+                    idle_on_slowest[member]
+                    for member in members
+                    if member in idle_on_slowest
+                ),
+                None,
+            )
             op_data[IDLE_TIME_KEY] = idle_cell(finite_float(idle_ns) or 0.0)
     timeline = measure_timeline(rows, has_overlap, busy_time_label, slowest_device)
 
@@ -3150,34 +3947,47 @@ def generate_perf_report(
         )
     if has_overlap and timeline.slowest_device:
         slowest_op_time = timeline.busy + timeline.overlap
-        print(colored(
-            f"Overlap: ops ran concurrently on {devices_with_overlap} of {len(timelines)} devices; "
-            f"{timeline.overlap_phrase} "
-            f"({timeline.overlap / slowest_op_time * 100 if slowest_op_time else 0:.1f}% of it). The overall "
-            f"DRAM roofline and the tracing-savings estimate use {timeline.busy_label}; "
-            "Total % and the stacked report remain shares of summed op time." + coverage,
-            "cyan" if not coverage else "yellow"
-        ))
+        print(
+            colored(
+                f"Overlap: ops ran concurrently on {devices_with_overlap} of {len(timelines)} devices; "
+                f"{timeline.overlap_phrase} "
+                f"({timeline.overlap / slowest_op_time * 100 if slowest_op_time else 0:.1f}% of it). The overall "
+                f"DRAM roofline and the tracing-savings estimate use {timeline.busy_label}; "
+                "Total % and the stacked report remain shares of summed op time."
+                + coverage,
+                "cyan" if not coverage else "yellow",
+            )
+        )
     elif has_overlap:
-        print(colored(
-            f"Overlap: {timeline.overlap:,.0f} μs of op time ran concurrently with other ops on the same "
-            f"device ({timeline.overlap / timeline.summed * 100:.1f}% of summed op time). The overall "
-            f"DRAM roofline and the tracing-savings estimate use {timeline.busy_label}; "
-            "Total % and the stacked report remain shares of summed op time." + coverage,
-            "cyan" if not coverage else "yellow"
-        ))
+        print(
+            colored(
+                f"Overlap: {timeline.overlap:,.0f} μs of op time ran concurrently with other ops on the same "
+                f"device ({timeline.overlap / timeline.summed * 100:.1f}% of summed op time). The overall "
+                f"DRAM roofline and the tracing-savings estimate use {timeline.busy_label}; "
+                "Total % and the stacked report remain shares of summed op time."
+                + coverage,
+                "cyan" if not coverage else "yellow",
+            )
+        )
     elif has_overlap_data and coverage:
-        print(colored("No overlap detected among the ops with usable cycle data." + coverage, "yellow"))
+        print(
+            colored(
+                "No overlap detected among the ops with usable cycle data." + coverage,
+                "yellow",
+            )
+        )
     elif has_overlap_data:
         print(colored("No overlap detected between subdevices.", "cyan"))
     elif show_available_cores:
-        print(colored(
-            "Warning: this capture has no usable DEVICE FW END CYCLE data, so overlap between subdevices "
-            "cannot be detected. Totals assume ops ran sequentially and overcount any overlapped work: "
-            "summed device time, the overall DRAM roofline (so its achieved GB/s is understated) and "
-            "the tracing-savings estimate.",
-            "yellow"
-        ))
+        print(
+            colored(
+                "Warning: this capture has no usable DEVICE FW END CYCLE data, so overlap between subdevices "
+                "cannot be detected. Totals assume ops ran sequentially and overcount any overlapped work: "
+                "summed device time, the overall DRAM roofline (so its achieved GB/s is understated) and "
+                "the tracing-savings estimate.",
+                "yellow",
+            )
+        )
 
     base_visible_headers = [
         "ID",
@@ -3234,7 +4044,13 @@ def generate_perf_report(
             all_headers.append("Raw OP Code")
         print(colored(f"Writing CSV output to {csv_output_file}", "cyan"))
         with open(csv_output_file, "w") as f:
-            csv_writer = csv.DictWriter(f, fieldnames=all_headers)
+            csv_writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    report_csv_column_labels.get(header, header)
+                    for header in all_headers
+                ],
+            )
             csv_writer.writeheader()
             for op_data in rows:
                 row = {
@@ -3243,62 +4059,96 @@ def generate_perf_report(
                     if header in op_data
                 }
                 if not no_advice:
-                    advice = generate_matmul_advice(op_data) if is_matmul_op(op_data) else ""
+                    advice = (
+                        generate_matmul_advice(op_data) if is_matmul_op(op_data) else ""
+                    )
                     row["Advice"] = escape_csv_formula(" • ".join(advice))
-                csv_writer.writerow(row)
-        overall_dram_speed, overall_dram_percentage = calculate_overall_dram_roofline(rows, timeline.busy)
+                csv_writer.writerow(
+                    {report_csv_column_labels.get(k, k): v for k, v in row.items()}
+                )
+        overall_dram_speed, overall_dram_percentage = calculate_overall_dram_roofline(
+            rows, timeline.busy
+        )
         if overall_dram_percentage is not None:
-            print(colored(
-                f"Overall DRAM roofline (modeled ops): {overall_dram_percentage:.1f}% ({overall_dram_speed:.0f} GB/s)",
-                "cyan",
-            ))
+            print(
+                colored(
+                    f"Overall DRAM roofline (modeled ops): {overall_dram_percentage:.1f}% ({overall_dram_speed:.0f} GB/s)",
+                    "cyan",
+                )
+            )
     else:
         if not rows:
             print(colored("No operations to display after applying filters.", "yellow"))
             return
 
         col_widths = [
-            max(max(visible_length(str(row[header])) for row in rows), visible_length(header))
+            max(
+                max(visible_length(str(row[header])) for row in rows),
+                visible_length(header),
+            )
             for header in visible_headers
         ]
         dev_idx = visible_headers.index("Device")
         col_widths[dev_idx] = max(col_widths[dev_idx], 7)
 
-        print_performance_table(rows, visible_headers, col_widths, device_ops, host_ops, signpost_count, timeline)
+        print_performance_table(
+            rows,
+            visible_headers,
+            col_widths,
+            device_ops,
+            host_ops,
+            signpost_count,
+            timeline,
+        )
         if not no_advice:
             print_advice_section(rows, visible_headers, col_widths, timeline)
 
     # handle stacked report generation
-    if not(no_stacked_report) and rows:
-        stacked_report = generate_stacked_report(rows, visible_headers, stack_by_in0, stack_by_category, no_merge_devices, no_host_ops)
+    if not (no_stacked_report) and rows:
+        stacked_report = generate_stacked_report(
+            rows,
+            visible_headers,
+            stack_by_in0,
+            stack_by_category,
+            no_merge_devices,
+            no_host_ops,
+        )
 
         if stacked_report.empty:
             print(colored("No data available for stacked report generation.", "yellow"))
             return
-        
+
         if not csv_output_file:
-            print_stacked_report(stacked_report, no_merge_devices)
+            print_stacked_report(stacked_report)
         stacked_caption = None
         if timeline.has_overlap:
             # The column names are a CSV contract, so the caveat goes alongside
             # the report - and into the PNG's title - rather than into its headers.
-            print(colored(
-                f"Stacked report: Device Time Sum and Total % add up summed op time ({timeline.summed:,.0f} μs), "
-                f"{timeline.overlap_phrase}; {timeline.busy_label} was {timeline.busy:,.0f} μs.",
-                "cyan"
-            ))
+            print(
+                colored(
+                    f"Stacked report: Device Time Sum and Total % add up summed op time ({timeline.summed:,.0f} μs), "
+                    f"{timeline.overlap_phrase}; {timeline.busy_label} was {timeline.busy:,.0f} μs.",
+                    "cyan",
+                )
+            )
             stacked_caption = (
                 f"Summed op time {timeline.summed:,.0f} μs; {timeline.overlap_phrase}; "
                 f"{timeline.busy_label} {timeline.busy:,.0f} μs"
             )
         if stacked_report_file or csv_output_file:
-            base = stacked_report_file or f"{os.path.splitext(csv_output_file)[0]}_stacked"
+            base = (
+                stacked_report_file or f"{os.path.splitext(csv_output_file)[0]}_stacked"
+            )
             print(colored(f"Writing CSV stacked report to {base}.csv", "cyan"))
             dump_stacked_report(stacked_report, f"{base}.csv")
             print(colored(f"Plotting PNG stacked report to {base}.png", "cyan"))
             plot_stacked_report(
-                stacked_report, f"{base}.png", stack_by_category, not use_simple_colors,
-                no_merge_devices=no_merge_devices, caption=stacked_caption,
+                stacked_report,
+                f"{base}.png",
+                stack_by_category,
+                not use_simple_colors,
+                no_merge_devices=no_merge_devices,
+                caption=stacked_caption,
             )
 
 
@@ -3308,6 +4158,7 @@ def is_host_op(op_data):
 
 def is_signpost_op(op_data):
     return "signpost" in op_data["OP Code"].raw_value
+
 
 if __name__ == "__main__":
     main()
