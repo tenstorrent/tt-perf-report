@@ -2831,26 +2831,10 @@ def format_stacked_report_df(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=stacked_report_column_labels)
 
 
-def print_stacked_report(stacked_df: pd.DataFrame, no_merge_devices: bool = False):
+def print_stacked_report(stacked_df: pd.DataFrame):
     print("\n📊 Stacked report 📊\n====================\n")
 
     display_df = format_stacked_report_df(stacked_df)
-
-    if no_merge_devices:
-        columns = [
-            "Total %",
-            "Op Code",
-            "Device",
-            "Device Time Sum",
-            "Op Count",
-            "Op Category",
-            "Min FLOPs",
-            "Max FLOPs",
-            "Mean FLOPs",
-            "Std FLOPs",
-            "Weighted Mean FLOPs",
-        ]
-        display_df = display_df[columns]
 
     # Convert to list of dictionaries for consistent formatting
     headers = display_df.columns.tolist()
@@ -4135,7 +4119,7 @@ def generate_perf_report(
             return
 
         if not csv_output_file:
-            print_stacked_report(stacked_report, no_merge_devices)
+            print_stacked_report(stacked_report)
         stacked_caption = None
         if timeline.has_overlap:
             # The column names are a CSV contract, so the caveat goes alongside

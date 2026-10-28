@@ -1618,6 +1618,50 @@ def test_unmerged_devices_keep_their_own_budgets(mocker):
     assert pairs == {("1", "108"), ("2", "64")}
 
 
+_STACKED_BASE_HEADERS = ["Total %", "Op Code", "Device", "Device Time Sum", "Op Count"]
+_STACKED_FLOPS_HEADERS = [
+    "Op Category", "Min FLOPs", "Max FLOPs", "Mean FLOPs", "Std FLOPs", "Weighted Mean FLOPs",
+]
+
+
+@pytest.mark.parametrize(
+    "group_by, expected_headers",
+    [
+        ("op", _STACKED_BASE_HEADERS + _STACKED_FLOPS_HEADERS),
+        ("memory", _STACKED_BASE_HEADERS + _STACKED_FLOPS_HEADERS),
+        # Category stacking aggregates no Op Category or FLOPs columns, so the
+        # unmerged printer must not ask for them.
+        ("category", _STACKED_BASE_HEADERS),
+    ],
+)
+def test_unmerged_devices_print_the_stacked_report_for_every_grouping(
+    mocker, tmp_path, group_by, expected_headers
+):
+    stacked_base = str(tmp_path / "stacked")
+    _, _, stdout = _run_report(
+        mocker,
+        _multi_device_csv_content(),
+        csv_output_file=None,
+        no_merge_devices=True,
+        no_summary=False,
+        no_stacked_report=False,
+        group_by=group_by,
+        summary_file=stacked_base,
+    )
+
+    with open(f"{stacked_base}.csv", "r") as f:
+        stacked_rows = list(csv.DictReader(f))
+
+    assert {row["Device"] for row in stacked_rows} == {"0", "1"}
+    stacked_section = stdout.split("Stacked report", 1)[1]
+    lines = stacked_section.splitlines()
+    # The header is the line directly above the first rule of dashes.
+    header_line = next(lines[i - 1] for i, line in enumerate(lines) if i and line and set(line) == {"-"})
+    assert re.split(r"\s{2,}", header_line.strip()) == expected_headers
+    for row in stacked_rows:
+        assert re.search(rf"{re.escape(row['Op Code'])}\s+{row['Device']}\s", stacked_section)
+
+
 def _report_rows_for_fixture(mocker, filename, **overrides):
     path = os.path.join(os.path.dirname(__file__), "data", filename)
     with open(path, "r") as f:
