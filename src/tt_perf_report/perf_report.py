@@ -4,6 +4,7 @@
 # SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
 import argparse
 import csv
+import json
 import os
 import re
 import sys
@@ -49,6 +50,7 @@ from tt_perf_report.overlap import (
     measure_overlap,
     split_duration,
 )
+from tt_perf_report import measured
 from tt_perf_report.sub_device import (
     SUB_DEVICE_ID_COLUMN,
     count_sub_devices,
@@ -120,7 +122,47 @@ report_csv_column_labels = {
     "FLOPs": "FLOPs [TFLOPs]",
     "FLOPs %": "FLOPs [%]",
     "Overlap": "Overlap [μs]",
+    "DRAM Bytes": "Modeled DRAM Bytes [B]",
+    "Measured DRAM Bytes": "Measured DRAM Bytes [B]",
+    "Measured DRAM": "Measured DRAM [GB/s]",
+    "Measured DRAM %": "Measured DRAM [%]",
+    "FPU Util": "FPU Util [%]",
+    "SFPU Util": "SFPU Util [%]",
+    "Math Util": "Math Util [%]",
+    "Packer Util": "Packer Util [%]",
+    "Unpack Wait": "Math Waiting on Unpack [%]",
+    "Thread Stall": "Thread Stall [%]",
+    "CB Wait": "CB Wait [%]",
+    "Arrival Spread": "Arrival Spread [μs]",
+    "Finish Spread": "Finish Spread [μs]",
+    "Self Arrival Lead": "Self Arrival Lead [μs]",
+    "Chip Sync Error": "Chip Sync Error [μs]",
 }
+
+# Columns of the measured-visibility block, in CSV/JSON order (see README "Measured columns").
+MEASURED_HEADERS = [
+    "DRAM Bytes",
+    "Measured DRAM Bytes",
+    "Measured DRAM",
+    "Measured DRAM %",
+    "Measured/Modeled DRAM",
+    "DRAM Model Mismatch",
+    "FPU Util",
+    "SFPU Util",
+    "Math Util",
+    "Packer Util",
+    "Unpack Wait",
+    "Thread Stall",
+    "CB Wait",
+    "Last Chip In",
+    "Arrival Spread",
+    "Last Chip Out",
+    "Finish Spread",
+    "Self Arrival Lead",
+    "Chip Sync Error",
+    "Bound By",
+]
+REPORT_JSON_SCHEMA = "tt-perf-report/ops/v1"
 
 
 def detect_csv_format(df):
@@ -1766,6 +1808,60 @@ def idle_cell(idle_ns):
     return Cell(idle_ns / 1000 if idle_ns is not None else None, unit="μs", decimals=0)
 
 
+def analyze_measured(row, output, duration_ns, arch_spec):
+    """Cells of the measured block: NoC-trace DRAM bytes, perf counters, sum-zone CB waits and chip arrival."""
+    cells = {}
+    read = get_numeric_value(row, measured.MEAS_DRAM_READ)
+    write = get_numeric_value(row, measured.MEAS_DRAM_WRITE)
+    total = None if read is None and write is None else (read or 0) + (write or 0)
+    speed = (
+        total / duration_ns if total is not None and duration_ns else None
+    )  # bytes/ns = GB/s
+    cells["Measured DRAM Bytes"] = Cell(int(total) if total is not None else None)
+    cells["Measured DRAM"] = Cell(speed, unit="GB/s", decimals=0)
+    cells["Measured DRAM %"] = Cell(
+        speed / arch_spec.dram_bandwidth_gb_s * 100 if speed is not None else None,
+        unit="%",
+        decimals=1,
+    )
+    modeled = output["DRAM Bytes"].raw_value
+    ratio = total / modeled if total is not None and modeled else None
+    cells["Measured/Modeled DRAM"] = Cell(ratio, decimals=2)
+    cells["DRAM Model Mismatch"] = Cell(
+        abs(ratio - 1) > measured.DECLARED_MISMATCH if ratio is not None else None
+    )
+    counters = measured.counter_values(row)
+    for header, key in (
+        ("FPU Util", "fpu"),
+        ("SFPU Util", "sfpu"),
+        ("Math Util", "math"),
+        ("Packer Util", "pack"),
+        ("Unpack Wait", "unpack_wait"),
+        ("Thread Stall", "stall"),
+        ("CB Wait", "cb_wait"),
+    ):
+        cells[header] = Cell(counters[key], unit="%", decimals=1)
+    to_us = lambda ns: ns / 1000 if ns is not None else None
+    last_in = get_numeric_value(row, measured.XCHIP_LAST_IN)
+    last_out = get_numeric_value(row, measured.XCHIP_LAST_OUT)
+    cells["Last Chip In"] = Cell(int(last_in) if last_in is not None else None)
+    cells["Arrival Spread"] = Cell(
+        to_us(get_numeric_value(row, measured.XCHIP_IN_SPREAD)), unit="μs", decimals=1
+    )
+    cells["Last Chip Out"] = Cell(int(last_out) if last_out is not None else None)
+    cells["Finish Spread"] = Cell(
+        to_us(get_numeric_value(row, measured.XCHIP_OUT_SPREAD)), unit="μs", decimals=1
+    )
+    cells["Self Arrival Lead"] = Cell(
+        to_us(get_numeric_value(row, measured.XCHIP_SELF_WAIT)), unit="μs", decimals=1
+    )
+    cells["Chip Sync Error"] = Cell(
+        to_us(get_numeric_value(row, measured.XCHIP_SYNC_ERROR)), unit="μs", decimals=1
+    )
+    cells["Bound By"] = Cell("")
+    return cells
+
+
 def analyze_op(
     row,
     prev_row,
@@ -2022,6 +2118,7 @@ def analyze_op(
         if match:
             out_subblock_w = Cell(int(match.group(1)))
 
+    output.update(analyze_measured(row, output, duration_ns, arch_spec))
     output["Input 0 Memory"] = input_0_memory
     output["Inner Dim Block Size"] = in0_block_w
     output["Output Subblock H"] = out_subblock_h
@@ -2167,6 +2264,37 @@ def gap_time(rows):
     return sum(visible_gap(op_data) for op_data in rows)
 
 
+def verdict(op_data):
+    """The per-op "Bound By" line: measured DRAM, then math, then waiting on a chip or a CB, then dispatch."""
+    if op_data.get("Bound") is not None and op_data["Bound"].raw_value == "HOST":
+        return "host"
+    raw = lambda k: op_data[k].raw_value if k in op_data else None
+    device_us = raw("Device Time")
+    gap_us = raw("Op-to-Op Gap")
+    lead_us = raw("Self Arrival Lead")
+    declared = raw("Bound") if raw("Bound") in ("DRAM", "FLOP", "BOTH") else ""
+    dram_pct = raw("Measured DRAM %")
+    return measured.bound_by(
+        device=raw("Device"),
+        duration_ns=device_us * 1000 if device_us is not None else None,
+        gap_ns=gap_us * 1000 if gap_us is not None and gap_us > 0 else None,
+        dram_pct=dram_pct,
+        flops_pct=raw("FLOPs %") if declared else None,
+        counters={
+            "math": raw("Math Util"),
+            "fpu": raw("FPU Util"),
+            "sfpu": raw("SFPU Util"),
+            "cb_wait": raw("CB Wait"),
+        },
+        last_in=raw("Last Chip In"),
+        self_lead_ns=lead_us * 1000 if lead_us is not None else None,
+        sync_error_ns=(raw("Chip Sync Error") or 0) * 1000,
+        declared_bound={"DRAM": "DRAM", "FLOP": "math", "BOTH": "DRAM and math"}.get(
+            declared, ""
+        ),
+    )
+
+
 def add_derived_columns(rows):
     total_duration = summed_op_time(rows) + gap_time(rows)
     for op_data in rows:
@@ -2207,6 +2335,8 @@ def add_derived_columns(rows):
         elif is_host_op(op_data):
             op_data["Bound"] = Cell("HOST")
             op_data["Device Time"] = Cell(None)
+        if "Bound By" in op_data and not is_signpost_op(op_data):
+            op_data["Bound By"] = Cell(verdict(op_data))
 
 
 def calculate_overall_dram_roofline(rows, busy_us=None):
@@ -3193,6 +3323,43 @@ def plot_stacked_report(
     plt.savefig(output_file)
 
 
+def write_json_report(path, rows, headers, measured_inputs):
+    """Per-op records under the CSV's column names, with a schema tag agents can check."""
+
+    def value(cell):
+        v = cell.raw_value
+        if isinstance(v, (np.integer,)):
+            return int(v)
+        if isinstance(v, (np.floating, float)):
+            return None if pd.isna(v) else float(v)
+        if isinstance(v, (np.bool_,)):
+            return bool(v)
+        return v
+
+    ops = [
+        {
+            report_csv_column_labels.get(h, h): value(op_data[h])
+            for h in headers
+            if h in op_data and isinstance(op_data[h], Cell)
+        }
+        for op_data in rows
+    ]
+    with open(path, "w") as f:
+        json.dump(
+            {"schema": REPORT_JSON_SCHEMA, "inputs": measured_inputs, "ops": ops},
+            f,
+            indent=1,
+            default=str,
+        )
+    print(colored(f"Writing JSON output to {path}", "cyan"))
+
+
+def glob_any(folder, pattern):
+    import glob
+
+    return bool(glob.glob(os.path.join(folder, pattern)))
+
+
 def merge_perf_traces(csv_files: List[str]) -> pd.DataFrame:
     merged_frames = []
     num_devices_per_system = None
@@ -3519,6 +3686,10 @@ def main():
         args.stacked_csv,
         args.no_merge_devices,
         args.active_experts,
+        noc_traces=args.noc_traces,
+        sync_file=args.sync_file,
+        json_output_file=args.json,
+        auto_logs=not args.no_auto_logs,
     )
 
 
@@ -3648,6 +3819,28 @@ def parse_args():
         default=None,
         help="Active experts per input batch group for SparseMatmul rows whose CSV attributes do not include numeric nnz",
     )
+    parser.add_argument(
+        "--noc-traces",
+        metavar="DIR",
+        help="Folder of NoC traces (python -m tracy --collect-noc-traces) for the Measured DRAM columns; default: "
+        "the .logs folder of the tracy run that wrote the CSV",
+    )
+    parser.add_argument(
+        "--sync-file",
+        metavar="FILE",
+        help="sync_device_info.csv (python -m tracy --sync-host-device) for the chip arrival columns; default: from "
+        "the same .logs folder",
+    )
+    parser.add_argument(
+        "--no-auto-logs",
+        action="store_true",
+        help="Do not look for NoC traces and the sync file next to the CSV",
+    )
+    parser.add_argument(
+        "--json",
+        metavar="FILE",
+        help="Also write the per-op report as JSON (schema tt-perf-report/ops/v1, the CSV's columns)",
+    )
 
     args = parser.parse_args()
 
@@ -3701,6 +3894,10 @@ def generate_perf_report(
     stacked_csv,
     no_merge_devices,
     active_experts=None,
+    noc_traces=None,
+    sync_file=None,
+    json_output_file=None,
+    auto_logs=True,
 ):
     # Handle backward compatibility and convert new arguments to internal logic
     # Priority: new arguments > legacy arguments
@@ -3804,6 +4001,21 @@ def generate_perf_report(
     )
     df.insert(len(df.columns), DURATION_VALID_COLUMN, valid_duration)
     annotate_overlap(df, valid_duration)
+    logs = (
+        measured.find_profiler_logs(csv_files[0]) if auto_logs and csv_files else None
+    )
+    if logs:
+        if noc_traces is None and glob_any(logs, "noc_trace_dev*.json"):
+            noc_traces = logs
+        if sync_file is None and os.path.isfile(
+            os.path.join(logs, "sync_device_info.csv")
+        ):
+            sync_file = os.path.join(logs, "sync_device_info.csv")
+    measured_inputs = measured.annotate_measured(
+        df, arch_spec.name, noc_traces, sync_file
+    )
+    for name, source in measured_inputs.items():
+        print(colored(f"Measured columns: {name} from {source}", "cyan"))
     # The per-device rows, for re-measuring overlap after an id range and for
     # per-device totals once rows are merged - only the columns those read, so
     # the full pre-merge frame is not kept alive for the rest of the run.
@@ -4115,6 +4327,7 @@ def generate_perf_report(
         "Op Category",
         "Bound Analysis",
         "Overlap",
+        *MEASURED_HEADERS,
     ]
 
     # The CSV is a machine-readable contract for downstream consumers, so its
@@ -4131,6 +4344,8 @@ def generate_perf_report(
     if has_overlap:
         visible_headers.insert(visible_headers.index("Op-to-Op Gap") + 1, "Overlap")
 
+    if json_output_file:
+        write_json_report(json_output_file, rows, csv_headers, measured_inputs)
     if csv_output_file:
         all_headers = list(csv_headers)
         if not no_advice:
