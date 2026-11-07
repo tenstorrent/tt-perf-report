@@ -120,7 +120,7 @@ The performance report provides several key metrics for analyzing operation perf
   - `SLOW`: Analysed, but neither DRAM nor FLOPs explains the duration (both below 65%)
   - `HOST`: Operation running on host CPU
 
-  `DRAM`, `FLOP`, `BOTH` and `SLOW` are only derived for matmuls. A blank **Bound**, **DRAM %** or **FLOPs %** does not mean the op is fine: for most op types those figures are never modelled. `--csv` records which model ran in **Bound Analysis**, so read that before concluding an op is not a bottleneck.
+  `DRAM`, `FLOP`, `BOTH` and `SLOW` are only derived for matmuls and for ops that declare their work (see **Bound Analysis**). A blank **Bound**, **DRAM %** or **FLOPs %** does not mean the op is fine: for most op types those figures are never modelled. `--csv` records which model ran in **Bound Analysis**, so read that before concluding an op is not a bottleneck.
 
 ### Classification Fields
 
@@ -136,6 +136,7 @@ Added to the per-op `--csv` output; the terminal table is unchanged. The stacked
   - Blank for signposts
 - **Bound Analysis**: Which roofline model produced **DRAM %**, **FLOPs %** and **Bound**:
   - `full`: DRAM and FLOPs (matmuls). Either figure can still be blank when the trace lacks the inputs the model needs
+    Any op whose **ATTRIBUTES** declare its work on one device (`declared_dram_bytes_read`, `declared_dram_bytes_written`, `declared_flops`, optionally `declared_math_fidelity`; `ttnn.generic_op` writes them from `ProgramDescriptor.performance`) is analysed from those numbers instead of its shapes: **DRAM** is the declared bytes over the device kernel duration, and **FLOPs %** uses the declared fidelity, else the op's **MATH FIDELITY**, and the op's core count
   - `flops_only`: FLOPs only (convolutions), so **DRAM %** is always blank and **Bound** is never set
   - `none`: Not analysed; **DRAM %** and **FLOPs %** are blank whatever the op's real behaviour, and so is **Bound**, except `HOST` for host (`(torch)`) ops
 

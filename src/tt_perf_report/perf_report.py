@@ -1303,6 +1303,84 @@ class MatmulAnalysis(NamedTuple):
     sparse_active_source: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class DeclaredRoofline:
+    """DRAM and FLOPs figures of an op from the work it declares, not from its shapes."""
+
+    dram_speed_gb_s: Optional[float] = None
+    dram_percentage: Optional[float] = None
+    flops: Optional[float] = None
+    flops_percentage: Optional[float] = None
+    math_fidelity: Optional[str] = None
+    dram_bytes: Optional[int] = None
+
+
+# ATTRIBUTES keys through which an op declares its work on one device (generic_op writes them from
+# ProgramDescriptor.performance); std::nullopt means not declared.
+DECLARED_DRAM_BYTES_READ = "declared_dram_bytes_read"
+DECLARED_DRAM_BYTES_WRITTEN = "declared_dram_bytes_written"
+DECLARED_FLOPS = "declared_flops"
+DECLARED_MATH_FIDELITY = "declared_math_fidelity"
+
+
+def analyze_declared_roofline(
+    row, arch_spec: ArchitectureSpec
+) -> Optional[DeclaredRoofline]:
+    """The op's DRAM and FLOPs utilization from its declared work, or None if it declares none."""
+    attributes = (
+        row["ATTRIBUTES"] if "ATTRIBUTES" in row and pd.notna(row["ATTRIBUTES"]) else ""
+    )
+    bytes_read = get_optional_int_attribute(attributes, DECLARED_DRAM_BYTES_READ)
+    bytes_written = get_optional_int_attribute(attributes, DECLARED_DRAM_BYTES_WRITTEN)
+    flop_count = get_optional_int_attribute(attributes, DECLARED_FLOPS)
+    if bytes_read is None and bytes_written is None and flop_count is None:
+        return None
+
+    math_fidelity = get_attribute_value(attributes, DECLARED_MATH_FIDELITY)
+    if math_fidelity in (None, "std::nullopt"):
+        math_fidelity = row["MATH FIDELITY"] if "MATH FIDELITY" in row else None
+    math_fidelity = (
+        str(math_fidelity).removeprefix("MathFidelity::")
+        if pd.notna(math_fidelity)
+        else None
+    )
+
+    dram_bytes = None
+    if bytes_read is not None or bytes_written is not None:
+        dram_bytes = (bytes_read or 0) + (bytes_written or 0)
+
+    duration_ns, _ = get_analysis_duration_ns(row)
+    if not duration_ns:
+        return DeclaredRoofline(math_fidelity=math_fidelity, dram_bytes=dram_bytes)
+    duration_s = duration_ns * 1e-9
+
+    dram_speed_gb_s = dram_bytes / duration_s / 1e9 if dram_bytes is not None else None
+    dram_percentage = (
+        dram_speed_gb_s / arch_spec.dram_bandwidth_gb_s * 100
+        if dram_speed_gb_s is not None
+        else None
+    )
+    flops = flop_count / duration_s if flop_count is not None else None
+    flops_percentage = None
+    if flops is not None:
+        core_count = get_core_count(row, "CORE COUNT", default=arch_spec.worker_cores)
+        try:
+            peak_flops = arch_spec.tflops_per_core(math_fidelity) * 1e12 * core_count
+        except ValueError:
+            peak_flops = None
+        if peak_flops:
+            flops_percentage = flops / peak_flops * 100
+
+    return DeclaredRoofline(
+        dram_speed_gb_s=dram_speed_gb_s,
+        dram_percentage=dram_percentage,
+        flops=flops,
+        flops_percentage=flops_percentage,
+        math_fidelity=math_fidelity,
+        dram_bytes=dram_bytes,
+    )
+
+
 def analyze_matmul(
     row,
     csv_format=CsvFormat.V2,
@@ -1808,7 +1886,24 @@ def analyze_op(
     # otherwise leave the same blank cells.
     bound_analysis = BOUND_ANALYSIS_NONE
 
-    if "Matmul" in op_code.raw_value:
+    declared = analyze_declared_roofline(row, arch_spec)
+    if declared is not None:
+        # The op's own declaration takes precedence over a model inferred from its shapes
+        bound_analysis = BOUND_ANALYSIS_FULL
+        dram_speed = Cell(declared.dram_speed_gb_s, unit="GB/s", decimals=0)
+        dram_percentage = Cell(declared.dram_percentage, unit="%", decimals=1)
+        flops = Cell(
+            declared.flops / 1e12 if declared.flops is not None else None,
+            unit="TFLOPs",
+            decimals=1,
+        )
+        flops_percentage = Cell(declared.flops_percentage, unit="%", decimals=1)
+        dram_bytes = Cell(declared.dram_bytes)
+        if declared.math_fidelity:
+            math_fidelity_cell = Cell(
+                f"{declared.math_fidelity} {math_fidelity}".strip()
+            )
+    elif "Matmul" in op_code.raw_value:
         bound_analysis = BOUND_ANALYSIS_FULL
         matmul = analyze_matmul(row, csv_format, arch_spec, active_experts)
         is_dram_sharded = matmul.is_dram_sharded
