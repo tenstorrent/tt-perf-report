@@ -120,7 +120,7 @@ The performance report provides several key metrics for analyzing operation perf
   - `SLOW`: Analysed, but neither DRAM nor FLOPs explains the duration (both below 65%)
   - `HOST`: Operation running on host CPU
 
-  `DRAM`, `FLOP`, `BOTH` and `SLOW` are only derived for matmuls. A blank **Bound**, **DRAM %** or **FLOPs %** does not mean the op is fine: for most op types those figures are never modelled. `--csv` records which model ran in **Bound Analysis**, so read that before concluding an op is not a bottleneck.
+  `DRAM`, `FLOP`, `BOTH` and `SLOW` are only derived for matmuls and for ops that declare their work (see **Bound Analysis**). A blank **Bound**, **DRAM %** or **FLOPs %** does not mean the op is fine: for most op types those figures are never modelled. `--csv` records which model ran in **Bound Analysis**, so read that before concluding an op is not a bottleneck.
 
 ### Classification Fields
 
@@ -136,6 +136,7 @@ Added to the per-op `--csv` output; the terminal table is unchanged. The stacked
   - Blank for signposts
 - **Bound Analysis**: Which roofline model produced **DRAM %**, **FLOPs %** and **Bound**:
   - `full`: DRAM and FLOPs (matmuls). Either figure can still be blank when the trace lacks the inputs the model needs
+    Any op whose **ATTRIBUTES** declare its work on one device (`declared_dram_bytes_read`, `declared_dram_bytes_written`, `declared_flops`, optionally `declared_math_fidelity`; `ttnn.generic_op` writes them from `ProgramDescriptor.performance`) is analysed from those numbers instead of its shapes: **DRAM** is the declared bytes over the device kernel duration, and **FLOPs %** uses the declared fidelity, else the op's **MATH FIDELITY**, and the op's core count
   - `flops_only`: FLOPs only (convolutions), so **DRAM %** is always blank and **Bound** is never set
   - `none`: Not analysed; **DRAM %** and **FLOPs %** are blank whatever the op's real behaviour, and so is **Bound**, except `HOST` for host (`(torch)`) ops
 
@@ -153,6 +154,37 @@ The tool automatically highlights potential optimization opportunities:
 - Green core counts indicate either all the cores the operation was given — the subdevice's budget on a partitioned run — or a DRAM-sharded matmul, which runs on a fixed set of DRAM-interface workers rather than on a grid it could grow into
 - Green DRAM % and FLOPs % indicate good utilization of available resources
 - Yellow metrics indicate room for optimization
+
+## Measured columns
+
+Besides the modelled DRAM % and FLOPs %, the report fills a measured block for any op, `ttnn.generic_op` and fused
+kernels included, when the trace carries the inputs. Capture them in one run:
+
+```bash
+python -m tracy -r -o PROFILE_DIR \
+    --collect-noc-traces --sync-host-device --enable-sum-profiling \
+    --profiler-capture-perf-counters=fpu,pack,unpack,instrn,l1_0 --op-support-count 8000 \
+    -m pytest path/to/test.py
+tt-perf-report PROFILE_DIR/reports/<date>/ops_perf_results_<date>.csv --csv report.csv --json report.json
+```
+
+A capture with perf counters is processed without the C++ post-processing, and its CSV leaves **DEVICE ARCH** blank; pass `--arch blackhole` (or the right architecture) there, or the peaks default to Wormhole's.
+
+tt-perf-report finds the NoC traces and `sync_device_info.csv` in `PROFILE_DIR/.logs` on its own (`--noc-traces DIR`
+and `--sync-file FILE` point elsewhere; `--no-auto-logs` turns the search off). Each column stays blank without its
+input, and `--json` lists the inputs used under `inputs`.
+
+| column | input | meaning |
+|---|---|---|
+| **Measured DRAM Bytes [B]**, **Measured DRAM [GB/s]**, **Measured DRAM [%]** | `--collect-noc-traces` | bytes of the op's NoC transfers whose remote end is a DRAM endpoint, per device, over the device kernel duration; % of the architecture's peak. Only transfers made through the instrumented dataflow API are traced |
+| **Modeled DRAM Bytes [B]**, **Measured/Modeled DRAM**, **DRAM Model Mismatch** | NoC traces and a DRAM model (matmul shapes or the op's declared bytes) | measured over modelled bytes; the flag is set when they differ by more than 20 % |
+| **FPU Util [%]**, **SFPU Util [%]**, **Math Util [%]**, **Packer Util [%]**, **Math Waiting on Unpack [%]**, **Thread Stall [%]** | `--profiler-capture-perf-counters` | means over the cores that ran a compute kernel (cores without one have no counters); Thread Stall is the highest of the three TRISC threads' stall rates |
+| **CB Wait [%]** | `--enable-sum-profiling` | compute-side circular-buffer wait (wait front plus reserve back) as a share of the op's core time |
+| **Last Chip In**, **Arrival Spread [μs]**, **Last Chip Out**, **Finish Spread [μs]**, **Self Arrival Lead [μs]**, **Chip Sync Error [μs]** | `--sync-host-device` (or SYNCED START/END [ns] columns) | for the same op on every chip, on one clock: the chip that started last and by how much after the first, the chip that finished last, and how long this row's chip started before the last one. The device sync runs at device open and close; Chip Sync Error is how far those two fits disagree at the op, and can reach tens of µs on a long run, so read the arrival columns against it (Bound By does) |
+| **Bound By** | all of the above, then the modelled roofline | one line per op: `DRAM (..% of peak)`, `math (..% util)`, `waiting on chip N (.. µs)`, `waiting on CB (..%)`, `dispatch (gap .. > op ..)`, the modelled bound marked `(modelled roofline)`, or `unexplained`. Thresholds: 65 % for DRAM and math, a chip lead of at least 2 µs and 20 % of the op, CB waits from 30 % |
+
+The CSV column set and order do not depend on the input, and `--json` writes the same columns per op under the schema
+tag `tt-perf-report/ops/v1`, so a script or an agent can read either without inspecting the file first.
 
 ## Examples
 
