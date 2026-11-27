@@ -1971,6 +1971,29 @@ def test_stacked_report_png_is_captioned_only_when_ops_overlap(mocker, tmp_path,
         assert caption is None
 
 
+@pytest.mark.parametrize("group_by", ["op", "category"])
+def test_stacked_report_writes_a_real_png(mocker, tmp_path, group_by):
+    # Unmocked, so savefig really runs through Pillow: guards the Pillow floor in pyproject.toml.
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    Image = pytest.importorskip("PIL.Image")
+    import matplotlib.pyplot as plt
+
+    try:
+        _run_report(
+            mocker, _rows_to_csv(_concurrent_subdevice_rows()),
+            csv_output_file=str(tmp_path / "report.csv"),
+            no_summary=False, no_stacked_report=False, group_by=group_by,
+        )
+    finally:
+        plt.close("all")
+
+    png = tmp_path / "report_stacked.png"
+    assert png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    with Image.open(png) as image:
+        image.verify()
+
+
 def test_stacked_report_carries_no_overlap_note_without_overlap(mocker):
     csv_content = _rows_to_csv([
         _subdevice_row("MatmulDeviceOperation", "0", "54", "54", 1000, **_fw_timing(1000)),

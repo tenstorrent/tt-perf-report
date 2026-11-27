@@ -4,8 +4,13 @@ on: push
 
 jobs:
   build:
-    name: Validate CSV Output
+    name: Validate CSV Output (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the last version without the Pillow security floor; see pyproject.toml.
+        python-version: ["3.10", "3.11", "3.x"]
 
     steps:
     - uses: actions/checkout@v4
@@ -15,12 +20,19 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: "3.x"
+        python-version: ${{ matrix.python-version }}
 
     - name: Install dependencies
       run: >-
         python3 -m
         pip install ".[test]"
+
+    - name: Check Pillow security floor
+      run: >-
+        python -c "import sys, PIL;
+        major = int(PIL.__version__.split('.')[0]);
+        print('Pillow', PIL.__version__);
+        assert sys.version_info < (3, 11) or major >= 13, 'Pillow 13+ required on Python 3.11+'"
 
     - name: Run tests
       run: python -m pytest -v
