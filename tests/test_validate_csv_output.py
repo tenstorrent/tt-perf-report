@@ -1644,9 +1644,46 @@ def test_an_op_only_one_device_ran_names_no_device_rows(mocker):
 
     _, rows, _ = _run_report(mocker, csv_content)
 
-    members = {row["OP Code"].split()[0]: row[DEVICE_ROW_IDS_HEADER] for row in rows}
-    assert len(members["MatmulDeviceOperation"].split()) == 2
-    assert members["BinaryNgDeviceOperation"] == ""
+    by_op = {row["OP Code"].split()[0]: row for row in rows}
+    assert len(_device_row_ids(by_op["MatmulDeviceOperation"])) == 2
+    assert by_op["BinaryNgDeviceOperation"][DEVICE_ROW_IDS_HEADER] == ""
+
+
+def test_device_row_ids_follow_device_id_order(mocker):
+    # Device 1's row comes first in the input, so device-ID order and row-ID
+    # order disagree and the cell shows which one the column follows.
+    csv_content = _rows_to_csv([
+        _subdevice_row("MatmulDeviceOperation", "", "64", "64", 1000, device_id="1"),
+        _subdevice_row("MatmulDeviceOperation", "", "64", "64", 1001, device_id="0"),
+    ])
+    _, unmerged, _ = _run_report(mocker, csv_content, no_merge_devices=True)
+    _, merged, _ = _run_report(mocker, csv_content)
+
+    id_by_device = {row["Device"]: row["ID"] for row in unmerged}
+    assert int(id_by_device["1"]) < int(id_by_device["0"])
+    (row,) = merged
+    assert row[DEVICE_ROW_IDS_HEADER] == f"{id_by_device['0']} {id_by_device['1']}"
+
+
+def test_a_merged_collective_names_every_device_row(mocker):
+    # Collectives average over devices and keep the first device's row rather
+    # than the slowest's, so this is the other branch that sets the row's ID.
+    csv_content = _rows_to_csv([
+        _subdevice_row(
+            "AllGatherDeviceOperation", "", "64", "64", 1000, device_id="0",
+            **{"DEVICE KERNEL DURATION [ns]": "100000"},
+        ),
+        _subdevice_row(
+            "AllGatherDeviceOperation", "", "64", "64", 1001, device_id="1",
+            **{"DEVICE KERNEL DURATION [ns]": "200000"},
+        ),
+    ])
+
+    _, rows, _ = _run_report(mocker, csv_content)
+
+    (row,) = rows
+    assert len(_device_row_ids(row)) == 2
+    assert int(row["ID"]) in _device_row_ids(row)
 
 
 @pytest.mark.parametrize("unmerged", [False, True], ids=["single-device", "unmerged"])

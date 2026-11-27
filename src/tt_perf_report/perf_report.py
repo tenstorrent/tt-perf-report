@@ -3304,8 +3304,9 @@ def merge_device_rows(df):
 
         # Keep execution order independent of the device supplying the timing.
         base_block["_REPORT_ORDER"] = min(data["_REPORT_ORDER"] for _, data in blocks)
-        # Every per-device row this op stands for, so a filter on the merged
-        # rows can find the per-device intervals it kept; see reattribute_overlap.
+        # Every per-device row this op stands for, in device-ID order, so a filter
+        # on the merged rows can find the per-device intervals it kept (see
+        # reattribute_overlap), and --csv can name them (DEVICE_ROW_IDS_HEADER).
         base_block[MERGED_ROWS_COLUMN] = tuple(
             block.get("ORIGINAL_ROW") for _, block in blocks
         )
@@ -3772,15 +3773,14 @@ def generate_perf_report(
         )
         op_data["ID"] = Cell(row["ORIGINAL_ROW"])  # Use the original row number
         merged_rows = row.get(MERGED_ROWS_COLUMN)
+        device_row_ids = None
         if isinstance(merged_rows, tuple):
             merged_rows_by_id[row["ORIGINAL_ROW"]] = merged_rows
-        # Space-separated: some spreadsheet locales split fields on ";", and ","
-        # would quote every cell. A row standing only for itself is left blank.
-        op_data[DEVICE_ROW_IDS_HEADER] = Cell(
-            " ".join(str(int(member)) for member in merged_rows)
-            if isinstance(merged_rows, tuple) and len(merged_rows) > 1
-            else None
-        )
+            # Space-separated: some spreadsheet locales split fields on ";", and
+            # "," would quote every cell. A row standing only for itself is blank.
+            if len(merged_rows) > 1:
+                device_row_ids = " ".join(str(int(member)) for member in merged_rows)
+        op_data[DEVICE_ROW_IDS_HEADER] = Cell(device_row_ids)
         # Signpost rows leave this column blank, so pandas reads it as float.
         op_data["Global Call Count"] = Cell(get_int(row, "GLOBAL CALL COUNT"))
         if raw_op_codes:
