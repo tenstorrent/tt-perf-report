@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.10 is the last version without the Pillow security floor; see pyproject.toml.
+        # 3.10 gets a lower Pillow floor than 3.11+; see pyproject.toml.
         python-version: ["3.10", "3.11", "3.x"]
 
     steps:
@@ -30,9 +30,10 @@ jobs:
     - name: Check Pillow security floor
       run: >-
         python -c "import sys, PIL;
-        major = int(PIL.__version__.split('.')[0]);
-        print('Pillow', PIL.__version__);
-        assert sys.version_info < (3, 11) or major >= 13, 'Pillow 13+ required on Python 3.11+'"
+        version = tuple(int(part) for part in PIL.__version__.split('.')[:2]);
+        floor = (13, 0) if sys.version_info >= (3, 11) else (12, 3);
+        print('Pillow', PIL.__version__, 'floor', floor);
+        assert version >= floor, 'Pillow below the security floor in pyproject.toml'"
 
     - name: Run tests
       run: python -m pytest -v

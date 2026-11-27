@@ -1973,11 +1973,18 @@ def test_stacked_report_png_is_captioned_only_when_ops_overlap(mocker, tmp_path,
 
 @pytest.mark.parametrize("group_by", ["op", "category"])
 def test_stacked_report_writes_a_real_png(mocker, tmp_path, group_by):
-    # Unmocked, so savefig really runs through Pillow: guards the Pillow floor in pyproject.toml.
-    matplotlib = pytest.importorskip("matplotlib")
-    matplotlib.use("Agg")
-    Image = pytest.importorskip("PIL.Image")
+    # Unmocked, so savefig really runs through Pillow: proves matplotlib still writes a PNG
+    # with the Pillow that pyproject.toml resolves. matplotlib and Pillow are hard
+    # dependencies, so a broken import must fail here rather than skip.
+    import matplotlib
     import matplotlib.pyplot as plt
+    from PIL import Image
+
+    from tt_perf_report import perf_report
+
+    # perf_report swallows a matplotlib ImportError and silently skips plotting.
+    assert perf_report.HAS_MATPLOTLIB, "matplotlib failed to import in perf_report"
+    matplotlib.use("Agg")
 
     try:
         _run_report(

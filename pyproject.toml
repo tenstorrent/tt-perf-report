@@ -13,8 +13,11 @@ dependencies = [
     "numpy>=1.22.4",
     "pandas>=2.2.0",
     "matplotlib==3.10.9",
-    # Pillow 13 fixes many advisories but needs Python 3.11+; 3.10 cannot get a fixed Pillow.
+    # Pillow is pulled in by matplotlib; these floors are for security advisories.
+    # Pillow 13 fixes them but needs Python 3.11+, so 3.10 gets the newest 12.x instead,
+    # which still carries some open advisories.
     "pillow>=13.0.0; python_version>='3.11'",
+    "pillow>=12.3.0; python_version<'3.11'",
 ]
 
 [project.optional-dependencies]
