@@ -25,14 +25,10 @@ jobs:
         cache-dependency-path: pyproject.toml
 
     - name: Install dependencies
-      run: >-
-        python3 -m
-        pip install ".[test]"
+      run: python -m pip install ".[test]"
 
     - name: Show Pillow version
-      # The floor itself is checked by tests/test_dependencies.py.
       run: python -c "import PIL; print('Pillow', PIL.__version__)"
 
     - name: Run tests
       run: python -m pytest -v
-    
