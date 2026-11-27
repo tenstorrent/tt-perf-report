@@ -1971,6 +1971,34 @@ def test_stacked_report_png_is_captioned_only_when_ops_overlap(mocker, tmp_path,
         assert caption is None
 
 
+@pytest.mark.parametrize("group_by", ["op", "category"])
+def test_stacked_report_writes_a_real_png(mocker, tmp_path, group_by):
+    # Unmocked, so savefig really runs through Pillow: proves matplotlib still writes a PNG
+    # with the Pillow that pyproject.toml resolves.
+    import matplotlib.pyplot as plt
+    from PIL import Image
+
+    from tt_perf_report import perf_report
+
+    # perf_report swallows a matplotlib ImportError and silently skips plotting, so fail
+    # here rather than let a broken install pass unnoticed.
+    assert perf_report.HAS_MATPLOTLIB, "matplotlib failed to import in perf_report"
+
+    try:
+        _run_report(
+            mocker, _rows_to_csv(_concurrent_subdevice_rows()),
+            csv_output_file=str(tmp_path / "report.csv"),
+            no_summary=False, no_stacked_report=False, group_by=group_by,
+        )
+    finally:
+        plt.close("all")
+
+    png = tmp_path / "report_stacked.png"
+    assert png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    with Image.open(png) as image:
+        image.verify()
+
+
 def test_stacked_report_carries_no_overlap_note_without_overlap(mocker):
     csv_content = _rows_to_csv([
         _subdevice_row("MatmulDeviceOperation", "0", "54", "54", 1000, **_fw_timing(1000)),

@@ -8,11 +8,25 @@ version = "1.5.0"
 description = "This tool analyzes performance traces from TT-Metal operations, providing insights into throughput, bottlenecks, and optimization opportunities."
 license = {file = "LICENSE"}
 readme = "README.md"
+# matplotlib 3.10.9 needs 3.10+; see the Pillow floors below for the 3.10 caveat.
+# tt-metal and ttnn-visualizer also require Python 3.10+. If the minimum changes in
+# any of the three repositories, update it in the other two.
+requires-python = ">=3.10"
 keywords = ["tenstorrent", "tt-metal"]
-dependencies = ["numpy>=1.22.4", "pandas>=2.2.0", "matplotlib==3.10.9"]
+dependencies = [
+    "numpy>=1.22.4",
+    "pandas>=2.2.0",
+    "matplotlib==3.10.9",
+    # Pillow is pulled in by matplotlib; these floors are for security advisories.
+    # Pillow 13 fixes them but needs Python 3.11+, so 3.10 gets the newest 12.x instead,
+    # which still carries some open advisories.
+    "pillow>=13.0.0; python_version>='3.11'",
+    "pillow>=12.3.0; python_version<'3.11'",
+]
 
 [project.optional-dependencies]
-test = ["pytest", "pytest-mock"]
+# packaging is used by tests/test_dependencies.py.
+test = ["pytest", "pytest-mock", "packaging"]
 
 [project.scripts]
 tt-perf-report = "tt_perf_report.perf_report:main"

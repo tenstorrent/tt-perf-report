@@ -2,6 +2,12 @@
 
 # SPDX-FileCopyrightText: © 2026 Tenstorrent AI ULC
 
+import os
+
+# Render plots headless and the same way in every test. Set before perf_report imports
+# pyplot, so no test has to switch backends mid-run.
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 import pytest
 
 from tt_perf_report import perf_report
