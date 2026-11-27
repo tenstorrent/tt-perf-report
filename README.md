@@ -14,7 +14,7 @@ pipx install tt-perf-report
 
 Installing with pipx will automatically create a virtual environment and make the `tt-perf-report` command available.
 
-Python 3.10 or later is required. On Python 3.10 the newest Pillow available is 12.x, which has open security advisories; Python 3.11 or later gets Pillow 13, which has none. The tool only writes PNG charts and never reads images, so the exposure is small, but use Python 3.11 or later where you can.
+Python 3.10 or later is required, the same minimum as [tt-metal](https://github.com/tenstorrent/tt-metal) and [ttnn-visualizer](https://github.com/tenstorrent/ttnn-visualizer). If the minimum changes in any of these repositories, update it in the others too. On Python 3.10 the newest Pillow available is 12.x, which has open security advisories; Python 3.11 or later gets Pillow 13, which has none. The tool only writes PNG charts and never reads images, so the exposure is small, but use Python 3.11 or later where you can.
 
 ## Generating Performance Traces
 

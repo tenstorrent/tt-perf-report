@@ -9,6 +9,8 @@ description = "This tool analyzes performance traces from TT-Metal operations, p
 license = {file = "LICENSE"}
 readme = "README.md"
 # matplotlib 3.10.9 needs 3.10+; see the Pillow floors below for the 3.10 caveat.
+# tt-metal and ttnn-visualizer also require Python 3.10+. If the minimum changes in
+# any of the three repositories, update it in the other two.
 requires-python = ">=3.10"
 keywords = ["tenstorrent", "tt-metal"]
 dependencies = [
