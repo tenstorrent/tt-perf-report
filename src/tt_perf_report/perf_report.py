@@ -3186,6 +3186,11 @@ def _restore_report_order(result_df):
 
 MERGED_ROWS_COLUMN = "MERGED ORIGINAL ROWS"
 
+# --csv column: the IDs of the per-device rows a merged row stands for, when that
+# is more than its own, so a consumer can link the op to every device's row
+# without reproducing the merge's pairing.
+DEVICE_ROW_IDS_HEADER = "Device Row IDs"
+
 
 def merge_device_rows(df):
     # A deque, not a list: the loop below drains each device's block from the
@@ -3769,6 +3774,13 @@ def generate_perf_report(
         merged_rows = row.get(MERGED_ROWS_COLUMN)
         if isinstance(merged_rows, tuple):
             merged_rows_by_id[row["ORIGINAL_ROW"]] = merged_rows
+        # Space-separated: some spreadsheet locales split fields on ";", and ","
+        # would quote every cell. A row standing only for itself is left blank.
+        op_data[DEVICE_ROW_IDS_HEADER] = Cell(
+            " ".join(str(int(member)) for member in merged_rows)
+            if isinstance(merged_rows, tuple) and len(merged_rows) > 1
+            else None
+        )
         # Signpost rows leave this column blank, so pandas reads it as float.
         op_data["Global Call Count"] = Cell(get_int(row, "GLOBAL CALL COUNT"))
         if raw_op_codes:
@@ -4020,6 +4032,7 @@ def generate_perf_report(
         "Op Category",
         "Bound Analysis",
         "Overlap",
+        DEVICE_ROW_IDS_HEADER,
     ]
 
     # The CSV is a machine-readable contract for downstream consumers, so its
