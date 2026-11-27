@@ -3186,6 +3186,11 @@ def _restore_report_order(result_df):
 
 MERGED_ROWS_COLUMN = "MERGED ORIGINAL ROWS"
 
+# --csv column: the IDs of the per-device rows a merged row stands for, when that
+# is more than its own, so a consumer can link the op to every device's row
+# without reproducing the merge's pairing.
+DEVICE_ROW_IDS_HEADER = "Device Row IDs"
+
 
 def merge_device_rows(df):
     # A deque, not a list: the loop below drains each device's block from the
@@ -3299,8 +3304,9 @@ def merge_device_rows(df):
 
         # Keep execution order independent of the device supplying the timing.
         base_block["_REPORT_ORDER"] = min(data["_REPORT_ORDER"] for _, data in blocks)
-        # Every per-device row this op stands for, so a filter on the merged
-        # rows can find the per-device intervals it kept; see reattribute_overlap.
+        # Every per-device row this op stands for, in device-ID order, so a filter
+        # on the merged rows can find the per-device intervals it kept (see
+        # reattribute_overlap), and --csv can name them (DEVICE_ROW_IDS_HEADER).
         base_block[MERGED_ROWS_COLUMN] = tuple(
             block.get("ORIGINAL_ROW") for _, block in blocks
         )
@@ -3767,8 +3773,14 @@ def generate_perf_report(
         )
         op_data["ID"] = Cell(row["ORIGINAL_ROW"])  # Use the original row number
         merged_rows = row.get(MERGED_ROWS_COLUMN)
+        device_row_ids = None
         if isinstance(merged_rows, tuple):
             merged_rows_by_id[row["ORIGINAL_ROW"]] = merged_rows
+            # Space-separated: some spreadsheet locales split fields on ";", and
+            # "," would quote every cell. A row standing only for itself is blank.
+            if len(merged_rows) > 1:
+                device_row_ids = " ".join(str(int(member)) for member in merged_rows)
+        op_data[DEVICE_ROW_IDS_HEADER] = Cell(device_row_ids)
         # Signpost rows leave this column blank, so pandas reads it as float.
         op_data["Global Call Count"] = Cell(get_int(row, "GLOBAL CALL COUNT"))
         if raw_op_codes:
@@ -4020,6 +4032,7 @@ def generate_perf_report(
         "Op Category",
         "Bound Analysis",
         "Overlap",
+        DEVICE_ROW_IDS_HEADER,
     ]
 
     # The CSV is a machine-readable contract for downstream consumers, so its

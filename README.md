@@ -81,6 +81,8 @@ This is particularly useful for:
 - `--active-experts K`: Use K active experts per input batch group for `ttnn.sparse_matmul` rows whose CSV attributes do not include numeric `nnz`
 - `--arch ARCH`: Override architecture/SKU detection. Use `p100` for Blackhole P100 traces because profiler CSVs identify the chip family but not the card SKU.
 
+> **Upgrading from 1.5.x:** `--csv` gains one column, **Device Row IDs**, after **Overlap [μs]** and before **Advice**. Every other column keeps its name and relative order, so a reader that looks columns up by name is unaffected; one that reads columns by position must account for it.
+
 > **Upgrading from 1.4.x:** the eight `--csv` columns listed above gained a bracketed unit in their header, and the percentage columns dropped the `%` from their name (`DRAM %` is now `DRAM [%]`), so a reader that looks columns up by name must use the new names. The stacked report CSV's `Total % [%]` column is now `Total [%]`. Column order is unchanged in both files. With `--no-merge-devices` the stacked report's rows, printed and in its CSV, are now grouped by device, each device's rows in descending device time; the CSV was previously sorted by device time across all devices. Blank datatype and **Global Call Count** cells are now written empty rather than as `nan`, and **Global Call Count** as a whole number (`1024`, not `1024.0`).
 
 ## Understanding the Performance Report
@@ -105,6 +107,8 @@ The performance report provides several key metrics for analyzing operation perf
 - **Sub Device ID**: Subdevice the operation ran on. Blank means the full worker grid *only* when the input carries the `SUB DEVICE ID` column. On a capture that predates that column every cell is blank because no id was recorded, so a blank there means unknown rather than full-grid — including on a run whose differing **Available Cores** budgets show the chip was partitioned. The terminal table hides the column in that case, but `--csv` always emits it, so downstream consumers should read an entirely blank column as absent data, not as confirmed full-grid operation
 
 **Sub Device ID** appears in the terminal table only when the run reports subdevices, and **Available Cores** only when subdevices or differing core budgets are reported — otherwise they would be columns of blanks or of one repeated value. Both are always present in `--csv` output, whose column set and order do not vary with the input.
+
+- **Device Row IDs** (`--csv` only): When devices are merged, the **ID**s of the per-device rows a merged row stands for, separated by spaces in device-ID order (e.g. `6 3`), the row's own **ID** among them. Use it to link a merged op to every device's row of a `--no-merge-devices` report of the same capture, since which device's row a merged op keeps depends on its timing. Blank when the row stands only for itself: host ops, signposts, a single-device capture, an op only one device ran, and every row with `--no-merge-devices`
 
 ### Performance Metrics
 

@@ -26,6 +26,7 @@ from tt_perf_report.perf_report import (
     merge_device_rows,
     merge_perf_traces,
     MERGED_ROWS_COLUMN,
+    DEVICE_ROW_IDS_HEADER,
     Cell,
     report_csv_column_labels,
     stacked_report_csv_column_labels,
@@ -85,6 +86,7 @@ def expected_headers():
         "Op Category",
         "Bound Analysis",
         CSV_COLUMN["Overlap"],
+        "Device Row IDs",
         "Advice",
         "Raw OP Code",
     ]
@@ -1616,6 +1618,93 @@ def test_unmerged_devices_keep_their_own_budgets(mocker):
 
     pairs = {(row["Sub Device ID"], row["Available Cores"]) for row in rows}
     assert pairs == {("1", "108"), ("2", "64")}
+
+
+def _device_row_ids(row):
+    return [int(member) for member in row[DEVICE_ROW_IDS_HEADER].split()]
+
+
+def test_merged_rows_name_their_device_rows_in_the_csv(mocker):
+    _, merged, _ = _run_report(mocker, _multi_device_csv_content())
+    _, unmerged, _ = _run_report(
+        mocker, _multi_device_csv_content(), no_merge_devices=True
+    )
+
+    (row,) = merged
+    assert sorted(_device_row_ids(row)) == sorted(int(r["ID"]) for r in unmerged)
+    assert int(row["ID"]) in _device_row_ids(row)
+
+
+def test_an_op_only_one_device_ran_names_no_device_rows(mocker):
+    csv_content = _rows_to_csv([
+        _subdevice_row("MatmulDeviceOperation", "", "64", "64", 1000, device_id="0"),
+        _subdevice_row("BinaryNgDeviceOperation", "", "64", "64", 2000, device_id="0"),
+        _subdevice_row("MatmulDeviceOperation", "", "64", "64", 1000, device_id="1"),
+    ])
+
+    _, rows, _ = _run_report(mocker, csv_content)
+
+    by_op = {row["OP Code"].split()[0]: row for row in rows}
+    assert len(_device_row_ids(by_op["MatmulDeviceOperation"])) == 2
+    assert by_op["BinaryNgDeviceOperation"][DEVICE_ROW_IDS_HEADER] == ""
+
+
+def test_device_row_ids_follow_device_id_order(mocker):
+    # Device 1's row comes first in the input, so device-ID order and row-ID
+    # order disagree and the cell shows which one the column follows.
+    csv_content = _rows_to_csv([
+        _subdevice_row("MatmulDeviceOperation", "", "64", "64", 1000, device_id="1"),
+        _subdevice_row("MatmulDeviceOperation", "", "64", "64", 1001, device_id="0"),
+    ])
+    _, unmerged, _ = _run_report(mocker, csv_content, no_merge_devices=True)
+    _, merged, _ = _run_report(mocker, csv_content)
+
+    id_by_device = {row["Device"]: row["ID"] for row in unmerged}
+    assert int(id_by_device["1"]) < int(id_by_device["0"])
+    (row,) = merged
+    assert row[DEVICE_ROW_IDS_HEADER] == f"{id_by_device['0']} {id_by_device['1']}"
+
+
+def test_a_merged_collective_names_every_device_row(mocker):
+    # Collectives average over devices and keep the first device's row rather
+    # than the slowest's, so this is the other branch that sets the row's ID.
+    csv_content = _rows_to_csv([
+        _subdevice_row(
+            "AllGatherDeviceOperation", "", "64", "64", 1000, device_id="0",
+            **{"DEVICE KERNEL DURATION [ns]": "100000"},
+        ),
+        _subdevice_row(
+            "AllGatherDeviceOperation", "", "64", "64", 1001, device_id="1",
+            **{"DEVICE KERNEL DURATION [ns]": "200000"},
+        ),
+    ])
+
+    _, rows, _ = _run_report(mocker, csv_content)
+
+    (row,) = rows
+    assert len(_device_row_ids(row)) == 2
+    assert int(row["ID"]) in _device_row_ids(row)
+
+
+@pytest.mark.parametrize("unmerged", [False, True], ids=["single-device", "unmerged"])
+def test_device_row_ids_blank_when_no_row_stands_for_others(
+    test_csv_content, mocker, unmerged
+):
+    # The column is part of the fixed --csv column set, so it is present even
+    # when every cell is blank.
+    if unmerged:
+        headers, rows, _ = _run_report(
+            mocker, _multi_device_csv_content(), no_merge_devices=True
+        )
+    else:
+        # Device 0 only, with signposts.
+        headers, rows, _ = _run_report(
+            mocker, test_csv_content, arch="wormhole", min_percentage=0.5
+        )
+
+    assert DEVICE_ROW_IDS_HEADER in headers
+    assert rows
+    assert all(row[DEVICE_ROW_IDS_HEADER] == "" for row in rows)
 
 
 _STACKED_BASE_HEADERS = ["Total %", "Op Code", "Device", "Device Time Sum", "Op Count"]
