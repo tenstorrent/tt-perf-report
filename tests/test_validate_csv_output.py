@@ -1975,7 +1975,8 @@ def test_stacked_report_png_is_captioned_only_when_ops_overlap(mocker, tmp_path,
 def test_stacked_report_writes_a_real_png(mocker, tmp_path, group_by):
     # Unmocked, so savefig really runs through Pillow: proves matplotlib still writes a PNG
     # with the Pillow that pyproject.toml resolves. matplotlib and Pillow are hard
-    # dependencies, so a broken import must fail here rather than skip.
+    # dependencies, so a broken import must fail here rather than skip. The version floor
+    # itself is checked in test_dependencies.py.
     import matplotlib
     import matplotlib.pyplot as plt
     from PIL import Image

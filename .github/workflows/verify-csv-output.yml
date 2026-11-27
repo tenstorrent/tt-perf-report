@@ -21,19 +21,17 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
+        cache: pip
+        cache-dependency-path: pyproject.toml
 
     - name: Install dependencies
       run: >-
         python3 -m
         pip install ".[test]"
 
-    - name: Check Pillow security floor
-      run: >-
-        python -c "import sys, PIL;
-        version = tuple(int(part) for part in PIL.__version__.split('.')[:2]);
-        floor = (13, 0) if sys.version_info >= (3, 11) else (12, 3);
-        print('Pillow', PIL.__version__, 'floor', floor);
-        assert version >= floor, 'Pillow below the security floor in pyproject.toml'"
+    - name: Show Pillow version
+      # The floor itself is checked by tests/test_dependencies.py.
+      run: python -c "import PIL; print('Pillow', PIL.__version__)"
 
     - name: Run tests
       run: python -m pytest -v
